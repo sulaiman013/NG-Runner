@@ -171,6 +171,12 @@ def test_the_build_includes_what_reading_a_credential_imports_by_name():
     assert "win32timezone" in selftest.P1A_MODULES
 
 
+def test_the_self_test_fails_a_build_that_cannot_read_a_credential(paths):
+    kept = _Keeps(fails=ModuleNotFoundError("No module named 'win32timezone'"))
+    problems = selftest.run_self_test(paths, credentials=lambda: kept)
+    assert any("win32timezone" in problem for problem in problems)
+
+
 def test_a_credential_round_trip_passes_and_leaves_nothing():
     kept = _Keeps()
     assert selftest.credential_problems(lambda: kept) == []

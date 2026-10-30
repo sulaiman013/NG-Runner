@@ -496,6 +496,23 @@ def test_a_session_turned_away_after_signing_in_is_not_tried_a_third_time(
     assert len(studio.asked) == 2 and len(r.sign_in.calls) == 1
 
 
+def test_a_sign_in_that_never_returns_fails_at_its_limit_and_says_so(studio: FakeStudio) -> None:
+    release = threading.Event()
+
+    def hangs(username: str, password: str) -> dict[str, str]:
+        release.wait(30)
+        return dict(COOKIES)
+
+    clock = FakeClock(datetime(2026, 10, 30, 12, 0, tzinfo=timezone.utc))
+    site = StudioSite(MemorySecrets(LOGIN), clock, http=studio.http, sign_in=hangs,
+                      sign_in_limit=timedelta(seconds=0.05))
+    try:
+        error = failure(lambda: site.project_page(STUDIO_ID), "sign_in_failed")
+    finally:
+        release.set()
+    assert "too long" in error.reason
+
+
 def test_a_restart_cannot_retry_a_sign_in_within_the_hour(studio: FakeStudio) -> None:
     kept: list[datetime] = []
     clock = FakeClock(datetime(2026, 10, 30, 12, 0, tzinfo=timezone.utc))

@@ -465,6 +465,7 @@ def test_a_night_step_that_fails_tries_again_alone(make_world, monkeypatch):
     assert len(calls) == 1                             # not every minute
     world.run(sup, minutes=11)
     assert len(calls) == 2
+    assert "night_step_failed" not in world.dev_codes()  # it worked, so nothing is wrong now
     assert get_state(world.store, "night_key") == "2026-10-30"
     assert len(world.sent(ref="ran:2026-10-29")) == 1  # the done steps did not run again
 
@@ -737,6 +738,26 @@ def test_a_backup_that_fails_goes_to_dev_and_tries_again(make_world, monkeypatch
     assert "backup_failed" in world.dev_codes()
     assert get_state(world.store, "night_key") != "2026-10-30"
     monkeypatch.undo()
+    world.run(sup, minutes=31)
+    assert "backup_failed" not in world.dev_codes()    # it worked, so nothing is wrong now
+
+
+def test_a_log_that_could_not_be_saved_closes_its_item_once_it_is_saved(make_world, monkeypatch):
+    world = make_world(at(10, 30, 1, 25))
+    sup = world.start()
+    real = FakeCtx.commit
+
+    def no_logs(self: FakeCtx, writes: list) -> Any:
+        if any(write.path.parent.name == "logs" for write in writes):
+            return SimpleNamespace(ok=False, reason="Drive is away.")
+        return real(self, writes)
+
+    monkeypatch.setattr(FakeCtx, "commit", no_logs)
+    world.run(sup, minutes=6)
+    assert "log_failed" in world.dev_codes()
+    monkeypatch.undo()
+    world.run(sup, minutes=31)
+    assert "log_failed" not in world.dev_codes()
 
 
 def test_what_pruning_left_goes_to_dev(make_world, monkeypatch):
@@ -889,6 +910,7 @@ def test_the_switch_to_live_is_saved_logged_and_takes_effect(make_world):
     assert world.pipeline.ticks[-1].mode == "shadow"
 
     assert "live" in sup.set_mode("live")
+    assert world.pipeline.went_live == 1               # hands back what the trial run filed aside
     assert load_settings(world.paths).mode == "live"
     assert sup._messenger.settings.mode == "live"
     assert sup.board().shadow is False and not world.tray.tooltip.startswith("SHADOW")
@@ -902,6 +924,7 @@ def test_the_switch_to_live_is_saved_logged_and_takes_effect(make_world):
     assert len([e for e in list_events(world.store) if e.kind == "mode_changed"]) == 1
     assert "shadow" in sup.set_mode("shadow")
     assert load_settings(world.paths).mode == "shadow"
+    assert world.pipeline.went_live == 1               # going back to shadow hands nothing back
 
 
 def test_the_real_board_takes_clicks_through_every_guard(make_world):
@@ -1506,6 +1529,17 @@ def test_the_studio_site_lasts_through_a_switch_of_mode_and_a_new_export_key(mak
     world.run(sup, minutes=2)
     assert sup._ctx.studio is site and sup._ctx.mode == "shadow"
     assert sup._ctx.render_client is not None
+
+
+def test_the_studio_site_keeps_its_last_sign_in_where_a_restart_can_read_it(make_world):
+    world = make_world(at(10, 30, 12), secrets={"signing_key": KEY_HEX, "export_key": EXPORT,
+                                                **STUDIO_LOGIN})
+    sup = world.start()
+    site = sup._ctx.studio
+    assert site._recall() is None
+    site._remember(world.clock.now())
+    assert get_state_time(world.store, "studio.last_sign_in") == world.clock.now()
+    assert site._recall() == world.clock.now()
 
 
 def test_a_studio_site_handed_in_is_used_with_no_login_and_no_board_item(make_world):
