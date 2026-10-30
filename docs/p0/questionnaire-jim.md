@@ -1,5 +1,7 @@
 # NG Runner: questions for Jim
 
+**Not sent (Sulaiman, 2026-10-29).** Every recommendation below is adopted as the default instead; see `docs/decisions.md`. This file stays as the record of why each default was chosen.
+
 **Purpose:** NG Runner is about to start running parts of your NG pipeline by itself. Your answers decide what it may do on its own, which rule it follows where your docs disagree, and what has to be settled before each phase goes live. Phase 1 (filing summaries) can't start until sections 1–4 are answered.
 
 **From:** Sulaiman, **To:** Jim, **How your answers will be used:** each answer is kept word for word with its date and becomes a setting or rule NG Runner follows. Where an answer settles a disagreement in your docs, Sulaiman drafts the RULES.md line and you accept it through your regression check (RULES §8). Nothing in your toolkit changes without your word.

@@ -123,7 +123,33 @@ Pure functions over store facts (design 3.4: facts, clicks and pending work; no 
 
 - **Shutdown:** stop the scheduler between steps, then the board, then the tray. Nothing is left half-written: commit_write is all-or-nothing, and the store is transactional.
 
-## 7. Acceptance: the day simulation (`tests/test_e2e_day.py`)
+## 7. Shadow mode, the canary and the release build
+
+Development happens on Sulaiman's PC; Jim's PC gets short test windows (`docs/testing/jims-pc.md`). Three things make that work.
+
+- **Shadow mode** (`settings.mode`: `shadow` or `live`, default `shadow`).
+  - Everything runs as live, except filing: `commit_write` targets `control\shadow\<folder>\<files>` instead of `NG Jobs\<folder>\`. The P1a write rules allow the control folder, so the chokepoint is exercised for real.
+  - Outbox messages to anyone but Sulaiman are redirected to Sulaiman, marked SHADOW.
+  - The board and tray say SHADOW.
+  - Switching to `live` is a deliberate settings change on the board, logged as an event.
+  - A shadow decision is stored like a live one, so the daily comparison reads the store.
+- **The canary** (`python -m ngrunner canary --folder <absolute path>`). It runs `commit_write` with roots whose control root is a new test folder inside the given folder, and reports one plain line per check:
+  - the no-follow create;
+  - `fstat` and `lstat` give the same identity while the file is open;
+  - a rename keeps the identity;
+  - `fsync`;
+  - rename and replace;
+  - read-back;
+  - a forced rollback.
+
+  At the end it removes only the files and folders it made, each checked by identity (a dev tool, not the chokepoint). It refuses a folder inside NG Jobs or Mozaik Shared. Exit code 0 only when every check passes.
+- **The release build:**
+  - `ngrunner.spec` builds the folder build;
+  - `python -m ngrunner --self-test` passes inside it;
+  - `install.ps1 -Root <scratch> -NoRegister` installs it into a scratch root on Sulaiman's PC;
+  - a test kit zip holds the build, the Setup Check, `installer\` and `docs\testing\jims-pc.md`.
+
+## 8. Acceptance: the day simulation (`tests/test_e2e_day.py`)
 
 The setup is all fake, with a fake clock:
 - a fake Studio server serving synthetic summaries;
@@ -153,3 +179,8 @@ Scenarios, each with its assertions:
 11. The night of the DST change: the night work runs once.
 12. A restart mid-pipeline (a new supervisor on the same store) finishes without duplicate files, messages or cards.
 13. Wrong-job property: across many generated rows and Opportunity lists, every filed summary belongs to the Opportunity the row was generated for, and every other row asks. "0 summaries filed to the wrong job" is the P1a exit criterion.
+14. Shadow mode: scenario 2 again with `mode=shadow`.
+    - The files land in `control\shadow\<Name>\`, and NG Jobs is untouched.
+    - "Filed as" goes to Sulaiman only, marked SHADOW.
+    - The board and tray say SHADOW.
+    - Switching to live files the next row for real.
