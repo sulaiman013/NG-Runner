@@ -6,7 +6,7 @@ That is Phase 1a, the first step of a staircase. Later phases add read-only guar
 
 Built and supported by Sulaiman Ahmed, for Jim Delany, owner of Inspired Closets LA.
 
-> **Status, 2026-10-30, 12:20 PM Pacific.** Phase 1a is about 93% built. **NG Runner has now filed real jobs by itself** on Sulaiman's PC, through real Studio, the real job list and real Drive, into a stand-in NG Jobs folder. Three independent reviews found problems that are being fixed before anything goes further. **Nothing is installed on Jim's PC, and the real NG Jobs has not been touched.** Everything so far has been built and tested on Sulaiman's PC. See [Where it stands](#where-it-stands) and the [timeline](#timeline).
+> **Status, 2026-10-30, 2:45 PM Pacific.** Phase 1a is about 95% built. **The built `.exe` now files real jobs by itself** on Sulaiman's PC, through real Studio, the real job list and real Drive, into a stand-in NG Jobs folder. The three independent reviews' problems are fixed and pushed, with 4,310 tests passing on a clean checkout. **Nothing is installed on Jim's PC, and the real NG Jobs has not been touched.** Everything so far has been built and tested on Sulaiman's PC. See [Where it stands](#where-it-stands) and the [timeline](#timeline).
 
 ## Contents
 
@@ -33,10 +33,10 @@ Built and supported by Sulaiman Ahmed, for Jim Delany, owner of Inspired Closets
 | Foundations: safe writes, job matching, summary check | 20% | Built. Matching and the summary check were reworked after the third review's no-go, and wave 3's review looks at them again |
 | The eight separate parts | 30% | Built. Reconcile and wave 2 worked through the 28 mismatches the fit check found ([docs/decisions.md](docs/decisions.md)) |
 | Wiring into a running app, and the day simulation | 30% | Built. All 22 scenarios pass, on fakes only |
-| Independent verification and fixes | 12% | Under way: the three independent reviews all came back no-go, with 35 problems between them, some the same one seen twice (1 blocker, 11 high, 9 medium, 14 low). Fix agents are working through them. A full clean test run and the push follow |
-| The installer build, the Apps Script and the test kit | 8% | Mostly: the build and installer work, the kit builder exists, and the Apps Script is live on real Google. The final kit isn't built yet, and no kit has gone to Jim's PC |
+| Independent verification and fixes | 12% | Mostly: the three independent reviews all came back no-go, with 35 problems between them, some the same one seen twice (1 blocker, 11 high, 9 medium, 14 low). All are fixed and pushed, on fakes. The real go-live test is running, and the deliberately broken copies haven't been re-run against the final code |
+| The installer build, the Apps Script and the test kit | 8% | Mostly: the kit is built and installs, its self-test and the Drive canary pass from the installed copy, and the Apps Script is live on real Google. No kit has gone to Jim's PC |
 
-**About 93% of the Phase 1a build is done.** That is a judgment from the parts finished and the hours left, not a measurement. Across all phases it is about 12 of the design's 104 dev-days, or 20% of the 60 in the committed P0 to P3, a rougher guide, because the later phases aren't specified yet.
+**About 95% of the Phase 1a build is done.** That is a judgment from the parts finished and the hours left, not a measurement. Across all phases it is about 12 of the design's 104 dev-days, or 20% of the 60 in the committed P0 to P3, a rougher guide, because the later phases aren't specified yet.
 
 **In numbers, 2026-10-30, 9:45 AM Pacific:** about 20,800 lines of app code and 29,600 lines of tests. Wave 2 ended with 3,945 tests passing on Sulaiman's PC, none skipped.
 
@@ -46,7 +46,9 @@ Built and supported by Sulaiman Ahmed, for Jim Delany, owner of Inspired Closets
 
 **The first real run, 2026-10-30, on Sulaiman's PC.** The real app, with 20 real Fab rows arriving as new, against the live job list, real Studio with its own Edge sign-in, and real Drive, with a stand-in NG Jobs folder in the test area so the real one couldn't be touched. It matched 16 rows and asked about 4. It filed all 11 auto-matched jobs by itself, each after two fetches 11 minutes or more apart, including one garage job under `<Job>_Gar`, the same folder name Jim uses for it. A separate audit found the right job on page 1 of all 11, no duplicates, and none of the 36 fetches failed the check. The other 4 jobs already had Jim's summary, and those copies were left untouched, each with a card asking what to do.
 
-**Not proven yet:** anything on Jim's PC (filing into the real NG Jobs, Studio's sign-in, the file-system checks on his Google Drive, scheduled tasks under his account), sign-in from inside the built `.exe`, the rest of the Apps Script (the edit log and the nightly clean-up), a real night's re-fetch and morning digest, and the auto-match rate over the shadow run, on rows as they arrive.
+**The built `.exe`, 2026-10-30, on Sulaiman's PC.** Installed from the kit into a test folder. Its self-test passes, the Drive canary passes all 19 checks, and it signs in to Studio by itself through Edge. Running the real `.exe` found two problems that would have stopped Jim's install and that no fake could show: the build left out a module Windows' credential library imports by name, so it could read no key at all, and the canary couldn't remove its own test folders on Drive. Both are fixed, and the self-test now does a real credential round trip.
+
+**Not proven yet:** anything on Jim's PC (filing into the real NG Jobs, Studio's sign-in, the file-system checks on his Google Drive, scheduled tasks under his account), the rest of the Apps Script (the edit log and the nightly clean-up), a real night's re-fetch and morning digest, and the auto-match rate over the shadow run, on rows as they arrive.
 
 ## Why it exists
 
@@ -306,7 +308,13 @@ Kickoff call with Jim, Mary, Nicole and Sulaiman. Jim hands over his IC-to-Mozai
 | 11:58 AM | **Break-the-code review: no-go** | 14 problems, mostly tests that can't fail where a deadline or a card answer goes wrong |
 | 12:01 PM | **All 11 auto-matched jobs filed** | A separate audit: right job on page 1 of all 11, no duplicates, none of the fetches failed the check |
 | 12:13 PM | **What only real data could show** | Studio's reports change by themselves: 3 of Jim's 4 copies now differ from today's fetch in rod part numbers only, with identical drawings. And multi-day installs (`10/29-30`) couldn't be read, on 13 of 91 real rows; fixed, now 84 of 91 read |
-| 12:20 PM | **Now:** fix agents on the three reviews' problems. Then a full clean run, the push, the final kit and a second real run | Running |
+| 12:43 PM | Pushed: [`ebd3d86`](https://github.com/sulaiman013/NG-Runner/commit/ebd3d86) | Multi-day installs, and the first real run recorded. 3,956 tests on a clean checkout |
+| 1:11 PM | **The reviews' fixes finished** | All 35 problems handled, on fakes |
+| 1:38 PM | **The built `.exe` installed from the kit,** with the Drive canary from the installed copy | The canary failed on real Drive: Drive adds a hidden `desktop.ini` to each folder, so it couldn't remove its own. Fixed: 19 of 19 |
+| 2:01 PM | **The built `.exe` run on real services** | It could read no key at all: the build left out a module Windows' credential library imports by name, and the self-test only imported modules. Fixed, and the self-test now reads a real credential |
+| 2:39 PM | Pushed: [`56d512b`](https://github.com/sulaiman013/NG-Runner/commit/56d512b) | All the fixes, the design check, and the card saying what changed. **4,310 tests on a clean checkout** |
+| 2:41 PM | **Studio sign-in from inside the built `.exe`,** forced by clearing its session and answering a real card on the real board | Signed in by itself and saved the session |
+| 2:45 PM | **Now:** the second real run, in shadow mode on the built `.exe`, then the real go-live switch on the stand-in folders | Running |
 
 ## Measured so far
 
@@ -335,6 +343,8 @@ Real files were read only, and nothing here required touching Jim's PC.
 | Fetches in that run failing the summary check | 0 of 36 | 10-30 |
 | Jim's own summaries against a fresh fetch | 4 of 4 differ: 3 in rod part numbers only, drawings identical, and 1 a real redesign | 10-30 |
 | Install Date cells on the real sheet read as a date | 84 of 91, up from 72. The rest are blank, a note, or a weekday that doesn't match its date | 10-30 |
+| The Drive canary, from the installed copy, on real Drive | 19 of 19 | 10-30 |
+| Studio sign-in from inside the built `.exe` | Works, by itself, through Edge | 10-30 |
 | Matching: deliberately broken copies of the code that the tests catch | 50 of 50 | 10-30 |
 | Build size and time | 74 MB, 45 seconds | 10-30 |
 
@@ -349,10 +359,10 @@ Rough estimates of build time. Earlier estimates ran long, so expect the upper e
 | Step | What | Estimate |
 |---|---|---|
 | The design check and the last rulings | Wire in Studio's Proposal tab and the design and page counts, and fix what wave 2's proving run found ([docs/decisions.md](docs/decisions.md)) | Written, pushed with verification |
-| **Verification** | Independent review of the running app, breaking the code on purpose to prove the tests can fail, and fixes | Running since 9:58 AM |
-| Release | The real build and its self-test, the canary from the installed copy, and the test kit | About 30 minutes, after verification |
-| A second real run on Sulaiman's PC | The same real run with the fixed code and the built `.exe`, including a real night's re-fetch and the morning digest. It writes only to a stand-in NG Jobs in the test area, the control folder and Sulaiman's email | After the release |
-| Say what changed | The "IC summary differs" card says what differs, part lines or drawings, since a catalog change in Studio can raise one on every job with that part | After the reviews' fixes |
+| Verification | Independent review of the running app, breaking the code on purpose to prove the tests can fail, and fixes | Done, on fakes |
+| Release | The real build and its self-test, the canary from the installed copy, and the test kit | Done. Rebuilt whenever the code changes |
+| **A second real run on Sulaiman's PC** | The same real run with the fixed code and the built `.exe`, in shadow and then through the real go-live switch, including a real night's re-fetch and the morning digest. It writes only to a stand-in NG Jobs in the test area | Running |
+| Say what changed | The "IC summary differs" card says what differs, part lines or drawings, since a catalog change in Studio can raise one on every job with that part | Done |
 
 **Then on Jim's PC,** in short scripted windows that stay out of his way ([docs/testing/jims-pc.md](docs/testing/jims-pc.md)). Every window says how long it takes, what it changes and how to undo it.
 
