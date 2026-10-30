@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m with context %}
+{% block title %}History{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1 class="page-title">History</h1>
+    <p class="page-sub">What NG Runner did, newest first</p>
+  </div>
+</div>
+{% if days %}
+{% for label, events in days %}
+<section class="day">
+  <h2 class="day-title">{{ label }}</h2>
+  <ul class="events">
+    {% for time, event in events %}
+    <li class="event event--{{ event.lane|lower }}">
+      <span class="event-time">{{ time }}</span>
+      <span class="event-job">{{ event.job or "" }}</span>
+      <span class="event-text">{{ event.text }}</span>
+    </li>
+    {% endfor %}
+  </ul>
+</section>
+{% endfor %}
+{% else %}
+<div class="empty">
+  <p class="empty-title">Nothing has happened yet</p>
+  <p>Each thing NG Runner does, such as filing a summary or asking a question, is listed here with its time.</p>
+</div>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,25 @@
+{# Shared pieces. Import with context so token_field() sees the page's token. #}
+
+{% macro icon(name, cls="i") -%}
+<svg class="{{ cls }}" aria-hidden="true" focusable="false"><use href="#i-{{ name }}"></use></svg>
+{%- endmacro %}
+
+{% macro tag(style) -%}
+<span class="tag tag--{{ style.tone }}">{{ icon(style.icon) }}<span>{{ style.label }}</span></span>
+{%- endmacro %}
+
+{% macro token_field() -%}
+<input type="hidden" name="token" value="{{ token }}">
+{%- endmacro %}
+
+{% macro back_field(page) -%}
+<input type="hidden" name="back" value="{{ page }}">
+{%- endmacro %}
+
+{% macro open_button(path, page, label="Open") -%}
+<form class="inline-form" method="post" action="{{ url_for('open_file') }}">
+  {{ token_field() }}{{ back_field(page) }}
+  <input type="hidden" name="path" value="{{ path }}">
+  <button class="btn btn--secondary btn--sm" type="submit">{{ icon("file") }}<span>{{ label }}</span></button>
+</form>
+{%- endmacro %}

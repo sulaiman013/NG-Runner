@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m with context %}
+{% block title %}Board{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1 class="page-title">Jobs</h1>
+    <p class="page-sub">{{ count_text(view.jobs|length, "job", "jobs") }}</p>
+  </div>
+  <div class="page-actions">
+    <form method="post" action="{{ url_for('check_now') }}">
+      {{ m.token_field() }}{{ m.back_field(page) }}
+      <button class="btn btn--secondary" type="submit">{{ m.icon("refresh") }}<span>Check for new rows now</span></button>
+    </form>
+    <details class="reveal">
+      <summary class="btn btn--secondary">{{ m.icon("plus") }}<span>Add a job</span></summary>
+      <form class="reveal-panel" method="post" action="{{ url_for('add_job') }}">
+        {{ m.token_field() }}{{ m.back_field(page) }}
+        <label class="field-label" for="add-job-text">Job name or Studio project ID</label>
+        <div class="field-inline">
+          <input class="input" id="add-job-text" name="text" autocomplete="off" spellcheck="false" required>
+          <button class="btn btn--primary" type="submit">Add job</button>
+        </div>
+      </form>
+    </details>
+  </div>
+</div>
+{% if view.jobs %}
+<div class="table-wrap">
+  <table class="table jobs">
+    <thead>
+      <tr><th scope="col">Job</th><th scope="col">Install</th><th scope="col">Progress</th><th scope="col">Next step</th><th scope="col">Status</th></tr>
+    </thead>
+    <tbody>
+    {% for job in view.jobs %}
+      <tr>
+        <th scope="row"><span class="job-name">{{ job.name }}</span></th>
+        <td class="num" data-label="Install">{{ install_text(job.install) }}</td>
+        <td data-label="Progress">
+          <ul class="ticks">
+          {% for tick in job.ticks %}{% set s = tick_style(tick.state) %}
+            <li class="tick tick--{{ tick.state }}" title="{{ tick.label }}: {{ s.label }}">{{ m.icon(s.icon) }}<span>{{ tick.label }}</span><span class="vh">: {{ s.label }}</span></li>
+          {% endfor %}
+          </ul>
+        </td>
+        <td class="next" data-label="Next step">{{ job.next_step }}</td>
+        <td data-label="Status">{% if job.overlay %}{{ m.tag(overlay_style(job.overlay)) }}{% endif %}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+<div class="empty">
+  <p class="empty-title">No jobs yet</p>
+  <p>When Barbara adds a row to the NG Fab Schedule, its job shows here within a few minutes. To start one yourself, use Add a job.</p>
+</div>
+{% endif %}
+{% endblock %}

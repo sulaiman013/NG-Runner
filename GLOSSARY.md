@@ -22,7 +22,7 @@ _Avoid_: assembly report (ambiguous), summary file, design PDF
 Mozaik's own printed assembly sheet for a built job. Not the IC summary.
 
 **Render**:
-One download of a job's IC summary from Studio; a job can have several, and one governs.
+One download of a job's IC summary from Studio; a job can have several, and one governs. Not Render the hosting service, which runs the online Assembly Reports (the code and messages call that "the online Assembly Reports").
 _Avoid_: version, copy
 
 **Fab row**:

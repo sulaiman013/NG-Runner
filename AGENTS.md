@@ -23,8 +23,11 @@ A Windows tray app for Jim Delany (owner, Inspired Closets LA), installed for hi
 |---|---|
 | `ngrunner/` | The app package. One module per concern (`writes.py`, `intake/`, `match.py`, …) |
 | `tests/` | pytest. Synthetic data in git; real-file tests are marked `fixtures` and skip when their local material is absent (below) |
+| `google/` | The Apps Script bridge to Google: Fab Schedule export and edits, outbox, watchdog, prune (`README.md` there). Its tests in `google/test/` run under node, through `tests/test_fab.py` |
+| `installer/` | `install.ps1`, `uninstall.ps1`, the scheduled-task XML and the frozen build's entry scripts. `ngrunner.spec` at the root is the PyInstaller spec |
 | `tools/` | Standalone scripts: `setup_check.ps1` (read-only check of Jim's PC) and `setup_check.cmd` (what Jim double-clicks to run it) |
 | `docs/p0/` | Phase 0 material for Jim (questionnaire, access list, Setup Check guide), blank. His answers name jobs, so they stay outside the repo, in his private Drive folder: read them there, and never save them over `questionnaire-jim.md` (git would take that file). `.gitignore` keeps every other file in `docs/p0/`, and any copy of the questionnaire, out of git |
+| `docs/p1a/` | Phase 1a: `build-spec.md` and `integration-spec.md` (the contracts), `runbook.md` (running it on Jim's PC), `rules-lines.md` and `skill-update.md` (drafts for Jim's chat) |
 | `.local-fixtures/` | Gitignored. `summaries/ngjobs/` = 27 archived `<Job>_summary.pdf`; `summaries/downloads/` = raw Assembly Reports downloads (incl. incomplete early renders and Studio-native names) |
 
 ## Commands
@@ -42,6 +45,7 @@ Tests marked `fixtures` read material that never enters git, and skip when it is
 | `NGR_FIXTURES` | `.local-fixtures\` | The fixtures folder (real IC summaries, see Layout) |
 | `NGR_NG_JOBS` | discovered | The NG Jobs folder, for the real-file matcher tests. Unset, it is discovered under `G:\.shortcut-targets-by-id\*\...`, `G:\My Drive\...` or `G:\Shared drives\...`; the test skips when none is found |
 | `NGR_SPEC_DIR` | `C:\Sulaiman Automation - Assembly Reports\NG IC MOZAIK` | Jim's spec snapshot, for the quote check in `tests\test_docs_p0.py` |
+| `NGR_DESIGN_DIR` | `C:\Sulaiman Automation - Assembly Reports\NG Runner design` | The design, which names real jobs. `tests\test_docs_p1a.py` reads it and Jim's snapshot, and fails if any file git would commit names a client from them |
 
 ## Before filing goes live
 P1a files nothing on Jim's PC until all of these hold:
@@ -55,5 +59,6 @@ P1a files nothing on Jim's PC until all of these hold:
 6. **The auto-match rate is measured on the real Sheet1** (design section 5), with the sold stages adopted from questionnaire items 3a and 3b (`docs/decisions.md`): Ready to Order and Ready to Install. Complete never counts: with it, every job installed before NG Runner would be a candidate, so a remake row of an installed job is asked about as a card, that job first.
 7. **Leftover temp files are reported.** `commit_write()` never deletes a `*.ngr-tmp` it did not create in the same commit, so a crash leaves them in place; the board lists any it finds for Sulaiman.
 
-## Status (2026-10-29)
-Slice 1 exists, uncommitted: the Phase 0 material (`docs/p0/`, `tools/setup_check.ps1` and `setup_check.cmd`, both run on Sulaiman's PC) and the Phase 1a foundations, each with tests: `commit_write()` with the P1a write rules (`writes.py`), matching of files, folders and Fab rows to jobs (`match.py`), and the strict summary check with `content_fingerprint()` (`intake/summary_check.py`). Not built yet: fetching, the Fab trigger, SQLite, tray, board, digest and installer. Nothing is installed on Jim's PC. The repo is public on GitHub (github.com/sulaiman013/NG-Runner, branch `master`), so rule 5 matters twice over: no client data, and no secrets, ever.
+## Status (2026-10-30)
+On GitHub, each with tests: the Phase 0 material (`docs/p0/`, `tools/setup_check.ps1` and `setup_check.cmd`), and the separate parts of Phase 1a: `commit_write()` with the P1a write rules (`writes.py`), matching (`match.py`), the strict summary check (`intake/summary_check.py`), fetching and the two-fetch agreement (`intake/fetch.py`), the store (`store/`), secrets, the job list (`joblist.py`), the Fab export and the Apps Script (`fab.py`, `google/`), messages, cards, digest and heartbeat, the board, tray and toasts, and the launcher, self-test, backup, support bundle, installer and runbook.
+Not built yet: what wires them into a running app, which is the pipeline, job model, supervisor, messenger, canary, the write record and the day simulation (`docs/p1a/integration-spec.md`). `intake/branch.py` still treats a mixed closet-and-garage summary as unclear; the build spec is right, and the pipeline work corrects it. Nothing is installed on Jim's PC. The repo is public on GitHub (github.com/sulaiman013/NG-Runner, branch `master`), so rule 5 matters twice over: no client data, and no secrets, ever.

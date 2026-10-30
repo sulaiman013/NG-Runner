@@ -13,6 +13,7 @@ never his text.
 """
 from __future__ import annotations
 
+import os
 import re
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
@@ -20,7 +21,7 @@ from pathlib import Path
 
 import pytest
 
-from test_docs_p0 import SPEC_DIR, SPEC_FILES, _private_details
+from test_docs_p0 import ROOT, SPEC_DIR, SPEC_FILES, _files_git_would_commit, _private_details
 
 ROOT = Path(__file__).resolve().parent.parent
 P1A = ROOT / "docs" / "p1a"
@@ -332,3 +333,31 @@ def test_the_drafts_name_no_client_from_jims_docs(name, jims_job_words):
     lines = [no for no, line in enumerate(_draft(name).splitlines(), 1)
              if jims_job_words.search(line)]
     assert not lines, f"{name}: lines {lines} name a client from Jim's docs; leave the name out"
+
+
+DESIGN_DIR = Path(os.environ.get(
+    "NGR_DESIGN_DIR", r"C:\Sulaiman Automation - Assembly Reports\NG Runner design"))
+# First words of dated names in those docs that are also ordinary words or made-up names here.
+_NOT_CLIENTS = frozenset({"Name", "Job", "Test", "Testerson", "Fakeley", "Mockford", "Dummitt"})
+
+
+@pytest.mark.fixtures
+def test_no_file_git_would_commit_names_a_client_from_jims_docs_or_the_design():
+    # Their examples name real jobs, and copying one is how a real name gets into this public
+    # repo: a builder once did, in a comment mapping real names to made-up ones. Reports file
+    # and line, never the name.
+    docs = [path for folder in (SPEC_DIR, DESIGN_DIR) if folder.is_dir()
+            for path in folder.rglob("*") if path.suffix.lower() in (".md", ".txt")]
+    if not docs:
+        pytest.skip("neither Jim's spec snapshot nor the design is here")
+    words = {m[1] for path in docs
+             for m in _JOB.finditer(path.read_text(encoding="utf-8-sig", errors="replace"))}
+    assert words, "no job names found: the pattern no longer fits how he names jobs"
+    pattern = names_pattern(words - _NOT_CLIENTS)
+    found = []
+    for name in _files_git_would_commit():
+        data = (ROOT / name).read_bytes()
+        if b"\0" not in data:
+            found += [f"{name}:{no}" for no, line in enumerate(
+                data.decode("utf-8", "replace").splitlines(), 1) if pattern.search(line)]
+    assert not found, f"these lines name a real client; use a made-up name: {found}"

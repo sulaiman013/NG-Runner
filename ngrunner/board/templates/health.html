@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m with context %}
+{% block title %}Health{% endblock %}
+{% block content %}
+{% set h = view.health %}
+<div class="page-head">
+  <div>
+    <h1 class="page-title">Health</h1>
+    <p class="page-sub">What NG Runner depends on, and when it last worked</p>
+  </div>
+</div>
+<section class="facts">
+  <h2 class="facts-title">Alarms</h2>
+  {% if h.alarms %}
+  <ul class="alarm-list">
+    {% for alarm in h.alarms %}<li class="alarm">{{ m.icon("alert") }}<span>{{ alarm }}</span></li>{% endfor %}
+  </ul>
+  {% else %}
+  <p class="fact-value"><span class="tag tag--ok">{{ m.icon("check") }}<span>No alarms</span></span></p>
+  {% endif %}
+</section>
+<section class="facts">
+  <h2 class="facts-title">Last worked</h2>
+  <dl class="fact-list">
+    <div class="fact"><dt>Fab Schedule export</dt><dd>{{ stamp(h.last_export, "Not read yet") }}</dd></div>
+    <div class="fact"><dt>Job list</dt><dd>{{ stamp(h.list_synced_at, "Not fetched yet") }}</dd></div>
+    <div class="fact"><dt>Heartbeat</dt><dd>{{ stamp(h.heartbeat, "None sent yet") }}</dd></div>
+    <div class="fact"><dt>Pop-ups at this PC</dt><dd>{{ m.tag(toasts_style(h.toasts)) }}{% if h.toasts is sameas false %}<span class="fact-note">Turn them on in Windows Settings, under System, Notifications.</span>{% elif h.toasts is none %}<span class="fact-note">Windows did not say whether they are on.</span>{% endif %}</dd></div>
+  </dl>
+</section>
+<section class="facts">
+  <h2 class="facts-title">Folders</h2>
+  <dl class="fact-list">
+    {% for check in h.paths %}
+    <div class="fact">
+      <dt>{{ check.label }}</dt>
+      <dd>{{ m.tag(path_style(check.ok)) }}<code class="path">{{ check.path }}</code>{% if check.note %}<span class="fact-note">{{ check.note }}</span>{% endif %}</dd>
+    </div>
+    {% endfor %}
+  </dl>
+</section>
+{% if h.leftover_temps %}
+<section class="facts">
+  <h2 class="facts-title">Left-over temporary files, for Sulaiman</h2>
+  <ul class="path-list">
+    {% for path in h.leftover_temps %}<li><code class="path">{{ path }}</code></li>{% endfor %}
+  </ul>
+</section>
+{% endif %}
+{% if h.app_version %}<p class="version">NG Runner {{ h.app_version }}</p>{% endif %}
+{% endblock %}

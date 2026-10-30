@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m with context %}
+{% block title %}Your list{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1 class="page-title">Your list</h1>
+    <p class="page-sub">{{ count_text(view.your_list|length, "item waits for you", "items wait for you") }}</p>
+  </div>
+</div>
+{% if view.your_list %}
+<ol class="rows">
+  {% for item in view.your_list %}
+  <li class="row">
+    <span class="row-num">{{ loop.index }}.</span>
+    <div class="row-main">
+      <p class="row-text">{{ item.text }}</p>
+      {% if item.age_days is not none %}<p class="row-meta">{{ "Added today" if item.age_days <= 0 else age_text(item.age_days) ~ " old" }}</p>{% endif %}
+    </div>
+    <div class="row-actions">
+      {% if item.card_id %}<a class="btn btn--secondary btn--sm" href="{{ url_for('cards') }}#card-{{ item.card_id }}">Answer {{ item.card_id }}</a>{% endif %}
+      {% if item.file %}{{ m.open_button(item.file, page) }}{% endif %}
+    </div>
+  </li>
+  {% endfor %}
+</ol>
+{% else %}
+<div class="empty">
+  <p class="empty-title">Nothing waits for you</p>
+  <p>Questions only you can settle show here, oldest first, with a button to answer them. NG Runner's other work is on the Board.</p>
+</div>
+{% endif %}
+{% endblock %}

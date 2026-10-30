@@ -1,0 +1,82 @@
+# NG Runner's Google side (Apps Script)
+
+One Apps Script project, under ICLA's automation account, that is NG Runner's bridge to Google (design section 3.1). It:
+
+- exports Sheet1 of the NG Fab Schedule to `fab/export.json` every 5 minutes, and logs Barbara's edits to Job Name, Designer and Install Date in `fab/edits.json`. It only reads the workbook; it never changes it (risk C3);
+- sends NG Runner's outbox (email, Slack or Pushover) every minute, writing a receipt for each message and never sending one twice;
+- watches NG Runner's heartbeat every 5 minutes: Sulaiman hears of a heartbeat over 45 minutes old, and Jim hears "no list today" when no digest went out by 7:00 AM Pacific;
+- prunes old files from the control folder every day.
+
+It talks to NG Runner only through signed files in the control folder (`ngrunner/signing.py`; `Signing.gs` is the same format). Addresses, tokens and the signing key live only in Script Properties, never in this code.
+
+| File | What |
+|---|---|
+| `appsscript.json` | V8, time zone America/Los_Angeles, the OAuth scopes the scripts use |
+| `Config.gs` | Settings, the control folder, the lock, Pacific time; `installTriggers` and `checkSetup` |
+| `Signing.gs` | Sealing and opening envelopes; every control-folder file goes through it |
+| `FabExport.gs` | `exportFab` (every 5 min) |
+| `FabEdits.gs` | `onFabEdit` (installable edit trigger on the workbook) |
+| `Outbox.gs` | `processOutbox` (every minute) and the channel senders |
+| `Watchdog.gs` | `runWatchdog` (every 5 min) |
+| `Prune.gs` | `pruneControlFolder` (daily, 3 AM Pacific) |
+| `test/` | Node tests with fakes of the Google services (below) |
+
+## Setup
+
+1. Under the ICLA automation account, create a standalone Apps Script project. In Project Settings, tick "Show appsscript.json", then paste in `appsscript.json` and the seven `.gs` files.
+2. Share the control folder with the automation account as Editor. Share the NG Fab Schedule with it as Viewer (see "Not verified" below).
+3. Set the Script Properties (Project Settings, Script Properties) from the table below.
+4. Run `checkSetup` from the editor. It lists what is missing or wrong, one line each, never a value. Fix those until it lists nothing.
+5. Run `installTriggers` and accept Google's authorization. It refuses while `checkSetup` finds a problem, and running it again replaces its own triggers.
+
+## Script Properties
+
+Roles are NG Runner's (`jim`, `barbara`, `will`, `george`, `sulaiman`, `backup_contact`), written in capitals in property names: `ROLE_JIM_EMAIL`.
+
+| Property | What |
+|---|---|
+| `SIGNING_KEY` | The 64-hex-character signing key, the same as `signing_key` in Credential Manager on Jim's PC |
+| `CONTROL_FOLDER_ID` | The control folder's Drive ID (from its address) |
+| `SHEET_ID` | The NG Fab Schedule's spreadsheet ID (from its address) |
+| `ROLE_<ROLE>_EMAIL` | That role's email address |
+| `ROLE_<ROLE>_PUSHOVER` | That role's Pushover user key |
+| `ROLE_<ROLE>_SLACK` | The Slack user or channel ID the bot posts to for that role |
+| `ROLE_<ROLE>_CHANNEL` | The channel for messages this script writes itself (the watchdog's): `email`, `slack` or `pushover`. Jim's defaults to `pushover`, the others to `email` |
+| `PUSHOVER_TOKEN` | The Pushover application token |
+| `SLACK_TOKEN` | The Slack bot token (it needs `chat:write`) |
+| `EXPECTED_ON_FROM`, `EXPECTED_ON_UNTIL` | The Pacific hours the PC is expected on, `HH:MM` (default `06:00` and `23:00`, as in NG Runner's settings). Equal times mean all day; a range may run past midnight. Keep them equal to NG Runner's own settings |
+| `PC_SLEEPS_AT_NIGHT` | `true` for the declared "PC sleeps at night" mode: no 7:00 AM message |
+| `ALERT_ROLE`, `ALERT_NAME` | Who the watchdog alerts, and the name Jim's message gives. Default `sulaiman` and `Sulaiman`; while he is away, set the backup contact |
+
+The script keeps its own state in Script Properties too: `state.*` (sequence numbers, the last heartbeat, the digest day, owed receipts), `done.<id>` and `refused.<id>` (one per outbox message, dropped after 31 days). Leave them alone, except as the runbook says.
+
+## What NG Runner must match
+
+- **Outbox:** `outbox/<id>.json`, where `<id>` is the envelope's id. Kind `outbox`; payload exactly `channel`, `to` (a role), `subject`, `lines`, `urgent`, `ref`. The lines are sent as they are, one per line. The digest's `ref` starts with `digest` (`digest` or `digest:<date>`), to `jim`: that is how the watchdog knows the morning list went out.
+- **Receipts:** `receipts/<outbox id>.json`, kind `receipt`, written once per accepted message, sent or not. A message refused before sending (bad signature, wrong kind, a sequence number not above the last accepted) gets no receipt, so it shows on Jim's PC as a missing receipt. A receipt Drive refuses is written on a later run (up to 30 are kept for that); `sent_at` is still the time of sending.
+- **Order:** outbox files are sent in sequence order. One that arrives ahead of an earlier one waits up to 2 minutes for it; after that the earlier one is refused if it comes.
+- **Heartbeats:** `heartbeat/<YYYYMMDD>/<seq>.json`, the seq in the name equal to the body's. The three newest day folders are read. `open_risks` (a list of lines) is shown to Jim as it is.
+- **Sequence numbers:** each stream this script writes (`fab_export`, `fab_edits`, `receipt`) starts at the current Unix second and rises by 1, so a re-created project never goes below an old stream.
+- **Fab files:** `fab/export.json` and `fab/edits.json` are replaced in place; the export is rewritten every 5 minutes even when nothing changed.
+
+## Tests
+
+`node --test "google/test/*.test.js"` (from the repo root; node expands the quoted pattern itself) runs them with Node 22 and its built-ins only: no installs, no network, no Google account. The pytest bridge in `tests/test_fab.py` runs the same tests with envelopes sealed by Python, then reads what the scripts wrote with `ngrunner.fab` and `ngrunner.signing`: the two sides are checked against each other byte for byte. The fakes fail a test on any call that would change the workbook.
+
+## Quotas and limits
+
+- On a consumer Google account, triggers may run 90 minutes a day in total (6 hours on Workspace). The one-minute outbox trigger is the biggest user: measure it in the first week (design decision 19), and if needed run `processOutbox` every 5 minutes instead.
+- MailApp sends to 100 recipients a day on a consumer account. When that is used up, receipts say so.
+- Pushover takes 1024 characters per message: a longer list is cut at a whole line, ending "The rest is on the board."
+- Pruning takes no lock, so it never holds up the outbox, and it stops after 4 minutes (Apps Script allows 6); the next day's run carries on.
+
+## Not verified (no live Google run yet)
+
+- Whether Google lets an installable edit trigger run for an account with Viewer access to the workbook. If it refuses, give Editor; the code still never writes (the tests fail on any write).
+- The scopes: `SpreadsheetApp` is taken to need the full spreadsheets scope (its reference lists no read-only scope).
+- For a date cell, Google may give an edit's old value as a serial number, not as shown. The log keeps what Google gives; it is a hint only.
+- That Drive for desktop uploads files in any order (hence the 2-minute wait), and how long a file takes to reach Drive.
+
+## Changing the signing key
+
+Set the new key here and on Jim's PC at the same time. Files signed with the old key are refused; an outbox file refused that way stays refused (delete its `refused.<id>` property to have it read again).

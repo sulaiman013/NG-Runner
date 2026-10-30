@@ -1,0 +1,19 @@
+{% import "_macros.html" as m -%}
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Open the board from NG Runner</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='board.css') }}" nonce="{{ csp_nonce }}">
+</head>
+<body class="refused-body">
+{% include "_icons.html" %}
+<main class="refused">
+  <span class="brand-mark brand-mark--lg">{{ m.icon("mark") }}</span>
+  <h1 class="refused-title">Open the board from NG Runner</h1>
+  <p>Click the NG Runner icon near the clock, then choose <strong>Open board</strong>. If the icon is not there, click the small arrow beside the clock first.</p>
+  <p class="hint">The board only opens through NG Runner itself, so that no website can read it or act on it.</p>
+</main>
+</body>
+</html>

@@ -1,0 +1,53 @@
+{% import "_macros.html" as m with context -%}
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}{% endblock %} · NG Runner</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='board.css') }}" nonce="{{ csp_nonce }}">
+  <script src="{{ url_for('static', filename='board.js') }}" nonce="{{ csp_nonce }}" defer></script>
+</head>
+<body>
+{% include "_icons.html" %}
+{% set tray = tray_style(view.tray.colour, view.tray.count) %}
+<header class="topbar">
+  <a class="brand" href="{{ url_for('board') }}">
+    <span class="brand-mark">{{ m.icon("mark") }}</span>
+    <span class="brand-name">NG Runner</span>
+  </a>
+  <nav class="tabs" aria-label="Pages">
+    {% for endpoint, label, count in tabs(view) %}
+    <a class="tab{% if page == endpoint %} is-active{% endif %}" href="{{ url_for(endpoint) }}"{% if page == endpoint %} aria-current="page"{% endif %}>{{ label }}{% if count %}<span class="count">{{ count }}</span>{% endif %}</a>
+    {% endfor %}
+  </nav>
+  <div class="topbar-end">
+    <p class="status status--{{ tray.tone }}">{{ m.icon(tray.icon) }}<span class="status-label">{{ tray.label }}</span><span class="status-note">{{ view.tray.tooltip }}</span></p>
+    {% if not view.paused %}
+    <form method="post" action="{{ url_for('pause') }}">
+      {{ m.token_field() }}{{ m.back_field(page) }}
+      <button class="btn btn--secondary btn--sm" type="submit">{{ m.icon("pause") }}<span>Pause</span></button>
+    </form>
+    {% endif %}
+  </div>
+</header>
+{% if view.paused %}
+<div class="banner" role="status">
+  {{ m.icon("pause") }}
+  <p class="banner-text"><strong>Paused.</strong> NG Runner files nothing until you resume it.</p>
+  <form method="post" action="{{ url_for('resume') }}">
+    {{ m.token_field() }}{{ m.back_field(page) }}
+    <button class="btn btn--primary btn--sm" type="submit">{{ m.icon("play") }}<span>Resume</span></button>
+  </form>
+</div>
+{% endif %}
+<div class="notices" role="status" aria-live="polite">
+  {% for tone, text in get_flashed_messages(with_categories=true) %}
+  <p class="notice notice--{{ tone }}">{{ m.icon("check" if tone == "ok" else "alert") }}<span>{{ text }}</span></p>
+  {% endfor %}
+</div>
+<main class="page">
+{% block content %}{% endblock %}
+</main>
+</body>
+</html>

@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m with context %}
+{% block title %}Cards{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1 class="page-title">Cards</h1>
+    <p class="page-sub">{{ count_text(view.cards|length, "question for you", "questions for you") }}</p>
+  </div>
+</div>
+<form class="command" method="post" action="{{ url_for('command') }}">
+  {{ m.token_field() }}{{ m.back_field(page) }}
+  <label class="field-label" for="command-text">Answer or command</label>
+  <div class="field-inline">
+    <input class="input input--mono" id="command-text" name="text" autocomplete="off" spellcheck="false" maxlength="500" placeholder="{{ example }}">
+    <button class="btn btn--primary" type="submit">{{ m.icon("send") }}<span>Send</span></button>
+  </div>
+  <p class="hint">Type a card and its answer, such as <code>{{ example }}</code>. You can also type <code>pause</code>, <code>resume</code>, or <code>add job</code> and a job name.</p>
+</form>
+{% if view.cards %}
+<ul class="rows cards">
+  {% for card in view.cards %}
+  <li class="row card" id="card-{{ card.id }}">
+    <div class="row-main">
+      <h2 class="card-head"><span class="card-id">{{ card.id }}</span><span class="job-name">{{ card.job }}</span><span class="row-meta">{{ "asked today" if card.age_days <= 0 else "asked " ~ age_text(card.age_days) ~ " ago" }}</span></h2>
+      <p class="card-text">{{ card.text }}</p>
+      {% if card.choices %}
+      <div class="choices">
+        {% for choice in card.choices %}
+        <form class="inline-form" method="post" action="{{ url_for('answer') }}">
+          {{ m.token_field() }}{{ m.back_field(page) }}
+          <input type="hidden" name="card" value="{{ card.id }}">
+          <input type="hidden" name="choice" value="{{ choice }}">
+          <button class="btn btn--secondary" type="submit"><span class="vh">Answer {{ card.id }}: </span>{{ choice }}</button>
+        </form>
+        {% endfor %}
+      </div>
+      {% endif %}
+    </div>
+  </li>
+  {% endfor %}
+</ul>
+{% else %}
+<div class="empty">
+  <p class="empty-title">No questions for you</p>
+  <p>When NG Runner can't decide something by itself, such as which job a new row is, it asks here with a button for each answer.</p>
+</div>
+{% endif %}
+{% endblock %}

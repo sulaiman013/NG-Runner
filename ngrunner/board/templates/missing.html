@@ -1,0 +1,18 @@
+{% import "_macros.html" as m -%}
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>No such page · NG Runner</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='board.css') }}" nonce="{{ csp_nonce }}">
+</head>
+<body class="refused-body">
+{% include "_icons.html" %}
+<main class="refused">
+  <span class="brand-mark brand-mark--lg">{{ m.icon("mark") }}</span>
+  <h1 class="refused-title">There is no such page on the board</h1>
+  <p><a class="btn btn--secondary" href="{{ url_for('board') }}">Go to the board</a></p>
+</main>
+</body>
+</html>

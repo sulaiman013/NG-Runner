@@ -1,0 +1,18 @@
+{% import "_macros.html" as m -%}
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>The board can't be shown · NG Runner</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='board.css') }}" nonce="{{ csp_nonce }}">
+</head>
+<body class="refused-body">
+{% include "_icons.html" %}
+<main class="refused">
+  <span class="brand-mark brand-mark--lg">{{ m.icon("mark") }}</span>
+  <h1 class="refused-title">The board can't be shown right now</h1>
+  <p>NG Runner hit a problem reading its own records. Try again in a minute. If this page keeps coming back, tell Sulaiman; until he fixes it, work new jobs in chat as before.</p>
+</main>
+</body>
+</html>
