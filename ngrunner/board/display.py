@@ -55,6 +55,10 @@ def toasts_style(enabled: bool | None) -> Style:
     return Style("ok", "check", "On") if enabled else Style("bad", "x", "Off")
 
 
+def mode_style(shadow: bool) -> Style:
+    return Style("warn", "eye", "SHADOW") if shadow else Style("ok", "check", "Live")
+
+
 def path_style(ok: bool | None) -> Style:
     if ok is None:
         return Style("muted", "minus", "Could not check")

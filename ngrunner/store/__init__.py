@@ -8,7 +8,8 @@ for wave 2.
     with store.transaction() as tx:    # the few steps that change several tables at once:
         ...                            #   pass tx, not store; all of it commits, or none
 
-Every table function takes the Store or a Transaction first. Times go in timezone-aware and
+Every table function takes the Store or a Transaction first (render_fingerprint only the Store,
+as it reads a file; jump_after_restore also a plain connection). Times go in timezone-aware and
 come back in UTC (stored as clock.to_iso() text; a naive time is refused with ValueError).
 Records come back as frozen dataclasses. A value that breaks a function's contract is refused with
 ValueError and nothing is stored; a change to a row that doesn't exist raises LookupError; a
@@ -24,13 +25,14 @@ Table groups, one module each:
     renders        renders: one row per fetch of an IC summary; one governs each job
     pending        pending: work due later, with time limits (due_pending(now))
     runs           runs: pipeline runs, with the hashes they read and wrote
-    cards          cards, card_numbers: Jim's questions; IDs (ROD-2) are never reused
+    cards          cards, card_numbers: Jim's questions; IDs (TES-2) are never reused
     events         events, dev: the history log and the DEV lane
     write_record   writes, owned: one row per commit_write, and NG Runner's own files
     outbox         outbox: messages, from queued to receipted
     sequences      seqs, seen_ids: outgoing sequences and the replay guard for incoming ones
     state          state: NG Runner's own small facts (paused, installed_at...)
-Store.backup_to(path) copies the whole database with SQLite's online backup API.
+Store.backup_to(path) copies the whole database with SQLite's online backup API, for the
+supervisor's copy before an upgrade (backup.snapshot gives everything else its copy, as bytes).
 """
 from __future__ import annotations
 
@@ -65,12 +67,14 @@ from ngrunner.store.pending import (
     list_pending, past_deadline_pending, retry_pending,
 )
 from ngrunner.store.renders import (
-    RenderRecord, add_render, get_render, governing_render, list_renders, set_governing,
+    RenderRecord, add_render, get_render, governing_render, list_renders, render_fingerprint,
+    set_governing,
 )
 from ngrunner.store.runs import RunRecord, end_run, get_run, list_runs, start_run
 from ngrunner.store.schema import LATEST, MIGRATIONS, check_readable, migrate
 from ngrunner.store.sequences import (
-    accept_envelope, accept_seq, last_accepted_seq, last_sent_seq, next_seq, seen_id,
+    accept_envelope, accept_seq, jump_after_restore, last_accepted_seq, last_sent_seq, next_seq,
+    prune_seen_ids, seen_id,
 )
 from ngrunner.store.state import (
     clear_state, get_state, get_state_time, set_state, set_state_time,
@@ -107,7 +111,7 @@ __all__ = [
     "get_opportunity", "replace_opportunities",
     # renders
     "RenderRecord", "add_render", "get_render", "governing_render", "list_renders",
-    "set_governing",
+    "render_fingerprint", "set_governing",
     # pending
     "PENDING_STATES", "PendingRecord", "add_pending", "due_pending", "finish_pending",
     "get_pending", "list_pending", "past_deadline_pending", "retry_pending",
@@ -126,8 +130,8 @@ __all__ = [
     "CHANNELS", "OUTBOX_STATES", "OutboxRecord", "add_outbox", "get_outbox", "list_outbox",
     "mark_outbox_fallback", "mark_outbox_written", "outbox_without_receipt", "record_receipt",
     # seqs, seen_ids
-    "accept_envelope", "accept_seq", "last_accepted_seq", "last_sent_seq", "next_seq",
-    "seen_id",
+    "accept_envelope", "accept_seq", "jump_after_restore", "last_accepted_seq", "last_sent_seq",
+    "next_seq", "prune_seen_ids", "seen_id",
     # state
     "clear_state", "get_state", "get_state_time", "set_state", "set_state_time",
 ]

@@ -9,6 +9,10 @@ exactly "Nothing to fix — matches IC summary." Templates are linted in the tes
 message that fails is swapped for its kind's fixed template (templates.vetted) and the problems
 open a DEV item, so nothing waits on Sulaiman.
 
+What Barbara typed comes back quoted, as she typed it (Fab row "Testerson 10/14/26"), so that she
+can find her row. Those words are hers, so the rules on how NG Runner writes don't judge them; the
+rules that keep addresses, phone numbers, paths, hashes and keys out of every message still do.
+
 A problem names the rule and the place ("line 2: has a path"), never the offending text: the
 text may be an address or a key, and problems go to the DEV lane and the logs. redact() makes
 text from outside NG Runner (a send error, say) safe for those places too.
@@ -27,12 +31,21 @@ FOR_YOU = "For you: "       # the digest's owner line, before its items
 YOUR_LIST = "Your list: "   # the digest's last line: what is open for Jim
 ABOUT_ITSELF = "NG Runner"  # an item that starts so is about the app, not a job
 
-# A job name: a name, its MMDDYY date, then any variant (Testerson_101426_Gar, ..._101426-2).
-# Variant words are short, so a hash stuck on after an underscore is not taken for one.
+# A job name: a name, its MMDDYY date, then any variant (Testerson_101426_Gar, ..._101426-2,
+# ..._101426b2). Variant words are short, so a hash stuck on after an underscore is not taken for
+# one. A few real ones have a space or nothing for the underscore (Testerson 101426,
+# Testerson101426): there the name must be a capitalised word and the date a real one, and a word
+# that stands before a number in a sentence does not count, so "The 101426 job" stays a bare
+# number and a key that happens to end like a date stays a key.
 JOB_NAME = re.compile(
-    r"(?<![\w'’-])[^\W\d_][\w'’-]*?_[0-9]{6}(?![0-9])(?:[_-][A-Za-z0-9]{1,10})*(?![A-Za-z0-9])"
+    r"(?<![\w'’-])(?:"
+    r"[^\W\d_][\w'’-]*?_[0-9]{6}(?![0-9])(?:[A-Za-z]{1,10}[0-9]{0,2})?"
+    r"|(?!(?:The|Studio|Project|Job|Opportunity) )(?=[\w'’-]*[a-z])"
+    r"[^\W\d_a-z](?:[^\W\d_]|['’-])*? ?"
+    r"(?:0[1-9]|1[0-2])(?:0[1-9]|[12][0-9]|3[01])[0-9]{2}(?![0-9])"
+    r")(?:[_-][A-Za-z0-9]{1,10})*(?![A-Za-z0-9])"
 )
-# A card ID: up to three capital letters from the job's name and a number (ROD-2).
+# A card ID: up to three capital letters from the job's name and a number (TES-2).
 CARD_ID = re.compile(r"(?<![\w-])[A-Z]{1,3}-[1-9][0-9]*(?![\w-])")
 EMAIL = re.compile(r"[\w.+'-]+@[\w-]+(?:\.[\w-]+)+")
 PHONE = re.compile(
@@ -203,9 +216,16 @@ def check_line(text: str, where: str = "line") -> list[Problem]:
     shape = _shape(text)
     if shape:
         return [Problem("structure", where, shape)]
-    masked = JOB_NAME.sub("Job", text)  # a job name's date and underscores are not an ID
-    return [Problem(code, where, phrase) for code, test, phrase in _CONTENT_RULES if test(masked)]
+    whole = JOB_NAME.sub("Job", text)  # a job name's date and underscores are not an ID
+    ours = _QUOTED_ROW.sub(r'\1 "Row"', whole)
+    return [Problem(code, where, phrase) for code, test, phrase in _CONTENT_RULES
+            if test(whole if code in _ON_THE_WHOLE_TEXT else ours)]
 
+
+# Barbara's words as the templates quote them (they turn any quote of hers into a curly one, so
+# the first quote here is the end of her words), and the rules her words are still held to.
+_QUOTED_ROW = re.compile(r'\b(Fab row|now reads) "[^"]*"')
+_ON_THE_WHOLE_TEXT = frozenset({"path", "hash", "key", "email", "phone"})
 
 _LINE_BREAKS = frozenset("\n\r\v\f\x1c\x1d\x1e\x85\N{LINE SEPARATOR}\N{PARAGRAPH SEPARATOR}")
 
@@ -460,10 +480,11 @@ REDACT_LIMIT = 300
 def redact(text: str, *, limit: int = REDACT_LIMIT) -> str:
     """Text from outside NG Runner (a send error, another program's reason) made safe for the
     DEV lane and the logs: on one line, with web addresses, paths, email addresses, phone
-    numbers, keys and hashes replaced by a word in brackets, and at most limit characters."""
+    numbers, keys and hashes replaced by a word in brackets, and at most limit characters. A job
+    name stays, however long it runs: one of its file names can look like a key."""
     text = " ".join(str(text).split())
     for pattern, word in ((_WEB_TOKEN, "[web address]"), (_WINDOWS_PATH, "[path]"),
-                          (EMAIL, "[address]"), (PHONE, "[phone]"), (_HEX_RUN, "[code]"),
-                          (_KEY, "[code]")):
+                          (EMAIL, "[address]"), (PHONE, "[phone]"), (_HEX_RUN, "[code]")):
         text = pattern.sub(word, text)
+    text = _KEY.sub(lambda key: key[0] if JOB_NAME.fullmatch(key[0]) else "[code]", text)
     return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"

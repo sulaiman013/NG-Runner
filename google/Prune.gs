@@ -2,8 +2,10 @@
  * Daily pruning of the control folder (a time trigger; build spec section 6.4).
  *
  * The control folder would otherwise grow by about 300 heartbeats a day. Files older than 30
- * days in outbox/, receipts/, logs/ and backups/ go, and heartbeats older than 2 days, with each
- * old day folder they leave empty. Age is when the file reached Drive. Files go to Drive's trash
+ * days in outbox/, receipts/, logs/, backups/ and support/ go, and heartbeats older than 2 days,
+ * with each old day folder they leave empty. So do files older than 30 days in shadow/<folder>/,
+ * with each old job folder they leave empty, since the shadow run's copies hold client PDFs and
+ * must not outlive the run by long. Age is when the file reached Drive. Files go to Drive's trash
  * (recoverable for 30 days), never straight to deletion, and only files named as NG Runner and
  * this script name them: anything else is left alone and counted in the log. fab/ and pause/ are
  * never touched. The marks Outbox.gs keeps per message are dropped after 31 days, so Script
@@ -24,14 +26,19 @@ var PRUNE_RULES = [
   { folder: 'receipts', name: /^[0-9a-f]{32}\.json$/ },
   { folder: 'logs', name: /^\d{8}\.txt$/ },
   { folder: 'backups', name: /^\d{8}\.ngrbak$/ },
+  { folder: 'support', name: /^support-\d{8}-\d{6}\.zip$/ },
+  { folder: 'shadow', jobFolders: true },
 ];
 
 function pruneControlFolder() {
   var now = now_().getTime();
+  var before = now - PRUNE_DAYS * PRUNE_DAY_MS;
   var report = { started: now, trashed: 0, stopped: false, odd: {} };
   PRUNE_RULES.forEach(function (rule) {
     var folder = controlChild_(rule.folder, false);
-    if (folder) pruneFiles_(folder, rule.folder, rule.name, now - PRUNE_DAYS * PRUNE_DAY_MS, report);
+    if (!folder) return;
+    if (rule.jobFolders) pruneJobFolders_(folder, rule.folder, before, report);
+    else pruneFiles_(folder, rule.folder, rule.name, before, report);
   });
   pruneHeartbeats_(now, report);
   pruneMarks_(now - PRUNE_MARK_DAYS * PRUNE_DAY_MS);
@@ -50,6 +57,24 @@ function pruneFiles_(folder, label, nameRe, before, report) {
       report.trashed += 1;
     }
   });
+}
+
+/** Each job folder under root: its own files from before the time, then the folder if now empty. */
+function pruneJobFolders_(root, label, before, report) {
+  listFiles_(root).forEach(function () { countOdd_(report, label); });
+  listFolders_(root).forEach(function (job) {
+    pruneFiles_(job, label, jobFileRe_(job.getName()), before, report);
+    var empty = !listFiles_(job).length && !listFolders_(job).length;
+    var old = job.getDateCreated().getTime() < before;
+    if (empty && old && withinBudget_(report)) job.setTrashed(true);
+  });
+}
+
+/** What commit_write names in a job folder (ngrunner/writes.py), or a crash's temp file of one. */
+function jobFileRe_(folderName) {
+  var name = folderName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp('^' + name + '_(?:summary\\.pdf|NGRunner\\.json|NGRunner_log\\.txt)'
+    + '(?:\\.[0-9a-f]{8}\\.ngr-tmp)?$');
 }
 
 function pruneHeartbeats_(now, report) {

@@ -28,13 +28,19 @@ A Windows tray app for Jim Delany (owner, Inspired Closets LA), installed for hi
 | `tools/` | Standalone scripts: `setup_check.ps1` (read-only check of Jim's PC) and `setup_check.cmd` (what Jim double-clicks to run it) |
 | `docs/p0/` | Phase 0 material for Jim (questionnaire, access list, Setup Check guide), blank. His answers name jobs, so they stay outside the repo, in his private Drive folder: read them there, and never save them over `questionnaire-jim.md` (git would take that file). `.gitignore` keeps every other file in `docs/p0/`, and any copy of the questionnaire, out of git |
 | `docs/p1a/` | Phase 1a: `build-spec.md` and `integration-spec.md` (the contracts), `runbook.md` (running it on Jim's PC), `rules-lines.md` and `skill-update.md` (drafts for Jim's chat) |
+| `docs/decisions.md` | Every decision with its reason: the defaults adopted instead of Jim's questionnaire, and the rulings that settled how Phase 1a's parts fit. Before changing how a part behaves, check it here; a change goes here first |
+| `docs/testing/jims-pc.md` | The short, scripted test windows on Jim's PC |
 | `.local-fixtures/` | Gitignored. `summaries/ngjobs/` = 27 archived `<Job>_summary.pdf`; `summaries/downloads/` = raw Assembly Reports downloads (incl. incomplete early renders and Studio-native names); `summaries/sold/` = one fetch each of recent sold jobs; `summaries/pairs/` = two fetches each, 10 minutes apart. The last two are named by index, with `index.json` beside them |
 
 ## Commands
 ```powershell
 .\.venv\Scripts\python.exe -X warn_default_encoding -m pytest -q                     # all tests
 .\.venv\Scripts\python.exe -X warn_default_encoding -m pytest -q -m "not fixtures"   # synthetic only
+.\.venv\Scripts\python.exe -m ngrunner canary --folder <absolute path>               # the canary, from the repo
+& "$app\NGRunner.exe" canary --folder <absolute path>                                # the canary on Jim's PC
 ```
+The canary comes with wave 2. On Jim's PC it runs from the installed build, which has no Python (`$app` is the newest `app-<version>` folder, `docs/p1a/runbook.md`).
+
 Keep `-X warn_default_encoding`: without it Python raises no `EncodingWarning`, so the `error::EncodingWarning` filter in `pyproject.toml` can't catch a missing `encoding="utf-8"` (rule 7). `tests/conftest.py` refuses to start a run without it, whichever tests are picked. `.gitattributes` fixes line endings (CRLF for `.cmd`/`.bat`, LF for the rest), whatever a PC's `core.autocrlf` says.
 
 ## Fixtures (local-only test material)
@@ -50,17 +56,20 @@ Tests marked `fixtures` read material that never enters git, and skip when it is
 ## Before filing goes live
 P1a files nothing on Jim's PC until all of these hold:
 1. **Two fetches agree.** Two fetches of a job 10 minutes apart have the same `content_fingerprint()`: the summary check alone can't catch a partial render that is consistent with itself.
-   - **Measured on real jobs from Sulaiman's PC (2026-10-30).** 6 of 6 jobs agree on their text and all 105 drawings, and no pair is byte-identical, since Studio renders afresh. Of the 60 most recently changed sold jobs, 59 fetched (7 to 95 s each) and all 59 pass the summary check. `tests/test_real_renders.py` keeps both true on those files.
+   - **Measured on real jobs from Sulaiman's PC (2026-10-30).** 6 of 6 jobs agree on their text and all 105 drawings, and no pair is byte-identical, since Studio renders afresh, so identical bytes count as no agreement (`same_bytes`). Of the 60 most recently changed sold jobs, 59 fetched (7 to 95 s each) and all 59 pass the summary check. `tests/test_real_renders.py` keeps both true on those files.
    - Jim's PC repeats it during the shadow run, on the real jobs of those days.
-2. **One report layout per job.** Every fetch of one job uses the same layout, landscape or portrait, so its fingerprints can be compared.
+2. **One report layout per job.** Every fetch of one job uses the same layout, landscape or portrait, so its fingerprints can be compared. A summary already in the job's folder in the other layout decides it, since 12 of the 27 archived summaries are portrait.
 3. **The file system is proven on Jim's PC.** A canary on G: (Google Drive) and on OneDrive confirms `fsync`, `os.rename` and `os.replace`, and the file identity every commit relies on: `os.fstat` of a new temp file and `os.lstat` of its path, taken while NG Runner still holds it open with no sharing, give the same `(st_dev, st_ino)`, and a rename keeps it. It also confirms the no-follow create (`CreateFile` with `CREATE_NEW` and `FILE_FLAG_OPEN_REPARSE_POINT`) works there. Where any of this differs, every commit refuses ("could not be prepared") and leaves an empty temp file behind, since the clean-up needs the same match.
    - **Proven on Sulaiman's PC on Google Drive for desktop (2026-10-29, 18 of 18 checks)**, in `CNC operations\Sulaiman\Sulaiman Testing (Do not delete)\`, the only place on G: tests may write. Everything above held. File and folder IDs stayed stable through Drive's sync, Drive refused to make junctions, and `commit_write` worked end to end: new files, an overwrite of its own file, and a rollback.
-   - Jim's PC repeats it with `python -m ngrunner canary` in test window 2. OneDrive waits for P3, since P1a never writes there.
+   - Jim's PC repeats it with `NGRunner.exe canary --folder <folder>` (Commands) in test window 2. OneDrive waits for P3, since P1a never writes there.
 4. **Writes are recorded in SQLite.** The owned-files JSON registry is replaced by the SQLite write record (design §3.3, "Write"), with a crash-recovery path.
 5. **Backups are pruned** after 60 days.
 6. **The auto-match rate is measured on the real Sheet1** (design section 5), with the sold stages adopted from questionnaire items 3a and 3b (`docs/decisions.md`): Ready to Order and Ready to Install. Complete never counts: with it, every job installed before NG Runner would be a candidate, so a remake row of an installed job is asked about as a card, that job first.
+   - **Measured so far on the real job list (2026-10-30).** Each sold job typed the way Barbara usually types it (bare surname, designer's initials), against the local list of 2026-09-15 (10,643 Opportunities): 32 of 53 jobs (60%) dated in the list's last 30 days, 64 of 116 (55%) in its last 90 days, and 307 of all 628 sold (49%). None matched the wrong job; the rest ask with a card.
+   - The real Sheet1's rate still waits for the shadow run (`docs/testing/jims-pc.md`, window 3).
 7. **Leftover temp files are reported.** `commit_write()` never deletes a `*.ngr-tmp` it did not create in the same commit, so a crash leaves them in place; the board lists any it finds for Sulaiman.
 
 ## Status (2026-10-30)
 On GitHub, each with tests: the Phase 0 material (`docs/p0/`, `tools/setup_check.ps1` and `setup_check.cmd`), and the separate parts of Phase 1a: `commit_write()` with the P1a write rules (`writes.py`), matching (`match.py`), the strict summary check (`intake/summary_check.py`), fetching and the two-fetch agreement (`intake/fetch.py`), the store (`store/`), secrets, the job list (`joblist.py`), the Fab export and the Apps Script (`fab.py`, `google/`), messages, cards, digest and heartbeat, the board, tray and toasts, and the launcher, self-test, backup, support bundle, installer and runbook.
-Not built yet: what wires them into a running app, which is the pipeline, job model, supervisor, messenger, canary, the write record and the day simulation (`docs/p1a/integration-spec.md`). `intake/branch.py` still treats a mixed closet-and-garage summary as unclear; the build spec is right, and the pipeline work corrects it. Nothing is installed on Jim's PC. The repo is public on GitHub (github.com/sulaiman013/NG-Runner, branch `master`), so rule 5 matters twice over: no client data, and no secrets, ever.
+A fit check of those parts found 28 places where they would not work together. Its rulings are in `docs/decisions.md`, each part's owner closes its share, and the specs stand as the rulings settle it.
+Not built yet: what wires them into a running app, which is the pipeline, job model, supervisor, messenger, canary, `setup` command, `tools/sign_pause.py`, the write record and the day simulation (`docs/p1a/integration-spec.md`). `intake/branch.py` still treats a mixed closet-and-garage summary as unclear; the build spec is right, and the pipeline work corrects it. Nothing is installed on Jim's PC. The repo is public on GitHub (github.com/sulaiman013/NG-Runner, branch `master`), so rule 5 matters twice over: no client data, and no secrets, ever.

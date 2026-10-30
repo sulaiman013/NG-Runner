@@ -62,6 +62,21 @@ function flagSetting_(name) {
   return /^(1|true|yes|on)$/i.test(setting_(name, ''));
 }
 
+/** Who the watchdog alerts: sulaiman, or a backup contact while he is away. */
+function alertRole_() {
+  return setting_('ALERT_ROLE', 'sulaiman').toLowerCase();
+}
+
+/** The shadow run (README.md): NG Runner sends everything to Sulaiman, so Jim expects no list. */
+function shadowRun_() {
+  return flagSetting_('SHADOW');
+}
+
+/** Who gets the morning list, so whose digest the watchdog waits for. */
+function listRole_() {
+  return shadowRun_() ? alertRole_() : 'jim';
+}
+
 /** What a role's address is on one channel: ROLE_<ROLE>_EMAIL, _PUSHOVER or _SLACK. */
 function roleAddress_(role, what) {
   return setting_('ROLE_' + String(role).toUpperCase() + '_' + what);
@@ -219,9 +234,10 @@ function sheetProblems_() {
   }
 }
 
-/** Jim's phone channel and the alert role's channel must each be able to send. */
+/** The alert role's channel must be able to send, and Jim's, except during the shadow run. */
 function channelProblems_() {
-  var wanted = [['jim', 'pushover'], [setting_('ALERT_ROLE', 'sulaiman'), 'email']];
+  var wanted = [[alertRole_(), 'email']];
+  if (!shadowRun_()) wanted.unshift(['jim', 'email']);
   var problems = [];
   wanted.forEach(function (pair) {
     var role = pair[0];

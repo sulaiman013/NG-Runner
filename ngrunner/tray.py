@@ -115,7 +115,8 @@ def _font(pixels: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
 
 
 def fit_tooltip(text: str) -> str:
-    """text cut to what a tray tooltip holds, ending with an ellipsis when cut."""
+    """text cut to what a tray tooltip holds, ending with an ellipsis when cut. Only the end
+    goes, so the SHADOW that starts it in shadow mode (views.tray_tooltip) always shows."""
     if _utf16_units(text) <= TOOLTIP_LIMIT:
         return text
     cut = text

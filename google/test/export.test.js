@@ -77,13 +77,57 @@ test('a header it does not recognise stops the export and leaves the last one al
   }
 });
 
-test('a sheet with only its header exports no rows, and a missing Sheet1 is refused', () => {
-  const h = load({ sheets: { Sheet1: [sheet1()[0]] } });
-  h.gs.exportFab();
-  assert.deepEqual(plain(readExport(h).payload.rows), []);
+const skipped = (h) => h.logs.filter(([level, text]) => level === 'warn'
+  && /Fab export skipped/.test(text));
+
+test('a sheet that returns no rows writes nothing and says why; no Sheet1 is refused', () => {
+  const header = sheet1()[0];
+  const blank = header.map(() => '');
+  const notes = header.map((_, i) => (i === 15 ? 'a note, in no exported column' : ''));
+  const spaces = header.map((_, i) => ([1, 2, 3, 4, 8].includes(i) ? '  ' : ''));
+  const noJob = header.map((_, i) => ({ 1: ' ', 2: 'PE', 3: 'Friday', 4: ' 7 /17' }[i] || ''));
+  // A row with no job name is a blank row to NG Runner (ngrunner/fab.py, diff).
+  for (const grid of [[header], [header, blank, blank], [header, notes], [header, spaces],
+    [header, noJob]]) {
+    const h = load({ sheets: { Sheet1: grid } });
+    assert.equal(h.gs.exportFab(), null);
+    assert.deepEqual(h.control.names('fab'), []);
+    assert.equal(skipped(h).length, 1, JSON.stringify(h.logs));
+  }
   const none = load({ sheets: { Dashboard: [['x']] } });
   assert.equal(none.gs.exportFab(), null);
   assert.deepEqual(none.control.names('fab'), []);
+});
+
+test('a row with no job name still travels while another row has one', () => {
+  const header = sheet1()[0];
+  const noJob = header.map((_, i) => ({ 2: 'PE', 3: 'Friday', 4: ' 7 /17' }[i] || ''));
+  const h = load({ sheets: { Sheet1: [header, noJob, sheet1()[1]] } });
+  h.gs.exportFab();
+  assert.deepEqual(plain(readExport(h).payload.rows).map((row) => [row.sheet_row, row.job]),
+    [[2, ''], [3, 'Testerson']]);
+});
+
+test('a sheet that comes back empty leaves the last export, so the 30-minute alarm says so', () => {
+  const h = load();
+  h.gs.exportFab();
+  const before = h.control.text('fab/export.json');
+  const first = readExport(h);
+  const whole = h.book.sheet('Sheet1').grid;
+  for (const empty of [[whole[0]], whole.map((row, i) => (i === 0 ? row : row.map(() => '')))]) {
+    h.book.sheet('Sheet1').grid = empty;
+    h.clock.advance(5);
+    assert.equal(h.gs.exportFab(), null);
+    assert.equal(h.control.text('fab/export.json'), before);
+  }
+  assert.equal(skipped(h).length, 2, JSON.stringify(h.logs));
+  h.book.sheet('Sheet1').grid = whole;                          // the rows are back
+  h.clock.advance(5);
+  h.gs.exportFab();
+  const after = readExport(h);
+  assert.equal(after.seq, first.seq + 1);
+  assert.equal(after.payload.exported_at, '2026-10-30T13:45:00+00:00');
+  assert.deepEqual(plain(after.payload.rows), ROWS);
 });
 
 test('the export waits while another run holds the lock', () => {

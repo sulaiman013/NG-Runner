@@ -108,6 +108,8 @@ code, .mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
   background: var(--surface); border-bottom: 1px solid var(--line); }
 .banner > .i { width: 18px; height: 18px; color: var(--ink-2); }
 .banner-text { flex: 1; min-width: 0; font-size: 14px; }
+.banner--shadow { background: var(--warn-soft); }
+.banner--shadow > .i { color: var(--warn); }
 
 .notices { max-width: 1320px; margin: 0 auto; padding: 0 24px; }
 .notices:empty { display: none; }
@@ -166,6 +168,8 @@ code, .mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
 .reveal-panel { position: absolute; right: 0; top: calc(100% + 6px); z-index: 20; width: min(380px, 90vw);
   padding: 14px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-lg);
   box-shadow: var(--shadow); animation: rise 180ms var(--ease); }
+.reveal--start > .reveal-panel { left: 0; right: auto; }
+.reveal-text { margin-bottom: 12px; font-size: 14px; }
 
 /* ------------------------------------------------------------------ status tags and ticks */
 .tag { display: inline-flex; align-items: center; gap: 5px; height: 24px; padding: 0 9px 0 7px;
@@ -246,6 +250,7 @@ code, .mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
 .fact dt { color: var(--ink-2); font-size: 14px; }
 .fact dd { margin: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; font-variant-numeric: tabular-nums; }
 .fact-note { flex-basis: 100%; font-size: 13px; color: var(--ink-2); }
+.mode { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; }
 .path { font-size: 12.5px; padding: 2px 6px; border-radius: 4px; background: var(--surface-2); color: var(--ink-2);
   overflow-wrap: anywhere; }
 .alarm-list, .path-list { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 8px; }

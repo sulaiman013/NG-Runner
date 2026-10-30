@@ -3,11 +3,13 @@ Cards: the questions NG Runner asks Jim, each with fixed choices and his answer 
 
 A job that needs a person's judgment (which job a Fab row is, closet or garage, which render of
 a changed IC summary governs) waits on a card instead of a guess (design section 4, "How Jim
-answers"). A card's ID is the job's first three letters and a number from the store (ROD-2),
-never reused, so "ROD-2 3rd" means one thing for ever. The command box is parsed strictly:
+answers"). A card's ID is the job's first three letters and a number from the store (TES-2),
+never reused, so "TES-2 3rd" means one thing for ever. The command box is parsed strictly:
 anything that isn't exactly a card answer, pause, resume or add job is refused with an example
-to copy, and the card stays with Jim. Wording lives in messages.templates; this module holds the
-model and the grammar.
+to copy, and the card stays with Jim. A card also keeps which job each of its choices means
+(choice_ids), since the labels alone can't say: two sales can share a name, and the job list can
+change before Jim answers. Wording lives in messages.templates; this module holds the model and
+the grammar.
 """
 from __future__ import annotations
 
@@ -44,6 +46,9 @@ class CardSpec:
     text: one line explaining the question; choices: the fixed answers, in order (Jim may
         answer with a choice's number or its label); default_choice: what NG Runner does while
         nobody answers, or None when it simply waits.
+    choice_ids: parallel to choices: the Studio project ID each choice means, or None for one
+        that means no job ("None of these", "Keep <job>"). A job is linked only through this,
+        never through a label. Left out, no choice means a job.
     """
 
     kind: str
@@ -52,6 +57,10 @@ class CardSpec:
     text: str
     choices: tuple[str, ...]
     default_choice: str | None = None
+    choice_ids: tuple[str | None, ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "choice_ids", _ids_of(self.choice_ids, self.choices))
 
     @property
     def prefix(self) -> str:
@@ -82,10 +91,12 @@ class Card:
     answered_at: datetime | None = None
     channel: str | None = None
     reminded_at: tuple[datetime, ...] = field(default=())
+    choice_ids: tuple[str | None, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "choices", tuple(self.choices))
         object.__setattr__(self, "reminded_at", tuple(self.reminded_at))
+        object.__setattr__(self, "choice_ids", _ids_of(self.choice_ids, self.choices))
         problem = _card_problem(self)
         if problem:
             raise ValueError(f"card {self.id!r}: {problem}")
@@ -128,7 +139,7 @@ def new_card(
     return Card(
         id=card_id, kind=spec.kind, job=spec.job, row=spec.row, text=spec.text,
         choices=spec.choices, created_at=created_at, default_choice=spec.default_choice,
-        studio_id=studio_id, fab_row_id=fab_row_id,
+        studio_id=studio_id, fab_row_id=fab_row_id, choice_ids=spec.choice_ids,
     )
 
 
@@ -140,7 +151,7 @@ def card_from_record(record: object, *, job: str | None = None, row: str | None 
 
 _RECORD_FIELDS = ("id", "kind", "text", "choices", "created_at", "default_choice", "studio_id",
                   "fab_row_id", "state", "answer", "answer_words", "answered_by", "answered_at",
-                  "channel", "reminded_at")
+                  "channel", "reminded_at", "choice_ids")
 
 
 # ----- the command box
@@ -283,7 +294,8 @@ def _card_problem(card: Card) -> str | None:
         return f"{card.state!r} is not a card state"
     if not _one_line(card.text):
         return "its text is not one plain line"
-    return _choices_problem(card.choices, card.default_choice) or _times_problem(card)
+    return (_choices_problem(card.choices, card.default_choice)
+            or _choice_ids_problem(card.choice_ids, card.choices) or _times_problem(card))
 
 
 def _choices_problem(choices: Sequence[str], default: str | None) -> str | None:
@@ -295,6 +307,21 @@ def _choices_problem(choices: Sequence[str], default: str | None) -> str | None:
         return "two choices read the same"
     if default is not None and default not in choices:
         return "its default is not one of its choices"
+    return None
+
+
+def _ids_of(ids: Sequence[str | None] | None, choices: Sequence[str]) -> tuple[str | None, ...]:
+    """ids as a tuple; none given means that no choice points at a job."""
+    if isinstance(ids, str):
+        raise TypeError("choice_ids is a list with one entry per choice, not one string")
+    return tuple(ids) if ids else (None,) * len(choices)
+
+
+def _choice_ids_problem(ids: Sequence[str | None], choices: Sequence[str]) -> str | None:
+    if len(ids) != len(choices):
+        return "its choice IDs don't line up with its choices"
+    if not all(one is None or _one_line(one) for one in ids):
+        return "a choice's Studio project ID is not plain text"
     return None
 
 

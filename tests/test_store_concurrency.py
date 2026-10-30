@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 
 from ngrunner.store import (
-    Store, accept_envelope, accept_seq, allocate_card_id, next_seq, open_store, seen_id,
+    LATEST, Store, accept_envelope, accept_seq, allocate_card_id, next_seq, open_store, seen_id,
 )
 
 REPO = Path(__file__).resolve().parent.parent
@@ -58,6 +58,17 @@ def test_threads_never_get_the_same_card_id_or_seq(store: Store) -> None:
     assert sorted(seqs) == list(range(1, total + 1))
 
 
+def test_threads_starting_a_new_stream_together_never_get_the_same_seq(store: Store) -> None:
+    start = 1_793_000_000
+
+    def take_many() -> list[int]:
+        return [next_seq(store, "outbox", start=start) for _ in range(EACH)]
+
+    taken = [seq for batch in all_at_once(THREADS, take_many) for seq in batch]
+
+    assert sorted(taken) == list(range(start, start + THREADS * EACH))
+
+
 @pytest.mark.parametrize("replay", [
     lambda s: accept_seq(s, "fab_export", 5),
     lambda s: seen_id(s, "pause", ENVELOPE_ID),
@@ -67,6 +78,15 @@ def test_one_envelope_read_by_many_threads_is_accepted_once(store: Store, replay
     answers = all_at_once(THREADS, lambda: replay(store))
 
     assert sorted(answers) == [False] * (THREADS - 1) + [True]
+
+
+def test_threads_opening_a_new_store_together_all_get_it(tmp_path: Path) -> None:
+    # The first switch to write-ahead logging is the one lock SQLite doesn't wait for. Before it
+    # waited itself, about 6 rounds in 10 of this failed, and 2 processes failed about 1 in 10.
+    for n in range(10):
+        path = tmp_path / f"{n}.db"
+        stores = all_at_once(THREADS, lambda: open_store(path))
+        assert {s.schema_version() for s in stores} == {LATEST}
 
 
 # ----- processes

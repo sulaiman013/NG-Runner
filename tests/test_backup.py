@@ -7,6 +7,8 @@ import hashlib
 import io
 import os
 import sqlite3
+import subprocess
+import sys
 from collections.abc import Iterator
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -366,11 +368,58 @@ def test_a_restore_onto_a_new_pc_never_reuses_a_sequence_number_already_sent(pat
     assert store.get_state(restored, "paused") == "no"
 
 
+def test_a_restore_onto_a_new_pc_never_reissues_a_card_id_given_after_the_backup(paths, keys,
+                                                                                 tmp_path):
+    # Jim may still hold a card from before the PC died, so an ID must never come to mean another
+    # question: "TES-2 1" typed from an old email would answer the new card.
+    paths.app_data.mkdir(parents=True)
+    running = store.open_store(paths.db)
+    assert store.allocate_card_id(running, "TES") == "TES-1"
+    source = tmp_path / "from the control folder.ngrbak"
+    source.write_bytes(backup.nightly_backup(paths, keys[1], clock=FakeClock(NOW)).data)
+    given_after = {store.allocate_card_id(running, "TES") for _ in range(30)}
+
+    new_pc = AppPaths(tmp_path / "new PC" / "NGRunner")
+    code, text = _cli(["restore", str(source), "--install"], new_pc, key=keys[0])
+    assert code == 0, text
+
+    next_id = store.allocate_card_id(store.open_store(new_pc.db), "TES")
+    assert next_id == "TES-1002" and next_id not in given_after
+
+
+def test_a_backup_from_an_older_version_is_made_ready_and_then_upgraded(paths, keys, tmp_path):
+    paths.app_data.mkdir(parents=True)
+    older = store.Store(paths.db)
+    store.migrate(older, store.MIGRATIONS[:1])
+    store.next_seq(older, "heartbeat")
+    store.allocate_card_id(older, "TES")
+    source = tmp_path / "from the control folder.ngrbak"
+    source.write_bytes(backup.nightly_backup(paths, keys[1], clock=FakeClock(NOW)).data)
+
+    new_pc = AppPaths(tmp_path / "new PC" / "NGRunner")
+    code, text = _cli(["restore", str(source), "--install"], new_pc, key=keys[0])
+    assert code == 0, text
+
+    restored = store.open_store(new_pc.db)
+    assert restored.schema_version() == store.LATEST
+    assert store.next_seq(restored, "heartbeat") == 1_000_002
+    assert store.allocate_card_id(restored, "TES") == "TES-1002"
+
+
 def test_the_drill_restores_the_database_exactly_as_it_was_backed_up(paths, keys):
     paths.app_data.mkdir(parents=True)
     store.next_seq(store.open_store(paths.db), "heartbeat")
     data = backup.nightly_backup(paths, keys[1], clock=FakeClock(NOW)).data
     assert backup.restore(data, keys[0]) == backup.snapshot(paths.db)
+
+
+def test_this_module_still_loads_for_the_self_test_when_the_store_does_not():
+    # The self-test and the support bundle report a broken build; they import this module first.
+    blocked = "import sys; sys.modules['ngrunner.store'] = None; import ngrunner.backup"
+    repo = Path(__file__).resolve().parent.parent
+    done = subprocess.run([sys.executable, "-c", blocked], cwd=repo, capture_output=True,
+                          encoding="utf-8", timeout=120)
+    assert done.returncode == 0, done.stderr
 
 
 def test_a_database_with_no_sequence_table_is_put_in_place_unchanged():
@@ -379,6 +428,15 @@ def test_a_database_with_no_sequence_table_is_put_in_place_unchanged():
     image = con.serialize()
     con.close()
     assert backup.for_a_new_pc(image) == image
+
+
+def test_a_database_with_sequences_but_no_card_numbers_is_refused_with_a_plain_reason():
+    con = sqlite3.connect(":memory:")
+    con.execute("CREATE TABLE seqs(stream TEXT PRIMARY KEY, last INTEGER)")
+    image = con.serialize()
+    con.close()
+    with pytest.raises(BackupError, match="could not be made ready"):
+        backup.for_a_new_pc(image)
 
 
 def test_a_restore_waits_until_ngrunner_has_quit(keys, backup_file, tmp_path):

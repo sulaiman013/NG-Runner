@@ -101,7 +101,8 @@ class Store:
             conn.close()
 
     def schema_version(self) -> int:
-        """The schema version the file is at (PRAGMA user_version; 0 before any migration)."""
+        """The schema version the file is at (PRAGMA user_version; 0 before any migration, and
+        for a file not there yet, which reading this makes, empty)."""
         with session(self, write=False) as conn:
             return int(conn.execute("PRAGMA user_version").fetchone()[0])
 
@@ -112,7 +113,13 @@ class Store:
         with PRAGMA integrity_check before this returns; open_store() opens it like the
         original. path must not exist yet, and must be inside the database's own folder
         (NG Runner's data folder): anything that leaves it goes through commit_write
-        (AGENTS.md rule 1). A failed copy is removed again; raises StoreError."""
+        (AGENTS.md rule 1). A failed copy is removed again; raises StoreError.
+
+        Its one caller is the supervisor's copy before an upgrade, when schema_version() is above
+        0 (a new file has nothing to keep) and below LATEST: open_store migrates at once, and an
+        older version then refuses the file, so a fallback needs a copy from before. Everything
+        else that copies the database uses backup.snapshot, which gives the bytes with no temp
+        file."""
         target = Path(path)
         reason = _backup_target_problem(self.path, target)
         if reason:

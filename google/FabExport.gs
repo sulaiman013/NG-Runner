@@ -6,9 +6,11 @@
  * cells and Fab Date, with each row's number (NG Runner normalises them; build spec section 3).
  * Columns are found by their headers rather than by letter, so an inserted column moves nothing.
  * A header row it does not recognise stops the export instead of letting it guess: the last
- * export stays, and NG Runner's "Fab export is over 30 minutes old" alarm says so. The file is
- * rewritten every run even when nothing changed, because its time is how NG Runner knows this
- * bridge is alive. The workbook is only read, never changed (risk C3).
+ * export stays, and NG Runner's "Fab export is over 30 minutes old" alarm says so. A sheet that
+ * returns no rows with a job name stops it the same way, since read as an export it would make
+ * every row look gone, and every row look new when they came back. The file is rewritten every
+ * run even when nothing changed, because its time is how NG Runner knows this bridge is alive.
+ * The workbook is only read, never changed (risk C3).
  */
 
 var FAB_HEADERS = { job: 'job name', designer: 'designer', install: 'install date', fabDate: 'fab date' };
@@ -23,7 +25,10 @@ function exportFab_() {
   if (!sheet) return skipExport_('the workbook has no ' + FAB_SHEET);
   var layout = fabLayout_(sheet);
   if (layout.problem) return skipExport_(layout.problem);
-  var payload = { sheet: FAB_SHEET, exported_at: isoUtc_(now_()), rows: fabRows_(sheet, layout) };
+  var rows = fabRows_(sheet, layout);
+  var named = rows.filter(function (row) { return row.job.trim() !== ''; });
+  if (!named.length) return skipExport_(FAB_SHEET + ' returned no rows with a job name');
+  var payload = { sheet: FAB_SHEET, exported_at: isoUtc_(now_()), rows: rows };
   return writeSignedFile_(controlChild_('fab', true), 'export.json', 'fab_export', payload, 'replace');
 }
 

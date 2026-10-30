@@ -312,7 +312,71 @@ def test_a_stored_record_becomes_a_card_with_its_job_or_row_for_display():
         answered_at: datetime | None = WHEN
         channel: str | None = "command"
         reminded_at: tuple[datetime, ...] = ()
+        choice_ids: tuple[str | None, ...] = ("201", None)
 
     card = card_from_record(Record(), row="Dummitt")
     assert (card.id, card.row, card.job, card.fab_row_id, card.state, card.answer_words) == (
         "DUM-3", "Dummitt", None, 12, "answered", "1")
+    assert card.choice_ids == ("201", None)
+
+
+# ----- which job each choice means: a Studio project ID beside its label, never read from it
+
+
+def which_job(choices=("Dummitt_101426", "Dummitt_102226", "None of these"),
+              ids=("201", "202", None)) -> CardSpec:
+    return CardSpec("which_job", job=None, row="Dummitt", text="Which one?", choices=choices,
+                    choice_ids=ids)
+
+
+def test_a_card_carries_its_choice_ids_from_its_spec():
+    made = new_card(which_job(), created_at=WHEN, allocate=counter())
+    assert made.choice_ids == ("201", "202", None)
+
+
+def test_an_answer_leads_to_the_id_beside_its_choice_by_number_or_by_label():
+    made = new_card(which_job(), created_at=WHEN, allocate=counter())
+    for typed in ("DUM-1 2", "dum-1 dummitt_102226"):
+        command = parse_command(typed, [made])
+        assert made.choice_ids[made.choices.index(command.choice)] == "202"
+    none = parse_command("DUM-1 none of these", [made])
+    assert made.choice_ids[made.choices.index(none.choice)] is None
+
+
+@pytest.mark.parametrize("left_out", [(), None, []])
+def test_a_card_with_no_ids_means_no_job_by_any_choice(left_out):
+    assert CardSpec("closet_or_garage", job="Testerson_101426", row=None, text="Which?",
+                    choices=("Closet", "Garage"), choice_ids=left_out).choice_ids == (None, None)
+    assert spec().choice_ids == (None, None)
+    made = new_card(spec(), created_at=WHEN, allocate=counter())
+    assert made.choice_ids == (None, None)
+    assert dataclasses.replace(made, choice_ids=left_out).choice_ids == (None, None)
+
+
+@pytest.mark.parametrize("ids", [
+    ("201",), ("201", None, None, None), ("", None, None), (" 201", None, None), (201, None, None),
+    "201",                                            # three characters, for three choices
+])
+def test_choice_ids_that_could_point_an_answer_at_the_wrong_job_are_refused(ids):
+    with pytest.raises((TypeError, ValueError)):
+        new_card(which_job(ids=ids), created_at=WHEN, allocate=counter())
+
+
+def test_an_answered_card_keeps_its_ids():
+    made = new_card(which_job(), created_at=WHEN, allocate=counter())
+    done = answered(made, "Dummitt_102226", words="2", by="jim", at=days(0, 2), channel="board")
+    assert done.choice_ids == ("201", "202", None)
+
+
+def test_choice_ids_go_through_the_real_store_and_come_back(tmp_path):
+    from ngrunner.store import add_card, get_card, open_store
+
+    store, made = open_store(tmp_path / "ngrunner.db"), which_job()
+    record = add_card(store, prefix=made.prefix, kind=made.kind, text=made.text,
+                      choices=made.choices, created_at=WHEN, choice_ids=made.choice_ids)
+    card = card_from_record(get_card(store, record.id), row=made.row)
+    assert (card.choices, card.choice_ids) == (made.choices, ("201", "202", None))
+    garage = spec()
+    record = add_card(store, prefix=garage.prefix, kind=garage.kind, text=garage.text,
+                      choices=garage.choices, created_at=WHEN, choice_ids=garage.choice_ids)
+    assert card_from_record(record, job=garage.job).choice_ids == (None, None)

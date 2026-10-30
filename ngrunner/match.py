@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
-from collections.abc import Callable, Collection, Sequence
+from collections.abc import Callable, Collection, Iterable, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime
 from functools import lru_cache
@@ -37,14 +37,14 @@ class NormalizedName:
         Opportunities named so, and such a name is a job name too.
     variant: what followed the date, canonical and "+"-joined ("gar", "remake", "rev2", "-2",
         "redo2", "pickup", "top", "gb_5_13_26", "claude", "gar+rev2"), or None. For a Fab row
-        whose date carries none, the variant words typed anywhere after the first word,
-        including run words only rows use: "re-make", "re-made", "remakes" as "remake"; "re-do"
-        as "redo"; "revision" and "revised" as "rev"; "go back" and "G.B." as "gb";
-        "warranty"; "add on" as "addon"; "second", "II" or "two" as "-2", and so on to "ten"
-        or "X" as "-10". "gar" is the pipeline's garage flag, a branch of the same job; the
-        others mark a run of the parent job. A job whose own name carries a run can still be a
-        job of its own (a separate "-2" sale), so a file is matched to it only when it is that
-        run or a run of it.
+        that no exact name settles, every variant word typed after the first word or right after
+        a date, in the order typed ("remake+gar"), including run words only rows use: "re-make",
+        "re-made", "remakes" as "remake"; "re-do" as "redo"; "revision" and "revised" as "rev";
+        "go back" and "G.B." as "gb"; "warranty"; "add on" as "addon"; "second", "II" or "two"
+        as "-2", and so on to "ten" or "X" as "-10". "gar" is the pipeline's garage flag, a branch
+        of the same job; the others mark a run of the parent job. A job whose own name carries a
+        run can still be a job of its own (a separate "-2" sale), so a file is matched to it only
+        when it is that run or a run of it.
     kind: how the name was made: "studio" (Studio's <client>_<project>_summary.pdf, client
         slug dropped), "pipeline" (NG Jobs <Job>_summary.pdf), "dated" (Assembly Reports'
         "<Name> (YYYY-MM-DD #n)" copy), "plain" (<Name> as a program writes it, or a clean
@@ -93,14 +93,16 @@ class MatchResult[T]:
         but no Name_MMDDYY to trust) or "folder_disagrees" (the file names another job than its
         folder's, may be an unlisted sale's, starts with another listed job's name more fully,
         or carries a Name_MMDDYY that is not the folder job's own, run included, listed or not;
-        the folder's job comes first); none "no_job" (a Name_MMDDYY no listed job has, or a
-        sale's or a run of a sale's that no listed job is) or "not_a_job_name".
+        the folder's job comes first; or the file names a job and its folder is a sale's, or a
+        run of a sale's, that no listed job is); none "no_job" (a Name_MMDDYY no listed job has,
+        or a sale's or a run of a sale's that no listed job is) or "not_a_job_name".
     reason, for Fab rows: matched "exact_name" or "surname_designer"; ambiguous
         "several_opportunities", "unconfirmed" (offered: a word or a number in the row that rule
         (b) cannot explain, or no candidate that fits every rule) or "variant_of_parent" (the
         row names a run, "remake" or "-2", that the one candidate's name lacks: ask whether it
-        is a run of that job; the run is in normalized.variant); none "no_opportunity" or
-        "not_a_name"; and "stale_list".
+        is a run of that job; the run is in normalized.variant); none "no_opportunity",
+        "not_a_name" or "row_too_long" (over 200 characters, so never read: a person must retype
+        it); and "stale_list".
     normalized: how the file name or the typed text was read.
     """
 
@@ -292,7 +294,7 @@ def match_file_to_job[J: JobLike](
     jobs: Sequence[J],
     *,
     folder: str | None = None,
-    opportunity_names: Collection[str],
+    opportunity_names: Iterable[str],
 ) -> MatchResult[J]:
     """The job a summary file belongs to: its base must equal a job's name or a later name.
 
@@ -310,23 +312,40 @@ def match_file_to_job[J: JobLike](
     and a file in a job folder that starts with such a sale's name more fully than with the
     folder job's ("Testerson_101426_2.des" in "Testerson_101426") is "folder_disagrees". A
     folder is read with the same names, so a folder named for such a sale, or for a run of it,
-    is no job's folder: never the parent's. An empty collection is the caller saying it has no
-    Salesforce list: only jobs are weighed then.
+    is no job's folder, never the parent's, and a file in it that names a job is
+    "folder_disagrees" ("Testerson_101426_summary.pdf" in "Testerson_101426-2"), as it is when
+    that sale is a listed job. An empty collection is the caller saying it has no Salesforce
+    list: only jobs are weighed then. Any iterable will do; one name as a str, or None, is
+    refused with TypeError.
     """
-    by_name = _match_name(normalize_job_file(filename), jobs, opportunity_names)
+    names = _read_names(opportunity_names, "opportunity_names")
+    by_name = _match_name(normalize_job_file(filename), jobs, names)
     if folder is None:
         return by_name
-    by_folder = _match_name(normalize_job_file(folder), jobs, opportunity_names)
-    return _with_folder(filename, by_name, by_folder, jobs, opportunity_names)
+    by_folder = _match_name(normalize_job_file(folder), jobs, names)
+    return _with_folder(filename, by_name, by_folder, jobs, names)
 
 
-def match_by_folder[J: JobLike](folder: str, jobs: Sequence[J]) -> MatchResult[J]:
-    """The job a job folder (or a path to one) belongs to, by the same rules as a file name."""
-    return _match_name(normalize_job_file(folder), jobs)
+def match_by_folder[J: JobLike](
+    folder: str, jobs: Sequence[J], *, opportunity_names: Iterable[str]
+) -> MatchResult[J]:
+    """The job a job folder (or a path to one) belongs to, by the same rules as a file name.
+    opportunity_names is required, as for match_file_to_job: a folder named for a sale with no
+    job, or for a run of it, is no job's, never the parent's."""
+    names = _read_names(opportunity_names, "opportunity_names")
+    return _match_name(normalize_job_file(folder), jobs, names)
+
+
+def _read_names(names: Iterable[str], argument: str) -> tuple[str, ...]:
+    """The names, read once for every pass. One name would be read as its letters and None as no
+    list, each turning a check off without a word, so both are refused."""
+    if names is None or isinstance(names, (str, bytes)):
+        raise TypeError(f"{argument} must be a collection of names: use () for none")
+    return tuple(names)
 
 
 def _match_name[J: JobLike](
-    name: NormalizedName, jobs: Sequence[J], opportunity_names: Collection[str] = ()
+    name: NormalizedName, jobs: Sequence[J], opportunity_names: Collection[str]
 ) -> MatchResult[J]:
     """Every reading of the name counts: it matches only when they all name the same one job,
     and none names a sale that is not in jobs. Readings that name different listed jobs are
@@ -334,7 +353,7 @@ def _match_name[J: JobLike](
     is "unlisted_sale" (nothing settles it but a person, since that sale has no job folder)."""
     if not re.search(r"[a-z]", name.base):
         return MatchResult("none", reason="not_a_job_name", normalized=name)
-    readings = [replace(name, base=base) for base in (name.base, *name.alternates)]
+    readings = _readings(name)
     hits = {r.base: hit for r in readings if (hit := _named_by(r, jobs)) is not None}
     if not hits:
         reason = "no_job" if _lead(name.base) is not None else "not_a_job_name"
@@ -350,6 +369,10 @@ def _match_name[J: JobLike](
     if reason == "base" and _is_unlisted_sale(reading, found, jobs, opportunity_names):
         return MatchResult("none", reason="no_job", normalized=name)    # not a run of the parent
     return _decide(name, found, reason)
+
+
+def _readings(name: NormalizedName) -> list[NormalizedName]:
+    return [replace(name, base=base) for base in (name.base, *name.alternates)]
 
 
 def _is_unlisted_sale(
@@ -470,13 +493,17 @@ def _with_folder[J: JobLike](
     by_name: MatchResult[J],
     by_folder: MatchResult[J],
     jobs: Sequence[J],
-    opportunity_names: Collection[str] = (),
+    opportunity_names: Collection[str],
 ) -> MatchResult[J]:
     """A file in a job's folder is that job's, unless its name says otherwise: it names another
     listed job, it starts with another job's or sale's name more fully than with the folder
     job's ("Testerson_101426_2.des" in "Testerson_101426"), or the Name_MMDDYY it carries or
-    starts with ("Otherson_101426.des") is not the folder job's own, listed or not."""
+    starts with ("Otherson_101426.des") is not the folder job's own, listed or not. A file in
+    the folder of a sale that no listed job is, naming a job, is asked about the same way; in
+    any other folder that is no job's, its name alone decides."""
     if by_folder.status == "none":
+        if by_name.candidates and _is_a_sales_folder(by_folder, opportunity_names):
+            return replace(by_name, status="ambiguous", job=None, reason="folder_disagrees")
         return by_name
     if by_name.status == "matched" and _holds(by_folder.candidates, by_name.job):
         return by_name
@@ -503,6 +530,16 @@ def _with_folder[J: JobLike](
     if any(_depth(sale, starts) > own for sale in _sales_starting(starts, opportunity_names)):
         return _disagrees(home, (), name)          # another sale's, one NG Runner has no job for
     return MatchResult("matched", home, (home,), "folder", name)
+
+
+def _is_a_sales_folder[J: JobLike](
+    by_folder: MatchResult[J], opportunity_names: Collection[str]
+) -> bool:
+    """True when a folder that is no job's has a Name_MMDDYY that Salesforce knows as a sale, or
+    as a run of one. A shop folder ("Old") never is, whatever an Opportunity is called."""
+    folder = by_folder.normalized
+    return (by_folder.reason == "no_job" and folder is not None
+            and _names_a_sale(_readings(folder), opportunity_names))
 
 
 def _sales_starting(
@@ -608,14 +645,22 @@ def _holds(items: Sequence[object], item: object) -> bool:
 
 # ----- Fab rows
 
+# The longest Fab row that is read. A job name is far shorter, and reading walks every word, so
+# a very long cell asks at once and can never stall the app.
+_MAX_ROW_CHARS = 200
+
+
+def _too_long(text: str) -> bool:
+    return len(text) > _MAX_ROW_CHARS
+
 
 def match_fab_row(
     row: FabRow,
     opportunities: Sequence[Opportunity],
-    ng_jobs: Collection[str],
+    ng_jobs: Iterable[str],
     list_fetched_at: datetime | None,
     *,
-    sold_stages: Collection[str] = SOLD_STAGES,
+    sold_stages: Iterable[str] = SOLD_STAGES,
 ) -> MatchResult[Opportunity]:
     """The Opportunity a new Fab row is for.
 
@@ -623,7 +668,8 @@ def match_fab_row(
     (a) An exact Name_MMDDYY with the same variant (case and separators aside, the whole name
         including any text after the date: "Testerson_101426_2"; "_Gar", the garage branch,
         never stops a match and is kept in normalized.variant), whatever its stage and whether
-        or not it already has an NG job.
+        or not it already has an NG job. Several Opportunities with that name narrow to one by
+        rule (b)'s checks, or are asked about.
     (b) Strict: every word of the row is explained, and the words left name exactly one sold
         Opportunity that the row's designer owns, that surely has no NG job yet and that no
         other Opportunity could be ("Testerson", "Testerson closet", "Van Testa 10/14/26"). A
@@ -639,22 +685,27 @@ def match_fab_row(
     folder names; a folder that only starts with an Opportunity's Name_MMDDYY may be its job,
     so that Opportunity is never matched by (b) and still counts as a rival. list_fetched_at is
     when the list was read from Salesforce; a list older than the row is never used
-    ("stale_list": ask for a fresh push).
+    ("stale_list": ask for a fresh push). A row over 200 characters is not read at all:
+    "none", "row_too_long", with nothing to offer and no list needed. One ID as a str for ng_jobs,
+    or one stage for sold_stages, is refused with TypeError.
     """
     if row.first_seen is None or row.first_seen.utcoffset() is None:
         raise ValueError("row.first_seen must be a timezone-aware time")
     if list_fetched_at is not None and list_fetched_at.utcoffset() is None:
         raise ValueError("list_fetched_at must be timezone-aware")
+    ng_ids, sold = _read_names(ng_jobs, "ng_jobs"), _read_names(sold_stages, "sold_stages")
+    if _too_long(row.text):
+        unread = NormalizedName("", None, "text")
+        return MatchResult("none", reason="row_too_long", normalized=unread)
     if list_fetched_at is None or list_fetched_at < row.first_seen:
         return MatchResult("stale_list", reason="stale_list")
     typed = _normalize_name(row.text)
-    rules = _RowRules.make(row.designer, ng_jobs, sold_stages, opportunities)
+    rules = _RowRules.make(row.designer, ng_ids, sold, opportunities)
     if _lead(typed.base) is not None:
         exact = _exact_opportunity(typed, opportunities, rules)
         if exact is not None:
             return exact
-    if typed.variant is None:
-        typed = replace(typed, variant=_typed_variant(row.text))
+    typed = replace(typed, variant=_typed_variant(row.text))
     return _by_surname(typed, row.text, opportunities, rules)
 
 
@@ -695,14 +746,19 @@ class _RowRules:
     def owned(self, o: Opportunity) -> bool:
         return _owner_matches(o.owner, self.designer)
 
+    def may_own(self, o: Opportunity) -> bool:
+        """False only when it is surely another's: with no owner it may be anyone's."""
+        return self.owned(o) or not _person_words(o.owner)
+
     def job(self, o: Opportunity) -> _JobState:
         if o.studio_id.strip() in self.ng_ids:
             return "yes"
         return "maybe" if _lead(_normalize_name(o.name).base) in self.ng_leads else "no"
 
     def fits(self, o: Opportunity) -> bool:
-        """Sold, this designer's, and not surely an NG job already."""
-        return self.sold(o) and self.owned(o) and self.job(o) != "yes"
+        """Sold, perhaps this designer's, and not surely an NG job already. Only a match needs
+        more: an owner the designer names, so one with no owner stops others and is never taken."""
+        return self.sold(o) and self.may_own(o) and self.job(o) != "yes"
 
     def rank(self, o: Opportunity) -> tuple[bool, bool, bool, int, int]:
         """Sort key for offered candidates: closest to fitting first, then newest."""
@@ -735,8 +791,8 @@ def _exact_opportunity(
     typed: NormalizedName, opportunities: Sequence[Opportunity], rules: _RowRules
 ) -> MatchResult[Opportunity] | None:
     """Rule (a): the typed name and variant equal the Opportunity's whole name ("_Gar", the
-    garage branch, aside). Several Opportunities with the typed name are narrowed by rule (b)'s
-    checks.
+    garage branch, aside). Several Opportunities with the typed name narrow to the one that
+    fits (_narrowed), else "several_opportunities".
 
     A typed run ("remake", "-2") of an Opportunity named without it is a run of that job, never
     a new one, so it is asked about ("variant_of_parent"), not matched.
@@ -750,7 +806,7 @@ def _exact_opportunity(
     )
     for reason, test in tiers:
         same = [o for o in opportunities if test(_normalize_name(o.name))]
-        fitting = [o for o in same if rules.fits(o)] if len(same) > 1 else same
+        fitting = _narrowed(same, rules) if len(same) > 1 else same
         if len(fitting) == 1 and reason == "exact_name":
             return MatchResult("matched", fitting[0], (fitting[0],), reason, typed)
         if len(fitting) == 1:
@@ -758,6 +814,19 @@ def _exact_opportunity(
         if same:
             return MatchResult("ambiguous", None, tuple(same), "several_opportunities", typed)
     return None
+
+
+def _narrowed(same: Sequence[Opportunity], rules: _RowRules) -> Sequence[Opportunity]:
+    """The one of several Opportunities with the typed name that the row is for, or nothing, by
+    rule (b)'s own checks: it alone fits, it is the designer's and the designer names one owner
+    among them, and no other that may be the designer's may be the sale (Lost and Dead Lead
+    aside; one name date cannot order them)."""
+    fits = _fit_test(rules, same)
+    fitting = [o for o in same if fits(o)]
+    if (len(fitting) == 1 and rules.owned(fitting[0])
+            and not any(_may_be_newer(o, fitting[0], rules) for o in same)):
+        return fitting
+    return ()
 
 
 def _by_surname(
@@ -778,12 +847,14 @@ def _by_surname(
       Fakeley"); when a date was typed, only those of that date count.
     It matches ("surname_designer") the one candidate that fits (sold, the designer's, no NG job
     yet) only when all of these hold:
-    - no other candidate ("several_opportunities") and no rival fits (sold, the designer's, not
-      surely an NG job already: an NG Jobs folder that only starts with its name may be
-      another sale's);
-    - no other candidate of the designer's may be newer (its name date is later, the same, or
-      missing), unless it is Lost or Dead Lead: Salesforce lags, so a newer one still at
-      Propose may be the sale this row is for;
+    - no other candidate ("several_opportunities") and no rival fits (sold, perhaps the
+      designer's, not surely an NG job already: an Opportunity with no owner may be anyone's, so
+      it counts as the designer's here and is never matched itself, and an NG Jobs folder that
+      only starts with its name may be another sale's);
+    - no other candidate or rival that may be the designer's may be newer (its name date is
+      later, the same, or missing), unless it is Lost or Dead Lead: Salesforce lags, so a newer
+      one still at Propose, whether named "Testerson_101426" or "Pat Testerson_101426", may be
+      the sale this row is for;
     - the row's run is the candidate's, "_Gar" aside: a run the candidate's name lacks makes
       it "variant_of_parent", and a run or other text the candidate's name carries after its
       date that the row lacks ("Testerson_101426-2", "Testerson_101426_2") makes it asked about;
@@ -803,14 +874,15 @@ def _by_surname(
               if not _holds(named, o) and _is_rival(row, _read_name(o.name))]
     candidates = [o for o in named if row.date in (None, _read_name(o.name).date)]
     counted = [o for o in rivals if row.date in (None, _read_name(o.name).date)]
-    fits = _fit_test(rules, [*candidates, *counted])
+    contenders = [*candidates, *counted]
+    fits = _fit_test(rules, contenders)
     fitting = [o for o in candidates if fits(o)]
     if len(fitting) > 1:
         return MatchResult("ambiguous", None, tuple(fitting), "several_opportunities", typed)
     one = fitting[0] if fitting else None
-    if (one is not None and rules.job(one) == "no" and not row.unread
+    if (one is not None and rules.owned(one) and rules.job(one) == "no" and not row.unread
             and not any(fits(o) for o in counted)):
-        verdict = _verdict(one, typed, text, candidates, opportunities, rules)
+        verdict = _verdict(one, typed, text, contenders, opportunities, rules)
         if verdict is not None:
             return verdict
     offered = _offer(row, named, rivals, opportunities, rules)
@@ -822,7 +894,8 @@ def _by_surname(
 def _names(row: _Row, name: _Name) -> bool:
     """True when the row names the Opportunity, dates aside: the same key, and a room word in
     common when both carry some."""
-    return name.key == row.key and (not row.rooms or not name.rooms or bool(row.rooms & name.rooms))
+    return name.key == row.key and (
+        not row.rooms or not name.rooms or not name.rooms.isdisjoint(row.rooms))
 
 
 def _is_rival(row: _Row, name: _Name) -> bool:
@@ -844,20 +917,20 @@ def _verdict(
     one: Opportunity,
     typed: NormalizedName,
     text: str,
-    candidates: Sequence[Opportunity],
+    contenders: Sequence[Opportunity],
     opportunities: Sequence[Opportunity],
     rules: _RowRules,
 ) -> MatchResult[Opportunity] | None:
     """The one fitting candidate's verdict, or None to offer it with the others: matched when no
-    newer sale of the designer's may be the row's, the row is no other Opportunity's whole name
-    and its run is the candidate's; "variant_of_parent" when it names a run the candidate's name
-    lacks."""
-    if any(_may_be_newer(o, one, rules) for o in candidates):
+    newer sale of the designer's, among the candidates and rivals, may be the row's, the row is
+    no other Opportunity's whole name and its run is the candidate's; "variant_of_parent" when it
+    names a run the candidate's name lacks."""
+    if any(_may_be_newer(o, one, rules) for o in contenders):
         return None
     if not _not_another(one, text, opportunities):
         return None
     own, run = _read_name(one.name), _run(typed.variant)
-    if own.extra:                       # text after its date that the row does not explain
+    if own.extra:                       # what the row does not explain
         return None
     if run == own.run:
         return MatchResult("matched", one, (one,), "surname_designer", typed)
@@ -871,10 +944,10 @@ _NEVER_SOLD = frozenset({"lost", "dead lead"})
 
 
 def _may_be_newer(o: Opportunity, one: Opportunity, rules: _RowRules) -> bool:
-    """True when o, another sale of the row's designer that may still be sold, is not surely
-    older than one: its name date is later or the same (a name date cannot order two sales of
-    one day), or either name has none."""
-    if o is one or not rules.owned(o) or _stage(o.stage) in _NEVER_SOLD:
+    """True when o, another sale that may be the row's designer's and may still be sold, is not
+    surely older than one: its name date is later or the same (a name date cannot order two sales
+    of one day), or either name has none."""
+    if o is one or not rules.may_own(o) or _stage(o.stage) in _NEVER_SOLD:
         return False
     theirs, mine = _date_order(o.name), _date_order(one.name)
     return min(theirs, mine) < 0 or theirs >= mine
@@ -925,12 +998,12 @@ def _off_date(o: Opportunity, date: str | None) -> bool:
 # Room words (GLOSSARY: Room word): words a Fab row or an Opportunity Name may carry beside the
 # surname, which never name the job. The list is closed on purpose. A room word is dropped from
 # the name, so a surname read as one would hide a second family name, which is how the wrong
-# family got matched before (finding N2): words that are also plausible surnames (Hall, Wall,
-# Bath, Bed, Murphy and the like) stay out. In a spelling, a space stands for spaces or
-# underscores.
+# family got matched before (findings N2 and M1): words that are also plausible surnames (Guest,
+# Master, Hall, Wall, Bath, Bed, Murphy and the like) stay out, and a row that carries one asks,
+# which costs one tap. In a spelling, a space stands for spaces or underscores.
 ROOM_WORDS = frozenset({
     "closet", "closets", "garage", "garages", "pantry", "pantries", "laundry", "office",
-    "wardrobe", "mudroom", "bedroom", "master", "primary", "guest", "kids", "linen", "entry",
+    "wardrobe", "mudroom", "bedroom", "primary", "kids", "linen", "entry",
     "storage", "cabinet", "cabinets", "shelving", "room", "his", "hers",
     "walkin", "walk in", "walk-in", "reachin", "reach in", "reach-in",
 })
@@ -946,6 +1019,11 @@ _ROOM_SINGULAR = {"closets": "closet", "garages": "garage", "pantries": "pantry"
 _FIRST_WORD = re.compile(r"[a-z0-9]+(?:['’][a-z0-9]+)*")
 _APOSTROPHES = str.maketrans("", "", "'’")
 
+# A letter the fold leaves outside a-z (ø đ ł þ æ œ ı, or any other alphabet). The readers keep
+# a-z only, and what they left would be another family's name ("Østerson" is no "Sterson"), so
+# rule (b) matches no row and no Opportunity Name that holds one.
+_OTHER_LETTER = re.compile(r"[^\W\d_a-z]")
+
 
 @dataclass(frozen=True)
 class _Row:
@@ -953,17 +1031,29 @@ class _Row:
 
     words: tuple[str, ...]      # its name words, in order: van, testa
     date: str | None            # its one typed date, as MMDDYY
-    rooms: frozenset[str]       # its room words, one spelling each: closet, walkin
-    unread: bool                # a digit that is neither its date nor in a run word
+    rooms: tuple[str, ...]      # its room words, one spelling each, as typed: closet, walkin
+    unread: bool                # a digit that is neither its date nor in a run word, or a letter
+                                # outside a-z
 
     @property
     def key(self) -> str:
         return "".join(self.words)
 
 
+def room_words(text: str) -> tuple[str, ...]:
+    """The room words of a Fab row, as rule (b) reads them: one spelling each ("walk-in" is
+    "walkin", "closets" is "closet"), in the order typed, never its first word. The pipeline's
+    "_Gar" flag is a branch, not a room word: it is in the row's variant. A row too long to read
+    holds none."""
+    return _read_row(text).rooms
+
+
 def _read_row(text: str) -> _Row:
     """What each part of a Fab row is: run and branch words after its first word, one typed
-    date, room words after its first word, and the name words left; the rest is punctuation."""
+    date, room words after its first word, and the name words left; the rest is punctuation.
+    A row too long to read is unread, and holds nothing."""
+    if _too_long(text):
+        return _Row((), None, (), True)
     folded = _fold(text)
     spans = [span for _, span in _run_tokens(folded)]
     date = None
@@ -974,8 +1064,9 @@ def _read_row(text: str) -> _Row:
     rooms = [m for m in _ROOM_WORD.finditer(folded, _after_first_word(folded))
              if not _in_spans(m.start(), spans)]
     rest = _blank(folded, [*spans, *(m.span() for m in rooms)]).translate(_APOSTROPHES)
+    unread = re.search(r"\d", rest) is not None or _OTHER_LETTER.search(rest) is not None
     return _Row(tuple(re.findall(r"[a-z]+", rest)), date,
-                frozenset(_room(m[0]) for m in rooms), re.search(r"\d", rest) is not None)
+                tuple(dict.fromkeys(_room(m[0]) for m in rooms)), unread)
 
 
 @dataclass(frozen=True)
@@ -986,7 +1077,8 @@ class _Name:
     date: str | None            # its MMDDYY
     rooms: frozenset[str]       # its room words, before or after its date
     run: str | None             # its run after its date, "_Gar" aside: -2 in "Testerson_101426-2"
-    extra: bool                 # other text after its date: the 2 in "Testerson_101426_2"
+    extra: bool                 # what no row explains: other text after its date (the 2 in
+                                # "Testerson_101426_2"), or a letter outside a-z
     tokens: frozenset[str]      # every word and capital-letter part before its date
     starts: frozenset[str]      # those parts run together up to each one: van, vantest
 
@@ -999,13 +1091,14 @@ class _Name:
 def _read_name(name: str) -> _Name:
     """An Opportunity Name read as a row is: "Van Testa Garage_041326" is vantesta with the room
     word garage, "Testerson_101426-2" is testerson with the run -2."""
-    date = _date_of(name)
-    head, tail = _around_date(_fold(name), date)
+    date, folded = _date_of(name), _fold(name)
+    head, tail = _around_date(folded, date)
     words, rooms = _words_and_rooms(head)
     variant = _normalize_name(name).variant
     left, tail_rooms = _words_and_rooms(tail, first=False) if variant is None else ((), frozenset())
     parts = _capital_parts(_around_date(_deaccent(name).translate(_APOSTROPHES), date)[0])
-    return _Name(words, date, rooms | tail_rooms, _run(variant), bool(left),
+    extra = bool(left) or _OTHER_LETTER.search(folded) is not None
+    return _Name(words, date, rooms | tail_rooms, _run(variant), extra,
                  frozenset((*words, *parts)), frozenset(_joins(parts)))
 
 
@@ -1083,8 +1176,9 @@ _TYPED_WORD = re.compile(r"(?<![a-z0-9'’])[a-z]|(?<!\d)-\d")
 
 
 def _typed_variant(text: str) -> str | None:
-    """Variant words typed anywhere after the first word ("Testerson closet remake"), for text
-    whose date does not carry one."""
+    """Every run and branch word of a row, in the order typed: anywhere after its first word
+    ("Testerson closet remake") and right after a date, so a run typed before a date that "_Gar"
+    follows ("Testerson remake 101426 gar") is never lost."""
     found = [token for token, _ in _run_tokens(_fold(text))]
     return "+".join(dict.fromkeys(found)) or None
 
@@ -1174,7 +1268,8 @@ def _owner_matches(owner: str, designer: str) -> bool:
 
 
 def _person_words(text: str) -> list[str]:
-    return [w for w in re.split(r"[^a-z]+", _fold(text).translate(_JOINERS)) if w]
+    """A person's name words; a letter outside a-z stays in its word ("Østen" is no "Sten")."""
+    return [w for w in re.split(r"[\W\d_]+", _fold(text).translate(_JOINERS)) if w]
 
 
 def _stage(stage: str) -> str:

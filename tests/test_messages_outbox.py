@@ -3,16 +3,23 @@ back (build spec section 3). Nothing here writes: commit_write does, in wave 2."
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta, timezone
+import os
+import shutil
+import subprocess
+from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 
+from ngrunner import heartbeat
+from ngrunner.digest import DigestView, JobLine, compose
 from ngrunner.messages import Message
 from ngrunner.messages import templates as t
 from ngrunner.messages.outbox import (
     CHANNELS, OutboxError, Receipt, ReceiptError, outbox_file, read_receipt,
 )
 from ngrunner.signing import EnvelopeError, key_from_text, new_key, open_envelope, seal
+from ngrunner.store import add_outbox, open_store
 
 KEY = key_from_text("00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff")
 NOW = datetime(2026, 10, 30, 22, 5, tzinfo=timezone.utc)
@@ -86,6 +93,125 @@ def test_a_bad_sequence_or_a_naive_time_is_refused(seq, now):
 def test_no_address_is_ever_written_into_a_file():
     _, data = outbox_file(FILED, to="barbara", channel="email", key=KEY, seq=1, now=NOW)
     assert b"@" not in data
+
+
+# ----- a queued row written again: the row is recorded first, so after a refused commit or a
+# crash its file is rebuilt from the row, with no new id and no gap in the numbers
+
+
+@pytest.mark.parametrize("message", [FILED, t.quiet_digest(date(2026, 10, 30))],
+                         ids=["a filed email", "a digest"])
+def test_a_queued_row_is_written_again_with_its_own_id_seq_and_ref(message, tmp_path):
+    first = outbox_file(message, to="jim", channel="email", key=KEY, seq=7, now=NOW)
+    row = add_outbox(open_store(tmp_path / "ngrunner.db"), id=first.id, seq=7, channel="email",
+                     recipient="jim", subject=message.title, lines=message.lines,
+                     urgent=message.urgent, created_at=NOW, ref=first.ref)
+    again = outbox_file(Message("outbox", row.subject, row.lines, row.urgent), to=row.recipient,
+                        channel=row.channel, key=KEY, seq=row.seq, now=NOW + timedelta(minutes=1),
+                        ref=row.ref, id=row.id)
+    assert again.path_parts == first.path_parts and again.id == first.id
+    was, now = (open_envelope(made.data, key=KEY, kind="outbox") for made in (first, again))
+    assert (now.id, now.seq, now.payload) == (was.id, was.seq, was.payload)
+
+
+def test_a_file_says_the_ref_it_carries_for_the_stores_row():
+    made = outbox_file(FILED, to="barbara", channel="email", key=KEY, seq=1, now=NOW)
+    assert made.ref == "filed"
+    named = outbox_file(FILED, to="barbara", channel="email", key=KEY, seq=2, now=NOW, ref="TES-2")
+    assert named.ref == "TES-2"
+
+
+@pytest.mark.parametrize("bad", ["", "abc", "AB" * 16, "../" + "a" * 29, 7])
+def test_an_id_that_could_not_name_an_outbox_file_is_refused(bad):
+    with pytest.raises(OutboxError):
+        outbox_file(FILED, to="jim", channel="email", key=KEY, seq=1, now=NOW, id=bad)
+
+
+# ----- a digest's ref: how the Apps Script knows Jim's list went out
+
+
+LATE = datetime(2026, 10, 31, 6, 0, tzinfo=timezone.utc)        # 11 PM Fri 10/30 in Pacific
+DAY = date(2026, 10, 30)
+
+
+@pytest.mark.parametrize("message", [
+    t.digest(DAY), t.quiet_digest(DAY), t.fixed("digest", day=DAY),
+    t.fixed("quiet_digest", day=DAY),
+], ids=["digest", "quiet night", "fixed digest", "fixed quiet night"])
+def test_a_digests_default_ref_names_its_pacific_day(message):
+    _, data = outbox_file(message, to="jim", channel="email", key=KEY, seq=1, now=LATE)
+    assert open_envelope(data, key=KEY).payload["ref"] == "digest:2026-10-30"
+
+
+def test_a_ref_given_is_kept_on_a_digest_too():
+    _, data = outbox_file(t.quiet_digest(DAY), to="jim", channel="email", key=KEY, seq=1, now=LATE,
+                          ref="digest:2026-10-29")
+    assert open_envelope(data, key=KEY).payload["ref"] == "digest:2026-10-29"
+
+
+def test_a_redirected_digest_keeps_the_digest_ref():
+    made = outbox_file(t.shadow(t.quiet_digest(DAY)), to="sulaiman", channel="email", key=KEY,
+                       seq=1, now=LATE)
+    assert made.ref == "digest:2026-10-30"
+    assert open_envelope(made.data, key=KEY).payload["subject"] == "SHADOW NG Runner · Fri 10/30"
+
+
+def _node() -> str | None:
+    found = shutil.which("node")
+    if found:
+        return found
+    default = Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "nodejs" / "node.exe"
+    return str(default) if default.is_file() else None
+
+
+# The real Outbox.gs and Watchdog.gs, on the files Python left in the control folder: the digest
+# at 6:30 AM, then the 7:00 AM check that tells Jim when no list came.
+_THE_MORNING = r"""
+const fs = require('node:fs');
+const { load } = require(process.argv[2]);
+const files = JSON.parse(fs.readFileSync(process.argv[3], 'utf8'));
+const h = load({ now: '2026-10-30T13:30:00Z' });
+h.control.put(files.outbox.path, files.outbox.text);
+h.control.put(files.heartbeat.path, files.heartbeat.text);
+h.gs.processOutbox();
+const day = h.gs.state_('digest.day');
+h.clock.set('2026-10-30T14:00:00Z');
+h.gs.runWatchdog();
+console.log(JSON.stringify({ day, mail: h.mail.sent.map((m) => [m.to, m.subject]),
+  push: h.fetch.requests.map((r) => r.params.payload.title) }));
+"""
+
+
+@pytest.mark.parametrize("view", [
+    DigestView(now=datetime(2026, 10, 30, 13, 30, tzinfo=timezone.utc)),
+    DigestView(now=datetime(2026, 10, 30, 13, 30, tzinfo=timezone.utc),
+               jobs=(JobLine("Testerson_101426", "filed 10/29 3:05 PM"),)),
+], ids=["a quiet night", "a busy night"])
+def test_the_real_apps_script_counts_the_composed_digest_so_no_false_no_list(view, tmp_path):
+    node = _node()
+    if node is None:
+        pytest.skip("node is not installed, so the Apps Script can't run here")
+    at = view.now
+    first_seq = int(at.timestamp())                             # as a new stream starts (store)
+    made = outbox_file(compose(view), to="jim", channel="email", key=KEY, seq=first_seq, now=at)
+    beat = heartbeat.payload(app_version="0.1.0", paused=False, open_risks=(), last_fab_seq=None,
+                             list_synced_at=None, pending=0, dev_open=0)
+    parts, data = heartbeat.heartbeat_file(beat, key=KEY, seq=first_seq, now=at)
+    files = tmp_path / "files.json"
+    files.write_text(json.dumps({
+        "outbox": {"path": "/".join(made.path_parts), "text": made.data.decode("utf-8")},
+        "heartbeat": {"path": "/".join(parts), "text": data.decode("utf-8")},
+    }), encoding="utf-8")
+    script = tmp_path / "the_morning.js"
+    script.write_text(_THE_MORNING, encoding="utf-8")
+    harness = Path(__file__).resolve().parent.parent / "google" / "test" / "harness.js"
+    done = subprocess.run([node, str(script), str(harness), str(files)], capture_output=True,
+                          encoding="utf-8", errors="replace", timeout=120, check=False)
+    assert done.returncode == 0, done.stderr[-4000:]
+    got = json.loads(done.stdout)
+    assert got["day"] == "20261030"                             # the Apps Script's digest.day
+    assert got["mail"] == [["jim@example.com", "NG Runner · Fri 10/30"]]    # and nothing else:
+    assert got["push"] == []                                    # no "No list today" for Jim
 
 
 # ----- receipts

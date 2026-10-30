@@ -5,20 +5,27 @@ ngrunner.store's public interface (the table round trips are in test_store_table
 """
 from __future__ import annotations
 
+import hashlib
 import sqlite3
 import threading
 import time
-from datetime import datetime, timezone
+from contextlib import closing
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
 
+from ngrunner.clock import to_iso
+from ngrunner.match import FabRow
 from ngrunner.store import (
-    LATEST, MIGRATIONS, Store, StoreError, add_card, allocate_card_id, ensure_job, get_state,
-    list_cards, list_jobs, migrate, open_store, set_state,
+    LATEST, MIGRATIONS, Store, StoreError, add_card, allocate_card_id, ensure_job, get_card,
+    get_render, get_state, list_cards, list_dev, list_fab_rows, list_jobs, migrate, open_dev,
+    open_store, render_fingerprint, set_state,
 )
 
 T0 = datetime(2026, 10, 30, 13, 30, tzinfo=timezone.utc)
+T1, T2 = T0 + timedelta(minutes=10), T0 + timedelta(minutes=20)
+ISO_T0, ISO_T1, ISO_T2 = (to_iso(t) for t in (T0, T1, T2))
 
 
 @pytest.fixture
@@ -82,6 +89,86 @@ def test_a_migration_that_fails_changes_nothing(db_path: Path) -> None:
 
     assert store.schema_version() == 0
     assert migrate(store, (MAKE_A, ADD_NOTE)) == 2  # table a was never left behind
+
+
+# ----- version 2, on a database version 1 made
+
+
+def version_1_database(path: Path, *rows: tuple[str, tuple[object, ...]]) -> None:
+    """A database as version 1 left it, holding these rows (raw SQL: no store function writes
+    the old shape any more)."""
+    assert migrate(Store(path), MIGRATIONS[:1]) == 1
+    with closing(sqlite3.connect(path)) as raw, raw:
+        for statement, values in rows:
+            raw.execute(statement, values)
+
+
+def test_the_first_migration_has_not_changed_since_it_shipped() -> None:
+    shipped = "f325fd0fa849d8ec5fbfc3de1d0fc1b196d6490ee46aa509240fb8722bb5bb5f"
+
+    assert hashlib.sha256("\n".join(MIGRATIONS[0]).encode("utf-8")).hexdigest() == shipped
+
+
+def test_cards_from_version_1_have_no_job_behind_any_choice(db_path: Path) -> None:
+    version_1_database(db_path, (
+        "INSERT INTO cards (id, kind, text, choices, created_at, state)"
+        " VALUES (?, 'which_job', 'Which job is this row?', ?, ?, 'open')",
+        ("TES-1", '["Testerson_101426","Testerson_102026","None of these"]', ISO_T0),
+    ))
+
+    store = open_store(db_path)
+
+    assert store.schema_version() == LATEST
+    card = get_card(store, "TES-1")
+    assert card.choices == ("Testerson_101426", "Testerson_102026", "None of these")
+    assert card.choice_ids == (None, None, None)  # parallel, and never a guess at a job
+
+
+def test_fab_rows_from_version_1_keep_when_their_text_can_last_have_changed(db_path: Path) -> None:
+    insert = ("INSERT INTO fab_rows (first_seen, text, designer, original_text, state, updated_at)"
+              " VALUES (?, ?, 'AB', ?, ?, ?)")
+    version_1_database(
+        db_path,
+        (insert, (ISO_T0, "Testerson", "Testerson", "asked", ISO_T1)),
+        (insert, (ISO_T0, "Fakeley", "Fakley", "new", ISO_T2)),
+    )
+
+    as_typed, edited = list_fab_rows(open_store(db_path))
+
+    assert (as_typed.first_seen, as_typed.text_changed_at) == (T0, T0)  # its first text still
+    # Edited some time up to its last update, and version 1 kept no time: the latest it can be.
+    assert (edited.first_seen, edited.original_text, edited.text_changed_at) == (T0, "Fakley", T2)
+    assert edited.to_match() == FabRow("Fakeley", "AB", T2)
+
+
+def test_dev_items_from_version_1_name_no_job_and_are_not_urgent(db_path: Path) -> None:
+    version_1_database(db_path, (
+        "INSERT INTO dev (at, code, text, state) VALUES (?, 'no_receipt', 'No receipt.', 'open')",
+        (ISO_T0,),
+    ))
+
+    store = open_store(db_path)
+
+    item = list_dev(store)[0]
+    assert (item.code, item.studio_id, item.urgent) == ("no_receipt", None, False)
+    assert open_dev(store, at=T1, code="no_receipt", text="No receipt.") == item  # still standing
+
+
+def test_renders_from_version_1_have_no_pypdf_version_so_their_fingerprints_are_read_again(
+    db_path: Path,
+) -> None:
+    version_1_database(
+        db_path,
+        ("INSERT INTO jobs (studio_id, name, mode, created_at, updated_at)"
+         " VALUES ('101', 'Testerson_101426', 'auto', ?, ?)", (ISO_T0, ISO_T0)),
+        ("INSERT INTO renders (id, studio_id, fetched_at, fingerprint, check_ok, cache_path)"
+         " VALUES (1, '101', ?, ?, 1, ?)", (ISO_T0, "1" * 64, str(db_path.parent / "r.pdf"))),
+    )
+
+    store = open_store(db_path)
+
+    assert get_render(store, 1).pypdf is None
+    assert render_fingerprint(store, 1, pypdf="6.21.4", read=lambda path: "2" * 64) == "2" * 64
 
 
 # ----- databases the store refuses, each left exactly as it was
@@ -294,6 +381,22 @@ def test_a_backup_opens_as_a_database_with_the_same_rows(data_folder: Path) -> N
     assert list_jobs(copy) == list_jobs(store)
     assert list_cards(copy) == list_cards(store) and get_state(copy, "paused") == "no"
     assert allocate_card_id(copy, "TES") == "TES-2"  # the card numbers came along too
+
+
+def test_a_copy_taken_before_an_upgrade_stays_usable_by_the_older_version(
+    data_folder: Path,
+) -> None:
+    path = data_folder / "ngrunner.db"
+    assert migrate(Store(path), MIGRATIONS[:1]) == 1
+    copy = data_folder / "backup" / "before-the-upgrade.db"
+
+    Store(path).backup_to(copy)
+    assert open_store(path).schema_version() == LATEST
+
+    assert Store(copy).schema_version() == 1
+    assert migrate(Store(copy), MIGRATIONS[:1]) == 1  # an older NG Runner can go on from the copy
+    with pytest.raises(StoreError, match="newer version"):
+        migrate(Store(path), MIGRATIONS[:1])          # and it refuses the upgraded file
 
 
 def test_a_backup_is_one_moment_and_does_not_wait_for_a_writer(data_folder: Path) -> None:

@@ -16,35 +16,64 @@ PROJECT NAME at all. A render passes only when code has confirmed, from the PDF 
 Whatever it cannot confirm becomes a plain sentence in `missing`, with a stable code alongside
 in details["codes"]; it never guesses a pass.
 
-Whole means four things, each checked here because strict pypdf reads on past it (damaged real
+Whole means all of this, each checked here because strict pypdf reads on past it (damaged real
 renders passed each):
 
-  - the file ends at its %%EOF, with only white space after it, and holds no second PDF after
-    the first: pypdf reads back from the last %%EOF, blind to the rest;
-  - every classic index (xref) section the trailers chain together (from the startxref before
-    that %%EOF, then each /Prev), read strictly before pypdf opens the file: subsection headers
-    of two numbers, entries of exactly 20 bytes, and each entry in use pointing exactly at its
-    own object. Even strict, pypdf repairs an index it cannot parse and searches the file for an
-    object it cannot place. Every real render seen so far (61) uses classic tables only: one
-    section, or two in a linearized render. A cross-reference stream is left to pypdf, and the
-    objects it lists are checked the same way;
-  - every stream's /Filter made of the standard filter names (not the short ones of inline
-    images), with /DecodeParms to match: text extraction never decodes a picture, so a damaged
-    name left a drawing that no reader can decode;
-  - every Flate stream, pictures and fonts included, inflating whole under its own checksum
-    (zlib's adler32), any ASCII85 layer before it (Studio wraps most streams in one) decoded
-    strictly first: pypdf's decoder drops the checksum and inflates what it can, so a flipped
-    bit read on as other digits.
+  - The end. The file ends at its %%EOF, with only white space after it, and holds no second PDF
+    after the first: pypdf reads back from the last %%EOF, blind to the rest.
+  - The index. Every classic index (xref) section along the chain, from the startxref before that
+    %%EOF through each /Prev, is read strictly before pypdf opens the file: subsection headers of
+    two numbers, entries of exactly 20 bytes, each entry in use pointing exactly at its own object.
+    Even strict, pypdf repairs an index it cannot parse. The chain may pass through a
+    cross-reference stream, and each object that stream lists must be where it says; a startxref
+    or /Prev that leads to anything else is refused. Every real render seen so far (61) uses
+    classic tables only: one section, or two in a linearized render.
+  - The objects. Every object the index lists is read, and its parse must end at its endobj: one
+    bit in a 'stream' keyword, or a digit turned into '>', makes pypdf read a stream as a shorter
+    plain dictionary. Every reference they hold must lead to an object the index lists, and so must
+    whatever reading the pages looks up: pypdf finds an object marked free, or behind a /Prev that
+    lost its name, by searching the file (the PDF standard reads it as null), past every check.
+  - The filters. Every stream's /Filter is made of the standard filter names (not the short ones
+    of inline images), with /DecodeParms in the shape they need.
+  - The checksums. Every Flate stream inflates whole under its own checksum (zlib's adler32), any
+    ASCII85 layer before it (Studio wraps most streams in one) decoded strictly first: pypdf's
+    decoder drops the checksum and inflates what it can, so a flipped bit read on as other digits.
+  - What the streams decode to, by pypdf's own decoders with any predictor applied. A picture or
+    its mask: exactly the Height x ceil(Width x components x bits / 8) bytes its dictionary
+    describes. A font file: its /Length1 (with /Length2 and /Length3 in a Type 1 file). A /ToUnicode
+    stream: a CMap. Reading the text never decodes a picture or a font file, and no checksum reaches
+    a stream whose /Filter key lost its name.
+  - The drawings. Every Do on a page draws a picture that page holds, so the elevation check counts
+    only what is there. Every real Do does; a form (no real render has one) is refused too, because
+    nothing here reads inside it.
 
-What no checksum covers is seen only when strict reading or another check fails on it, so these
-pass: a changed number, such as a page size or a picture's /Width; a renamed key (the /Filter key
-itself, the name a page draws a picture by, or a /Prev, which hides an older index section); an
-index entry in use marked free. pypdf finds the objects of the last two by searching the file;
-the PDF standard reads them as null. A change in a JPEG's data (DCT has no checksum; real renders
-hold none), in a stream with no filter (a linearized render's XML metadata) or behind a filter
-other than ASCII85 before Flate passes too, and so does one in the slack of ASCII85's last group,
-which decodes to the same bytes. Some of these spoil a drawing while the elevation check still
-counts it. A change that leaves a valid PDF of another design cannot be seen in one file at all.
+What passes, because no checksum covers it and neither strict pypdf nor any check here trips on it:
+
+  - A changed number, name or string, or a renamed key, that nothing reads. For example a page's
+    size or rotation, a font's widths or name, a mask's /Decode, a picture's /Type, the strings of
+    the Info dictionary (CreationDate among them) and the trailer's /ID. The key that hangs a font
+    file, a /ToUnicode map or a /SMask on its owner, which then goes unused. A /DecodeParms value
+    that leaves a picture's size as it was. A stream's /Length one too high, which pypdf reads past
+    to the same bytes. A reference changed to another object of a fitting kind (another picture's).
+  - An index entry in use marked free when nothing refers to its object, and any change to such an
+    object short of its checksum: a linearized render's first dictionary and hint stream, whose
+    /Filter key can be renamed. A hybrid file's /XRefStm, left to pypdf: changed so that pypdf
+    still finds the stream, it passes; if pypdf no longer does, the objects that stream alone
+    lists cannot be read.
+  - Stream data no checksum reaches: a picture in its own image format (JPEG and the like; real
+    renders hold none, and it counts as stored), a compact font file (/FontFile3, which has no
+    length to compare either), a stream with no filter (a linearized render's XML metadata), a
+    stream behind a filter other than ASCII85 before Flate (which can change the text), anything
+    after a Flate stream's end (no real stream has anything there), what a cross-reference stream
+    stored unfiltered says of objects beyond where they start, and the slack in ASCII85's last
+    group, which decodes to the same bytes.
+  - What pypdf does not read: a comment, the PDF version in the first line, the bytes between
+    objects, the second '>' closing a dictionary, white space turned into other white space.
+  - A change that leaves a valid PDF. A well-formed incremental update appended after the %%EOF,
+    with or without junk before it, passes with what it changes (Studio never appends one, and two
+    fetches would both need it). A valid PDF of another design cannot be seen in one file at all.
+
+Of these, two fetches see whatever changes the text or a picture, unless both carry the change.
 
 A pass is not enough to file. A render Studio has not finished can be complete in itself: its
 footers count its own pages, and nothing ties the number of elevation pages to the walls (five
@@ -64,14 +93,15 @@ The two PULLED layouts (BUILD.md Step 1) are told apart by the header row, never
 
 Every render seen so far pairs A with landscape pages and B with portrait pages.
 
-content_fingerprint() hashes the text only: every page's lines in reading order, page breaks
-included. Two renders that differ only in bytes or metadata (CreationDate) get the same value;
-a change to any word, number or name, or one page more or fewer, gets a new one. A design change
-that shows only in a drawing (a shelf moved, no part changed) does not change it. Damage to a
-drawing's compressed data fails the check, at its checksum; damage the check cannot see (above)
-that leaves the text as it was leaves the value as it was too, so two fetches agree over it. The
-value is only as stable as pypdf's text extraction, so details["pypdf"] names the version that
-read it.
+content_fingerprint() hashes what the summary shows: on each page, its lines in reading order and
+then the sha256 of each picture it draws (decoded, with any mask), in the order it draws them. Two
+renders that differ only in bytes or metadata (CreationDate) get the same value; a change to any
+word, number or name, to a drawing, or one page more or fewer, gets a new one. Where a picture sits
+on its page does not count, nor does a line, a box or an inline image (no real render has one) that
+the page draws itself. A render that fails the check as damaged has no value; damage the check
+cannot see (above) that leaves the text and the pictures as they were leaves the value as it was
+too, so two fetches agree over it. The value is only as stable as pypdf's text extraction and
+decoders, so details["pypdf"] names the version that read it.
 """
 from __future__ import annotations
 
@@ -84,15 +114,16 @@ import re
 import unicodedata
 import zlib
 from collections import Counter
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
 from pypdf import PdfReader
 from pypdf import __version__ as _PYPDF_VERSION
-from pypdf.generic import (ArrayObject, DictionaryObject, IndirectObject, NameObject, NullObject,
-                           NumberObject, StreamObject, read_object)
+from pypdf.filters import decode_stream_data
+from pypdf.generic import (ArrayObject, BooleanObject, DictionaryObject, IndirectObject, NameObject,
+                           NullObject, NumberObject, StreamObject, read_object)
 
 PulledLayout = Literal["A", "B"]
 Source = str | os.PathLike[str] | bytes
@@ -210,12 +241,19 @@ class _Line:
 
 
 @dataclass(frozen=True)
+class _Picture:
+    width: float  # as drawn, in points
+    height: float
+    digest: str  # what is drawn (_picture_digest)
+
+
+@dataclass(frozen=True)
 class _Page:
     number: int
     width: float
     height: float
     lines: tuple[_Line, ...]
-    pictures: tuple[tuple[float, float], ...]  # drawn width, height (points) of each Do
+    pictures: tuple[_Picture, ...]  # one per Do, in the order the page draws them
 
 
 class _Unusable(Exception):
@@ -226,16 +264,34 @@ class _Unusable(Exception):
         self.code, self.message, self.facts = code, message, facts
 
 
+def _damaged(why: str) -> _Unusable:
+    """The file is not as it was written: `why` goes to the log, plain words to Jim."""
+    return _Unusable("unreadable", "The PDF is damaged.", error=why)
+
+
 def _load(source: Source) -> bytes:
     if isinstance(source, (bytes, bytearray, memoryview)):
         return bytes(source)
     return Path(source).read_bytes()
 
 
-def _read_page(number: int, page: Any) -> _Page:
-    """One pass of pypdf's text extraction, keeping where each text run and picture is drawn."""
+def _xobjects(page: Any) -> dict[Any, Any]:
+    """What a page's Do operators can name: its /Resources /XObject, references kept."""
+    resources = _entry(page, "/Resources")
+    xobjects = _entry(resources, "/XObject") if isinstance(resources, DictionaryObject) else None
+    return xobjects if isinstance(xobjects, DictionaryObject) else {}
+
+
+def _read_page(number: int, page: Any, digests: dict[tuple[int, int], str]) -> _Page:
+    """
+    One pass of pypdf's text extraction, keeping where each text run and picture is drawn.
+
+    `digests` gives each picture by (generation, number). A page that draws anything else is
+    refused: every real page draws only pictures it holds, and nothing here reads inside a form.
+    """
     runs: list[list[Any]] = []  # [x, y, size, text]; runs at one spot are one line (font change)
-    pictures: list[tuple[float, float]] = []
+    pictures: list[_Picture] = []
+    xobjects = _xobjects(page)
 
     def on_text(text: str, cm: list[float], tm: list[float], _font: Any, font_size: float) -> None:
         if not text.strip():
@@ -248,9 +304,13 @@ def _read_page(number: int, page: Any) -> _Page:
             size = font_size * math.hypot(tm[0], tm[1]) * math.hypot(cm[0], cm[1])
             runs.append([x, y, size, text])
 
-    def on_operator(operator: bytes, _operands: Any, cm: list[float], _tm: Any) -> None:
+    def on_operator(operator: bytes, operands: Any, cm: list[float], _tm: Any) -> None:
         if operator == b"Do":
-            pictures.append((math.hypot(cm[0], cm[1]), math.hypot(cm[2], cm[3])))
+            drawn = xobjects.get(operands[0])
+            digest = isinstance(drawn, IndirectObject) and digests.get((drawn.generation, drawn.idnum))
+            if not digest:
+                raise _damaged(f"page {number} draws something that is not a picture it holds")
+            pictures.append(_Picture(math.hypot(cm[0], cm[1]), math.hypot(cm[2], cm[3]), digest))
 
     page.extract_text(visitor_text=on_text, visitor_operand_before=on_operator)
     lines = tuple(_Line(round(x, 1), round(y, 1), round(size, 1), text)
@@ -264,7 +324,8 @@ def _read_page(number: int, page: Any) -> _Page:
 _WHITESPACE = b"\0\t\n\f\r "  # PDF's white-space characters
 _EOL = rb"(?:\r\n|\r|\n)"  # a line end
 _PDF_HEADER = re.compile(rb"%PDF-\d\.\d")
-_OBJECT_HEADER = re.compile(rb"(\d+)[\0\t\n\f\r ]+(\d+)[\0\t\n\f\r ]+obj")
+_OBJECT_HEADER = re.compile(rb"(\d+)[\0\t\n\f\r ]+(\d+)[\0\t\n\f\r ]+obj[\0\t\n\f\r ]*")
+_ENDOBJ = re.compile(rb"[\0\t\n\f\r ]*endobj")
 _INFLATE_STEP = 1 << 20  # bytes of output per zlib call, then dropped: only the checksum is wanted
 # A classic index (xref) section, as the PDF standard writes it (ISO 32000, 7.5.4): the keyword,
 # subsections of "first-object count", each with `count` entries of exactly 20 bytes, then the
@@ -286,24 +347,40 @@ def _end_damage(data: bytes) -> str | None:
 
 
 class _Strict:
-    """All that pypdf's object parser asks of a reader when it reads a trailer: to be strict."""
+    """All that pypdf's parser asks of a reader for a trailer or cross-reference stream: to be strict."""
     strict = True
 
 
-def _prev(data: bytes, at: int) -> int | None:
-    """The /Prev of the trailer dictionary at `at`: where the next older index section starts."""
+def _parsed(data: bytes, at: int) -> Any:
+    """What pypdf's strict parser makes of the bytes at `at`, with no reader behind it; None if it cannot."""
     stream = io.BytesIO(data)
     stream.seek(at)
     try:
-        trailer = read_object(stream, _Strict())
+        return read_object(stream, _Strict())
     except Exception:  # noqa: BLE001 - pypdf's parser raises many types on a damaged dictionary
-        trailer = None
-    if not isinstance(trailer, DictionaryObject) or isinstance(trailer, StreamObject):
-        raise ValueError(f"the trailer at byte {at} cannot be read")
-    prev = trailer.raw_get("/Prev") if "/Prev" in trailer else None
+        return None
+
+
+def _prev(dictionary: DictionaryObject, at: int) -> int | None:
+    """The /Prev of a trailer or cross-reference stream: where the next older index section starts."""
+    prev = dictionary.get("/Prev")
     if prev is not None and type(prev) is not NumberObject:
-        raise ValueError(f"the trailer at byte {at} has a /Prev that is not an offset")
+        raise ValueError(f"the index dictionary at byte {at} has a /Prev that is not an offset")
     return None if prev is None else int(prev)
+
+
+def _stream_section(data: bytes, at: int, body: int) -> int | None:
+    """
+    The /Prev of the cross-reference stream at `at`, its dictionary starting at `body`.
+
+    Anything else with an object header is refused: pypdf drops the sections behind it, with only
+    a warning, and searches the file for their objects. What the stream lists, pypdf reads, and
+    _index_damage checks.
+    """
+    stream = _parsed(data, body)
+    if not isinstance(stream, StreamObject) or stream.get("/Type") != "/XRef":
+        raise ValueError(f"the object at byte {at} is not a cross-reference stream")
+    return _prev(stream, at)
 
 
 def _section(data: bytes, at: int) -> tuple[list[tuple[int, int, int]], int | None]:
@@ -327,7 +404,9 @@ def _section(data: bytes, at: int) -> tuple[list[tuple[int, int, int]], int | No
                 in_use.append((number, int(entry[2]), int(entry[1])))
             pos = entry.end()
         if (trailer := _TRAILER.match(data, pos)) is not None:
-            return in_use, _prev(data, trailer.end())
+            if not _is_dictionary(dictionary := _parsed(data, trailer.end())):
+                raise ValueError(f"the trailer at byte {trailer.end()} cannot be read")
+            return in_use, _prev(dictionary, trailer.end())
 
 
 def _misplaced(data: bytes, entries: Iterable[tuple[int, int, int]]) -> str | None:
@@ -344,11 +423,10 @@ def _table_damage(data: bytes) -> str | None:
     Every classic index (xref) section well formed, and each object where its entry says.
 
     Read from the bytes before pypdf sees them, along the chain pypdf follows: the last startxref,
-    then each trailer's /Prev. Even strict, pypdf repairs an index it cannot parse (it guesses a
-    garbled entry from a search of the file, reads a 19-byte entry as if it had 20, and rebuilds an
-    index whose count is wrong from the whole file) and searches the file for an object whose entry
-    it cannot use. A cross-reference stream ends the chain here: pypdf reads it, and _index_damage
-    checks what it lists.
+    then each /Prev, through cross-reference streams too. Even strict, pypdf repairs an index it
+    cannot parse (it guesses a garbled entry from a search of the file, reads a 19-byte entry as if
+    it had 20, and rebuilds an index whose count is wrong from the whole file) and searches the file
+    for an object whose entry it cannot use.
     """
     startxref = data.rfind(b"startxref")
     if (tail := _TAIL.match(data, startxref) if startxref >= 0 else None) is None:
@@ -357,12 +435,15 @@ def _table_damage(data: bytes) -> str | None:
     seen: set[int] = set()
     try:
         at: int | None = int(tail[1])
-        while at is not None and not _OBJECT_HEADER.match(data, at):
+        while at is not None:
             if at in seen:
                 return f"the index at byte {at} is chained to itself"
             seen.add(at)
-            in_use, at = _section(data, at)
-            entries += in_use
+            if (header := _OBJECT_HEADER.match(data, at)) is not None:
+                at = _stream_section(data, at, header.end())
+            else:
+                in_use, at = _section(data, at)
+                entries += in_use
     except ValueError as error:  # a malformed line, or a number too long for Python to read
         return str(error)
     return _misplaced(data, entries)
@@ -372,6 +453,17 @@ def _index_damage(data: bytes, reader: PdfReader) -> str | None:
     """Each object pypdf's index lists, cross-reference streams' too, must start where it says."""
     return _misplaced(data, ((number, generation, offset) for generation, objects in reader.xref.items()
                              for number, offset in objects.items()))
+
+
+def _indexed(reader: PdfReader) -> int:
+    """
+    How many objects pypdf's index lists.
+
+    It grows when pypdf finds by searching the file an object that a reference names and no section
+    lists: one marked free (one bit), or behind a /Prev that lost its name. The PDF standard reads
+    such an object as null.
+    """
+    return sum(len(objects) for objects in reader.xref.values())
 
 
 def _inflate_damage(data: bytes) -> str | None:
@@ -390,11 +482,17 @@ def _inflate_damage(data: bytes) -> str | None:
     return None
 
 
-def _filters(stream: StreamObject) -> list[str]:
+def _entry(dictionary: DictionaryObject, key: str) -> Any:
+    """A dictionary value, followed if indirect; None when absent or null (the same, to PDF)."""
+    value = dictionary.get(key)
+    value = None if value is None else value.get_object()
+    return None if isinstance(value, NullObject) else value
+
+
+def _filters(stream: StreamObject) -> list[Any]:
     """The stream's filters, in the order a reader applies them."""
-    names = stream.get("/Filter")
-    names = [] if names is None else names.get_object()
-    return [str(name.get_object()) for name in (names if isinstance(names, list) else [names])]
+    filters = _entry(stream, "/Filter")
+    return [] if filters is None else list(filters) if isinstance(filters, ArrayObject) else [filters]
 
 
 # The stream filters of the PDF standard (ISO 32000, 7.4). Their short names (AHx, A85, LZW, Fl,
@@ -404,13 +502,6 @@ _STANDARD_FILTERS = frozenset({"/ASCIIHexDecode", "/ASCII85Decode", "/LZWDecode"
                                "/JPXDecode", "/Crypt"})
 
 
-def _entry(stream: StreamObject, key: str) -> Any:
-    """A dictionary value, followed if indirect; None when absent or null (the same, to PDF)."""
-    value = stream.get(key)
-    value = None if value is None else value.get_object()
-    return None if isinstance(value, NullObject) else value
-
-
 def _filter_damage(stream: StreamObject) -> str | None:
     """
     Why a stream's /Filter or /DecodeParms is not one a reader can apply, or None.
@@ -418,8 +509,7 @@ def _filter_damage(stream: StreamObject) -> str | None:
     A picture is never decoded to read the text, so a damaged filter name would leave a drawing
     no reader can show while its page still draws it.
     """
-    filters = _entry(stream, "/Filter")
-    names = filters if isinstance(filters, ArrayObject) else [] if filters is None else [filters]
+    names = _filters(stream)
     if not all(isinstance(name, NameObject) and name in _STANDARD_FILTERS for name in names):
         return "/Filter is not a standard filter name, or a list of them"
     parms = _entry(stream, "/DecodeParms")
@@ -461,17 +551,147 @@ def _stream_damage(stream: StreamObject) -> str | None:
     return _inflate_damage(data)
 
 
-def _damage(data: bytes, reader: PdfReader) -> str | None:
-    """What shows the file is not as written, once pypdf has its index. Reads every object listed."""
+# How many numbers one pixel takes in each colour space of the PDF standard (ISO 32000, 8.6),
+# bar the two that say so themselves: /ICCBased (its /N) and /DeviceN (its list of colorants).
+_COMPONENTS = {"/DeviceGray": 1, "/CalGray": 1, "/Indexed": 1, "/Separation": 1,
+               "/DeviceRGB": 3, "/CalRGB": 3, "/Lab": 3, "/DeviceCMYK": 4}
+# Filters that leave a picture in its own image format: pypdf does not decode them to samples.
+_IMAGE_FORMATS = frozenset({"/DCTDecode", "/JPXDecode", "/CCITTFaxDecode", "/JBIG2Decode"})
+_CMAP = re.compile(rb"\bbegincmap\b.*\bendcmap\b", re.DOTALL)  # what a /ToUnicode stream decodes to
+
+
+def _decoded(stream: StreamObject) -> bytes:
+    """What pypdf's decoders make of a stream, predictors applied, kept nowhere (get_data() keeps it)."""
+    return decode_stream_data(stream) if _filters(stream) else stream._data
+
+
+def _components(space: Any) -> int | None:
+    """How many numbers one pixel takes in a colour space; None if it is not one."""
+    family = space[0] if isinstance(space, ArrayObject) else space
+    if family == "/ICCBased":
+        return int(_entry(space[1].get_object(), "/N"))
+    if family == "/DeviceN":
+        return len(space[1].get_object())
+    return _COMPONENTS.get(family) if isinstance(family, NameObject) else None
+
+
+def _samples_size(picture: StreamObject) -> int | None:
+    """The bytes a picture's dictionary describes: Height x ceil(Width x components x bits / 8), or None."""
+    try:
+        components, bits = 1, 1
+        if _entry(picture, "/ImageMask") != BooleanObject(True):
+            components = _components(_entry(picture, "/ColorSpace"))
+            bits = int(_entry(picture, "/BitsPerComponent"))
+        row_bits = int(_entry(picture, "/Width")) * components * bits
+        return int(_entry(picture, "/Height")) * ((row_bits + 7) // 8)
+    except (AttributeError, IndexError, TypeError, ValueError):  # a key is missing, or holds no such thing
+        return None
+
+
+def _samples(number: int, picture: StreamObject) -> bytes:
+    """
+    A picture's decoded bytes, once they have proved to be what its dictionary describes.
+
+    Nothing else looks: reading the text never decodes a picture, and no checksum covers its
+    dictionary or reaches a stream whose /Filter key lost its name, so damage to either would pass
+    while no reader can draw it. A picture in its own image format has no size to compare here, and
+    counts as stored. pypdf will not decode one past 75 MB (the largest real one is 12 MB), so that
+    one is refused too.
+    """
+    if any(name in _IMAGE_FORMATS for name in _filters(picture)):
+        return picture._data
+    try:
+        decoded = _decoded(picture)
+    except Exception as error:  # noqa: BLE001 - pypdf's decoders raise many types on damaged data
+        raise _damaged(f"stream {number} cannot be decoded ({type(error).__name__})") from None
+    if len(decoded) != _samples_size(picture):
+        raise _damaged(f"stream {number} does not decode to the size its dictionary gives")
+    return decoded
+
+
+def _picture_digest(number: int, picture: StreamObject) -> str:
+    """The sha256 of what a picture draws: its samples, then any mask's. Raises _Unusable if damaged."""
+    digest = hashlib.sha256(_samples(number, picture))
+    for key in ("/SMask", "/Mask"):  # a /Mask may instead be a list of colours, which does not count
+        if isinstance(mask := _entry(picture, key), StreamObject):
+            digest.update(_samples(number, mask))
+    return digest.hexdigest()
+
+
+def _font_file_damage(font_file: StreamObject) -> str | None:
+    """Why a stream giving /Length1 does not decode to its stated size (a Type 1 file has three parts)."""
+    try:
+        size = sum(int(_entry(font_file, key) or 0) for key in ("/Length1", "/Length2", "/Length3"))
+    except (TypeError, ValueError):
+        size = None
+    return None if len(_decoded(font_file)) == size else "it does not decode to the length it gives"
+
+
+def _font_damage(dictionary: DictionaryObject) -> str | None:
+    """
+    Why a font descriptor's font file, or a font's /ToUnicode map, is not one a reader can use.
+
+    A font file has no other check once its /Filter key is renamed, and a map that is not a CMap
+    changes the text pypdf reads. A /ToUnicode may name a predefined map instead of holding one.
+    """
+    for key in ("/FontFile", "/FontFile2"):
+        if key in dictionary and not (isinstance(font_file := _entry(dictionary, key), StreamObject)
+                                      and "/Length1" in font_file):
+            return f"{key} leads to no font file"
+    to_unicode = _entry(dictionary, "/ToUnicode")
+    if to_unicode is None or isinstance(to_unicode, NameObject):
+        return None
+    if isinstance(to_unicode, StreamObject) and _CMAP.search(_decoded(to_unicode)):
+        return None
+    return "/ToUnicode does not decode to a CMap"
+
+
+def _nested(value: Any) -> Iterator[Any]:
+    """All that one object holds: its dictionaries, arrays and references, none of them followed."""
+    pending = [value]
+    while pending:
+        item = pending.pop()
+        yield item
+        if isinstance(item, dict):
+            pending.extend(item.values())
+        elif isinstance(item, list):
+            pending.extend(item)
+
+
+def _read_objects(data: bytes, reader: PdfReader) -> dict[tuple[int, int], str]:
+    """
+    Read every object pypdf's index lists, and refuse what strict reading passes over.
+
+    Reading the text would reach only what the pages use. Returns each picture's digest by
+    (generation, number). Raises _Unusable at the first damage.
+    """
     if (why := _index_damage(data, reader)) is not None:
-        return why
+        raise _damaged(why)
     listed = [(generation, number) for generation, objects in reader.xref.items() for number in objects]
-    for generation, number in listed:  # strictly: damage shows even where reading the text never goes
+    for generation, number in listed:
+        reader.resolved_objects.pop((generation, number), None)  # a stream's /Length may be read already
         reader.get_object(IndirectObject(number, generation, reader))
-    for (_generation, number), obj in list(reader.resolved_objects.items()):
+        if _ENDOBJ.match(data, reader.stream.tell()) is None:  # where pypdf stopped reading it
+            raise _damaged(f"object {number} does not end at its endobj")
+    for number in list(reader.xref_objStm):  # what an object stream holds has no endobj of its own
+        reader.get_object(number)
+    objects = list(reader.resolved_objects.items())
+    for (_generation, number), obj in objects:  # every checksum first: what follows decodes these streams
         if isinstance(obj, StreamObject) and (why := _stream_damage(obj)) is not None:
-            return f"stream {number}: {why}"
-    return None
+            raise _damaged(f"stream {number}: {why}")
+    digests: dict[tuple[int, int], str] = {}
+    for key, obj in objects:
+        if isinstance(obj, StreamObject):
+            if obj.get("/Subtype") == "/Image":
+                digests[key] = _picture_digest(key[1], obj)
+            if "/Length1" in obj and (why := _font_file_damage(obj)) is not None:
+                raise _damaged(f"stream {key[1]}: {why}")
+        for item in _nested(obj):
+            if isinstance(item, IndirectObject):
+                item.get_object()  # pypdf finds one no section lists by searching (see _indexed), or raises
+            elif isinstance(item, DictionaryObject) and (why := _font_damage(item)) is not None:
+                raise _damaged(f"object {key[1]}: {why}")
+    return digests
 
 
 def _read(data: bytes) -> tuple[list[_Page], str | None]:
@@ -483,14 +703,16 @@ def _read(data: bytes) -> tuple[list[_Page], str | None]:
     try:
         # the end and the index first, from the bytes: pypdf would repair them as it opens the file
         if (damage := _end_damage(data) or _table_damage(data)) is not None:
-            raise _Unusable("unreadable", "The PDF is damaged.", error=damage)
+            raise _damaged(damage)
         # strict: a damaged object is an error. Lax pypdf drops the rest of it and reads on, so the
         # text it returns is no longer the file's (fuzzing a real render passed with changed text).
         reader = PdfReader(io.BytesIO(data), strict=True)
-        if (damage := _damage(data, reader)) is not None:
-            raise _Unusable("unreadable", "The PDF is damaged.", error=damage)
-        pages = [_read_page(n, page) for n, page in enumerate(reader.pages, 1)]
+        indexed = _indexed(reader)
+        digests = _read_objects(data, reader)
+        pages = [_read_page(n, page, digests) for n, page in enumerate(reader.pages, 1)]
         created = (reader.metadata or {}).get("/CreationDate")
+        if _indexed(reader) != indexed:  # what it found that way, no check here has seen
+            raise _damaged("pypdf searched the file for an object no index section lists")
     except _Unusable:
         raise
     except Exception as error:  # noqa: BLE001 - pypdf raises many types on a damaged file: all unreadable
@@ -585,7 +807,7 @@ class _Design:
 
 
 def _has_drawing(page: _Page) -> bool:
-    return any(max(width, height) >= _DRAWING_MIN for width, height in page.pictures)
+    return any(max(picture.width, picture.height) >= _DRAWING_MIN for picture in page.pictures)
 
 
 def _heading(page: _Page) -> tuple[str, float, float] | None:
@@ -723,20 +945,23 @@ def _fingerprint(pages: list[_Page]) -> str:
         digest.update(b"\f\n")  # page break
         for line in sorted(page.lines, key=lambda ln: (-ln.y, ln.x)):  # reading order
             digest.update(line.text.encode("utf-8") + b"\n")
+        for picture in page.pictures:  # in the order the page draws them; no text line starts with \f
+            digest.update(b"\f" + picture.digest.encode("ascii") + b"\n")
     return digest.hexdigest()
 
 
 def content_fingerprint(source: Source) -> str:
     """
-    A sha256 (hex) of the summary's text: every page's lines in reading order, spacing normalised.
+    A sha256 (hex) of what the summary shows: every page's text and the pictures it draws.
 
     It is what the Fetch gate's two-fetch agreement compares (design 3.5). check_summary cannot
     tell a partial render that is complete in itself from a finished one, so the caller files a
     summary only when two fetches at least 10 minutes apart both pass check_summary and have equal
-    fingerprints. Equal means the same lines of text, in the same order, on the same pages. Bytes
-    and metadata such as CreationDate do not count, so a re-download of unchanged content agrees;
-    any change to the words, or one page more or fewer, does not. Pictures do not count (see the
-    module notes), so a render whose drawings alone differ still agrees.
+    fingerprints. Equal means the same lines of text, in the same order, spacing normalised, and
+    the same pictures, decoded, drawn in the same order, on the same pages. Bytes and metadata such
+    as CreationDate do not count, so a re-download of unchanged content agrees; any change to the
+    words or to a drawing, or one page more or fewer, does not. Where on its page a picture is
+    drawn does not count either.
 
     The value depends on pypdf's text extraction. Store the pypdf version with a fingerprint
     (check_summary records it as details["pypdf"]), and after a pypdf upgrade recompute stored

@@ -4,7 +4,7 @@ One Apps Script project, under ICLA's automation account, that is NG Runner's br
 
 - exports Sheet1 of the NG Fab Schedule to `fab/export.json` every 5 minutes, and logs Barbara's edits to Job Name, Designer and Install Date in `fab/edits.json`. It only reads the workbook; it never changes it (risk C3);
 - sends NG Runner's outbox (email, Slack or Pushover) every minute, writing a receipt for each message and never sending one twice;
-- watches NG Runner's heartbeat every 5 minutes: Sulaiman hears of a heartbeat over 45 minutes old, and Jim hears "no list today" when no digest went out by 7:00 AM Pacific;
+- watches NG Runner's heartbeat every 5 minutes: Sulaiman hears of a heartbeat over 45 minutes old, and Jim hears "no list today" when no digest went out by 7:00 AM Pacific (during the shadow run, Sulaiman hears that instead: `SHADOW` below);
 - prunes old files from the control folder every day.
 
 It talks to NG Runner only through signed files in the control folder (`ngrunner/signing.py`; `Signing.gs` is the same format). Addresses, tokens and the signing key live only in Script Properties, never in this code.
@@ -41,23 +41,25 @@ Roles are NG Runner's (`jim`, `barbara`, `will`, `george`, `sulaiman`, `backup_c
 | `ROLE_<ROLE>_EMAIL` | That role's email address |
 | `ROLE_<ROLE>_PUSHOVER` | That role's Pushover user key |
 | `ROLE_<ROLE>_SLACK` | The Slack user or channel ID the bot posts to for that role |
-| `ROLE_<ROLE>_CHANNEL` | The channel for messages this script writes itself (the watchdog's): `email`, `slack` or `pushover`. Jim's defaults to `pushover`, the others to `email` |
+| `ROLE_<ROLE>_CHANNEL` | The channel for messages this script writes itself (the watchdog's): `email`, `slack` or `pushover`. Every role, Jim's included, defaults to `email`, since P1a has no push channel (`docs/decisions.md`) |
 | `PUSHOVER_TOKEN` | The Pushover application token |
 | `SLACK_TOKEN` | The Slack bot token (it needs `chat:write`) |
 | `EXPECTED_ON_FROM`, `EXPECTED_ON_UNTIL` | The Pacific hours the PC is expected on, `HH:MM` (default `06:00` and `23:00`, as in NG Runner's settings). Equal times mean all day; a range may run past midnight. Keep them equal to NG Runner's own settings |
 | `PC_SLEEPS_AT_NIGHT` | `true` for the declared "PC sleeps at night" mode: no 7:00 AM message |
 | `ALERT_ROLE`, `ALERT_NAME` | Who the watchdog alerts, and the name Jim's message gives. Default `sulaiman` and `Sulaiman`; while he is away, set the backup contact |
+| `SHADOW` | `true` during the shadow run (`docs/testing/jims-pc.md`, window 3), when NG Runner sends everything to Sulaiman. While it is set, a digest to `ALERT_ROLE` is the morning list; no digest by 7:00 AM sends `ALERT_ROLE` "SHADOW No list today", and never tells Jim; and `checkSetup` does not ask for Jim's channel. NG Runner's copies go to the role `sulaiman`, so keep `ALERT_ROLE` at that for the run. Clear it as NG Runner goes live (window 4): a digest to Jim doesn't count while it is set, so a `SHADOW` left on shows itself the next morning |
 
 The script keeps its own state in Script Properties too: `state.*` (sequence numbers, the last heartbeat, the digest day, owed receipts), `done.<id>` and `refused.<id>` (one per outbox message, dropped after 31 days). Leave them alone, except as the runbook says.
 
 ## What NG Runner must match
 
-- **Outbox:** `outbox/<id>.json`, where `<id>` is the envelope's id. Kind `outbox`; payload exactly `channel`, `to` (a role), `subject`, `lines`, `urgent`, `ref`. The lines are sent as they are, one per line. The digest's `ref` starts with `digest` (`digest` or `digest:<date>`), to `jim`: that is how the watchdog knows the morning list went out.
+- **Outbox:** `outbox/<id>.json`, where `<id>` is the envelope's id. Kind `outbox`; payload exactly `channel`, `to` (a role), `subject`, `lines`, `urgent`, `ref`. The lines are sent as they are, one per line. The digest's `ref` starts with `digest` (`digest` or `digest:<date>`), to `jim`, or to `ALERT_ROLE` while `SHADOW` is set: that is how the watchdog knows the morning list went out.
 - **Receipts:** `receipts/<outbox id>.json`, kind `receipt`, written once per accepted message, sent or not. A message refused before sending (bad signature, wrong kind, a sequence number not above the last accepted) gets no receipt, so it shows on Jim's PC as a missing receipt. A receipt Drive refuses is written on a later run (up to 30 are kept for that); `sent_at` is still the time of sending.
 - **Order:** outbox files are sent in sequence order. One that arrives ahead of an earlier one waits up to 2 minutes for it; after that the earlier one is refused if it comes.
 - **Heartbeats:** `heartbeat/<YYYYMMDD>/<seq>.json`, the seq in the name equal to the body's. The three newest day folders are read. `open_risks` (a list of lines) is shown to Jim as it is.
 - **Sequence numbers:** each stream this script writes (`fab_export`, `fab_edits`, `receipt`) starts at the current Unix second and rises by 1, so a re-created project never goes below an old stream.
-- **Fab files:** `fab/export.json` and `fab/edits.json` are replaced in place; the export is rewritten every 5 minutes even when nothing changed.
+- **Fab files:** `fab/export.json` and `fab/edits.json` are replaced in place; the export is rewritten every 5 minutes even when nothing changed. A header row it does not recognise, or a sheet that returns no rows with a job name, writes nothing and logs why: the last export stays, its `exported_at` ages, and NG Runner's 30-minute alarm says so. An export therefore always holds at least one row with a job name.
+- **Pruned names:** after 30 days `support/support-<YYYYMMDD>-<HHMMSS>.zip` goes, and in `shadow/<folder>/` so do `<folder>_summary.pdf`, `<folder>_NGRunner.json`, `<folder>_NGRunner_log.txt` and a temp file a crash left of any of them. A job folder goes with its last file; a file named any other way is left alone, and keeps its folder.
 
 ## Tests
 
@@ -76,6 +78,8 @@ The script keeps its own state in Script Properties too: `state.*` (sequence num
 - The scopes: `SpreadsheetApp` is taken to need the full spreadsheets scope (its reference lists no read-only scope).
 - For a date cell, Google may give an edit's old value as a serial number, not as shown. The log keeps what Google gives; it is a hint only.
 - That Drive for desktop uploads files in any order (hence the 2-minute wait), and how long a file takes to reach Drive.
+- Whether Drive keeps a file's creation date when Drive for desktop replaces it. Pruning goes by that date, so a `_NGRunner.json` rewritten in `shadow/` may count from its rewrite, which only keeps that job's folder a little longer.
+- Whether the automation account may trash what NG Runner wrote. Google's reference for `File.setTrashed` says "Only the owner may trash the File", and NG Runner's files reach Drive under Jim's account (Drive for desktop), so `heartbeat/`, `outbox/`, `logs/`, `backups/`, `support/` and `shadow/` may all be refused. One refusal ends that day's pruning at that file. Try it in the first test window, before counting on the 30 days for `shadow/`. A control folder on a shared drive, where a content manager may trash any file, would avoid it.
 
 ## Changing the signing key
 

@@ -333,13 +333,15 @@ def message_samples() -> list[object]:
     echoes = [t.echo(parse_command(typed, cards)) for typed in (
         f"{cards[2].id} 2", "pause", "resume", f"add job {job}", "add job 84213")]
     return [
-        t.digest(day, for_you=(t.install_soon(job, install), t.stuck(other), *t.ALARMS.values()),
+        t.digest(day, for_you=(t.install_soon(job, install), t.stuck(other),
+                               t.missed_digest(due=at, sent=at), *t.ALARMS.values()),
                  jobs=((other, "filed 10/29 3:05 PM"),), cards=[(card, 3) for card in cards],
                  open_items=len(cards), oldest_days=3),
         t.quiet_digest(day),
         t.quiet_digest(day, open_items=2, oldest_days=3),
         t.filed(job, row="Testerson", designer="PE", install=install),
         t.filed(job, row="Testerson garage", garage=True),
+        t.shadow(t.filed(job, row="Testerson 10/14/26")),
         t.which_job_email(row, designer="PE", install=install, candidates=candidates),
         t.which_job_email(row),
         *(t.card_message(card) for card in cards),

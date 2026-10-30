@@ -35,7 +35,8 @@ class DigestView:
 
     now: when it is composed (its Pacific day heads it).
     owner: owner items, each one plain sentence: jobs installing within 5 days with no summary
-        filed (templates.install_soon), alarms (templates.ALARMS), stuck jobs.
+        filed (templates.install_soon), alarms (templates.ALARMS), stuck jobs, and a digest sent
+        late (templates.missed_digest).
     jobs: one line per job touched since the last digest.
     cards: every open card; compose() brings back those due at 1, 3 or 7 days.
     open_items: how many items are on Your list; oldest_item: when the oldest was raised.

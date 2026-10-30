@@ -7,9 +7,11 @@ lane: ACT (something for Jim), LOG (recorded, not raised) or DEV (for Sulaiman o
 board's History page and the digest's "jobs touched" lines read them; they are only ever added.
 
 DEV items are the DEV lane's open problems, Sulaiman's to fix, which Jim never sees until one
-is over 48 hours old (then he is told once, with the manual fallback). An alarm is raised on
-every tick while its condition holds, so an open item with the same code and text is returned
-instead of opening a second: one standing problem, one item.
+is over 48 hours old (then he is told once, with the manual fallback). An item can name its
+job, for that fallback's "work <Job> in chat", and can be urgent, which turns the tray red
+(integration spec section 5). An alarm is raised on every tick while its condition holds, so an
+open item with the same code, text and job is returned instead of opening a second: one standing
+problem, one item.
 """
 from __future__ import annotations
 
@@ -39,7 +41,8 @@ class EventRecord:
 @dataclass(frozen=True)
 class DevRecord:
     """One DEV item: code is a short lowercase name for the problem, text says it in words;
-    told_jim_at is when Jim was told of it (None: not yet)."""
+    told_jim_at is when Jim was told of it (None: not yet); studio_id is the job it is about
+    (None: no one job); urgent turns the tray red."""
 
     id: int
     at: datetime
@@ -47,6 +50,8 @@ class DevRecord:
     text: str
     state: str
     told_jim_at: datetime | None
+    studio_id: str | None
+    urgent: bool
 
 
 # ----- events
@@ -98,22 +103,40 @@ def list_events(
 # ----- the DEV lane
 
 
-def open_dev(db: Db, *, at: datetime, code: str, text: str) -> DevRecord:
-    """Open a DEV item; while an open one with the same code and text stands, that one is
-    returned unchanged instead."""
+def open_dev(
+    db: Db,
+    *,
+    at: datetime,
+    code: str,
+    text: str,
+    studio_id: str | None = None,
+    urgent: bool = False,
+) -> DevRecord:
+    """Open a DEV item, about a job when studio_id is given. While an open one with the same
+    code, text and job stands, that one is returned instead, unchanged, except that urgency is
+    never lost: raised as urgent, it becomes urgent."""
+    if not isinstance(urgent, bool):
+        raise ValueError("urgent must be True or False")
     values = (iso(at, "at"), code_value(code, "a DEV code", "fab_export_stale"),
-              text_value(text, "a DEV item's text"))
+              text_value(text, "a DEV item's text"),
+              None if studio_id is None else key_text(studio_id, "a Studio project ID"),
+              int(urgent))
     with session(db, write=True) as conn:
         found = conn.execute(
-            "SELECT * FROM dev WHERE state = 'open' AND code = ? AND text = ? ORDER BY id",
-            values[1:],
+            "SELECT id FROM dev WHERE state = 'open' AND code = ? AND text = ? AND studio_id IS ?"
+            " ORDER BY id",
+            values[1:4],
         ).fetchone()
-        if found is not None:
-            return _dev_record(found)
-        cursor = conn.execute(
-            "INSERT INTO dev (at, code, text, state) VALUES (?, ?, ?, 'open')", values
-        )
-        return _dev(conn, int(cursor.lastrowid))
+        if found is None:
+            cursor = conn.execute(
+                "INSERT INTO dev (at, code, text, state, studio_id, urgent)"
+                " VALUES (?, ?, ?, 'open', ?, ?)",
+                values,
+            )
+            return _dev(conn, int(cursor.lastrowid))
+        if urgent:
+            conn.execute("UPDATE dev SET urgent = 1 WHERE id = ?", (found["id"],))
+        return _dev(conn, found["id"])
 
 
 def get_dev(db: Db, dev_id: int) -> DevRecord | None:
@@ -172,5 +195,13 @@ def _dev(conn: sqlite3.Connection, did: int) -> DevRecord | None:
 
 
 def _dev_record(row: sqlite3.Row) -> DevRecord:
-    return DevRecord(row["id"], time_of(row["at"]), row["code"], row["text"], row["state"],
-                     time_or_none(row["told_jim_at"]))
+    return DevRecord(
+        id=row["id"],
+        at=time_of(row["at"]),
+        code=row["code"],
+        text=row["text"],
+        state=row["state"],
+        told_jim_at=time_or_none(row["told_jim_at"]),
+        studio_id=row["studio_id"],
+        urgent=bool(row["urgent"]),
+    )

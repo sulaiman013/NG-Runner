@@ -86,7 +86,7 @@ flowchart TD
 | `Testerson_101426_NGRunner.json` | Jim's chat sessions | What was filed, its checksum, any open cards. The chat reads this first |
 | `Testerson_101426_NGRunner_log.txt` | People | One plain line per event, for example `10/30 3:05 PM  Filed the IC summary (landscape, 19 pages), checked on two fetches 10 minutes apart.` |
 
-**Closet or garage.** A garage-only summary goes to `<Name>_Gar\`. Closets only, or closets and garage mixed, go to `<Name>\`: a mixed summary is one job, as Jim's own rules say. Only a design that can't be classified raises a card, and only that job waits.
+**Closet or garage.** A garage-only summary goes to `<Name>_Gar\`. Closets only, or closets and garage mixed, go to `<Name>\`: a mixed summary is one job, as Jim's own rules say. A card comes only when a design can't be classified, or when the row or the job's name says garage and no design does, and only that job waits.
 
 **The summary check** is deliberately hard to pass. It reads the whole file: every checksum, the file's index and its ending, and whether each design on page 1 has its pages and drawings. A partial render that looks fine, or a file damaged by one bit, is refused. Two fetches must then agree on both text and drawings, because a render can be consistent with itself and still be early. Two byte-identical fetches don't count: real renders always differ in bytes, so identical ones mean something served one render twice.
 
@@ -133,8 +133,9 @@ A card remembers the Studio ID behind each of its buttons, so an answer given da
 | The job list is older than the row | Asks for a fresh list, at most once per 5 minutes, and waits. An alarm if it stays stale for over an hour |
 | Studio is down, or the address isn't found | Retries after 5, 15, 30 and 60 minutes, then hourly. A card after 24 hours |
 | The render is early and incomplete | Retries every 30 minutes |
-| Studio returns another job's report | Files nothing. A card and a developer item at once |
+| Studio returns another job's report | Files nothing. If the job list shows that name is this job's new name, it is a rename, and NG Runner fetches under it. Otherwise a card and a developer item at once |
 | A summary is already in the folder | The same: marked filed, no write. Different: a card. **Never overwritten** |
+| A job's folder was there at install, or has moved to `NG Jobs\Old` | Writes nothing into it, never makes a second one, and the board says why |
 | Someone replaced a filed summary by hand | Logged, never overwritten, and the notes are rewritten to describe the file that's there |
 | The sheet suddenly loses or gains many rows | Holds that export until the next one says the same, so a half-loaded sheet starts nothing |
 | NG Runner crashes or the PC restarts | Picks up where it stopped, with no duplicate file, message or card |
@@ -203,7 +204,7 @@ flowchart LR
 
 ### The control folder
 
-A private Google Drive folder that NG Runner and the Apps Script use to talk. Every file is a signed envelope (HMAC-SHA256), checked on arrival, with a shared test vector proving both sides seal the same bytes.
+A private Google Drive folder that NG Runner and the Apps Script use to talk. Every message between them is a signed envelope (HMAC-SHA256), checked on arrival, with a shared test vector proving both sides seal the same bytes. Logs, backups (encrypted), support bundles and shadow files are plain copies kept there.
 
 | Path | Written by | Holds |
 |---|---|---|
@@ -211,7 +212,7 @@ A private Google Drive folder that NG Runner and the Apps Script use to talk. Ev
 | `outbox/<id>.json` | NG Runner | A message to send |
 | `receipts/<id>.json` | Apps Script | Proof it was sent |
 | `heartbeat/<YYYYMMDD>/<seq>.json` | NG Runner | I'm alive, every 5 minutes |
-| `pause/<id>.json` | Sulaiman | Pause or resume, remotely |
+| `pause/<id>.json` | Sulaiman | A pause, remotely. Resuming happens only at the PC |
 | `logs/`, `backups/`, `support/` | NG Runner | Daily logs, encrypted backups, support bundles |
 | `shadow/<folder>/` | NG Runner | What it would have filed, during the shadow run |
 
@@ -304,7 +305,7 @@ Rough estimates of build time. Earlier estimates ran long, so expect the upper e
 | Step | What | Estimate |
 |---|---|---|
 | Finish reconcile and the last review | The parts fit, and matching and the summary check close | 1 to 2 hours |
-| **Wave 2: wiring** | Pipeline, job model, supervisor, messenger, canary and the write record, proven by a 14-scenario simulated day | 4 to 5 hours |
+| **Wave 2: wiring** | Pipeline, job model, supervisor, messenger, canary and the write record, proven by a 22-scenario simulated day | 4 to 5 hours |
 | Wave 3: verification | Independent review of the running app, and fixes | 2 to 3 hours |
 | Release | The real build, the Apps Script guide and the test kit | 2 to 3 hours |
 
@@ -315,7 +316,7 @@ Rough estimates of build time. Earlier estimates ran long, so expect the upper e
 | 1. First look | 15 minutes, Jim present | Remote access and the read-only Setup Check. This doesn't need the build, so it can happen any time | The report is read, and decides signing |
 | 2. Install | 20 minutes, remote | Install, self-test, the canary on his Drive, settings and keys, start in shadow mode | Self-test clean, canary passes, tray says SHADOW |
 | 3. Shadow run | 1 to 2 weeks, unattended | Everything except writing to NG Jobs. Files go to a side folder, and every message goes to Sulaiman only | 0 rows matched to the wrong job, and every other row asked for a sensible reason |
-| 4. Go live | 5 minutes, remote | Switch shadow off | Then 10 working days against the exit criteria |
+| 4. Go live | 5 minutes, remote | Switch shadow off, on the board and in the Apps Script | Then 10 working days against the exit criteria |
 
 **Phase 1a is done when, over 10 working days:** every new row is filed within 45 minutes or carded; **0 summaries are filed to the wrong job;** the board is right on 10 jobs Jim picks; 10 of 10 digests arrive; a sleep test alerts Sulaiman within 50 minutes; 20 of 20 forbidden writes are refused; and the restore drill passes.
 

@@ -30,6 +30,7 @@ class _Views:
             health=HealthView((), when, when, when, None),
             tray=TrayState("green", 0, "NG Runner is running"),
             paused=False,
+            shadow=False,
         )
 
     def history(self) -> tuple:
@@ -63,6 +64,9 @@ class _Actions:
 
     def add_job(self, text: str) -> str:
         return self._record("add_job", text)
+
+    def set_mode(self, mode: str) -> str:
+        return self._record("set_mode", mode)
 
 
 def test_the_board_serves_on_127_0_0_1_at_an_os_chosen_port_and_stops():

@@ -11,14 +11,14 @@ waits on Sulaiman.
 from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime
 
 from ngrunner.cards import Card, CardSpec, Command
 from ngrunner.clock import fmt_clock, fmt_day, pacific_day
 from ngrunner.match import Opportunity
 from ngrunner.messages import Message
-from ngrunner.messages.lint import ABOUT_ITSELF, lint
+from ngrunner.messages.lint import ABOUT_ITSELF, lint, redact
 
 NONE_OF_THESE = "None of these"
 
@@ -74,8 +74,8 @@ ALARMS = {   # P1a alarms, for the For you line (design 4, "Silence and failure"
                       " so that row can't be matched yet",
     "toasts_off": "Windows notifications are off for NG Runner, so its pop-ups don't show",
     "paused": "NG Runner is paused, so nothing is filed until you resume it at the PC",
-    "no_receipts": "Messages are not being confirmed sent, so urgent ones go to your phone"
-                   " directly",
+    "no_receipts": "Messages are not being confirmed sent, so some may not reach you; the board"
+                   " still shows everything",
 }
 
 
@@ -87,6 +87,11 @@ def install_soon(job: str, install: date) -> str:
 def stuck(job: str) -> str:
     """A DEV item older than 48 hours, with the manual fallback (design 4)."""
     return f"{job} has waited on NG Runner for over 2 days; work it in chat as before"
+
+
+def missed_digest(*, due: datetime, sent: datetime) -> str:
+    """A digest sent late, named (integration spec section 6: missed windows catch up, by name)."""
+    return f"Missed the {fmt_clock(due)} digest: the PC was off. Sent at {fmt_clock(sent)}"
 
 
 def _your_list(open_items: int, oldest_days: int | None) -> str:
@@ -108,7 +113,7 @@ _CARD_BACK = {   # an open card, as it comes back in the digest
 
 
 def _card_back(card: Card) -> str:
-    return _CARD_BACK[card.kind].format(row=f'Fab row "{_spaced(card.row or "")}"', job=card.job)
+    return _CARD_BACK[card.kind].format(row=_fab_row(card.row or ""), job=card.job)
 
 
 # ----- Barbara's emails
@@ -126,7 +131,7 @@ def which_job_email(row: str, *, designer: str = "", install: date | None = None
                     candidates: Sequence[Opportunity] = ()) -> Message:
     """Barbara's "Which job is this row?": she corrects the name in her own cell. The subject
     names the row, so two rows' emails never thread together."""
-    about, subject = _row(row, designer, install), f'Which job is Fab row "{_spaced(row)}"?'
+    about, subject = _row(row, designer, install), f"Which job is {_fab_row(row)}?"
     if not candidates:
         return Message("which_job_email", subject, (
             f"{about} matches no job in Salesforce, so nothing is filed yet. Type the full job"
@@ -144,8 +149,8 @@ def which_job_email(row: str, *, designer: str = "", install: date | None = None
 def which_job_card(row: str, *, designer: str = "", install: date | None = None,
                    candidates: Sequence[Opportunity] = ()) -> CardSpec:
     """Jim's "Which job is this row?", beside Barbara's email. Its choices are the candidates
-    in order, then None of these, so choice n (up to len(candidates)) is candidates[n - 1].
-    Nothing is filed until Jim or Barbara settles it."""
+    in order, then None of these, and choice_ids holds each candidate's Studio project ID, so a
+    later answer links the job it meant. Nothing is filed until Jim or Barbara settles it."""
     about = _row(row, designer, install)
     if candidates:
         text = (f"{about} could be more than one job; nothing is filed until you pick one, or"
@@ -154,7 +159,8 @@ def which_job_card(row: str, *, designer: str = "", install: date | None = None,
         text = (f"{about} matches no job in Salesforce; nothing is filed until Barbara types the"
                 ' full job name in the row, or you add it with "add job" and its name.')
     return CardSpec("which_job", job=None, row=row, text=text,
-                    choices=(*_labels(candidates), NONE_OF_THESE))
+                    choices=(*_labels(candidates), NONE_OF_THESE),
+                    choice_ids=(*(o.studio_id for o in candidates), None))
 
 
 def closet_or_garage_card(job: str, *, reason: str) -> CardSpec:
@@ -196,22 +202,29 @@ def row_changed_card(job: str, *, was: str, now_reads: str,
                      candidates: Sequence[Opportunity] = ()) -> CardSpec:
     """Jim's "Row changed: which job?": Barbara edited a row after it was filed, and it now
     reads as another job. Its choices: Keep <job>, then each candidate not named job, in order,
-    then None of these. Nothing new is filed until Jim says which it is."""
+    then None of these; choice_ids holds each candidate's Studio project ID. Nothing new is filed
+    until Jim says which it is."""
     others = [o for o in candidates if o.name != job]
     return CardSpec(
         "row_changed", job=job, row=now_reads,
         choices=(f"Keep {job}", *_labels(others), NONE_OF_THESE),
-        text=f'Fab row "{_spaced(was)}" now reads "{_spaced(now_reads)}", after it was filed as'
-             f" {job}; nothing new is filed until you choose.",
+        choice_ids=(None, *(o.studio_id for o in others), None),
+        text=f'{_fab_row(was)} now reads "{_typed(now_reads)}", after it was filed as {job};'
+             " nothing new is filed until you choose.",
     )
 
 
 def card_message(card: Card) -> Message:
     """A card as a message for Jim's phone or email: its ID, job and question, the one-line
-    text, then the choices numbered, so "ROD-2 2" or "ROD-2 3rd" answers it at the PC."""
-    subject = card.job or f'Fab row "{_spaced(card.row or "")}"'
-    return Message("card", f"{card.id} · {subject} · {QUESTIONS[card.kind]}",
+    text, then the choices numbered, so "TES-2 2" or "TES-2 3rd" answers it at the PC."""
+    return Message("card", f"{card.id} · {card_subject(card)} · {QUESTIONS[card.kind]}",
                    (card.text, *_numbered(card.choices)))
+
+
+def card_subject(card: Card) -> str:
+    """What a card is about, as a person reads it: its job, or the Fab row it asks about. A
+    which-job card has no job yet, so this is what the board shows in its place."""
+    return card.job or _fab_row(card.row or "")
 
 
 # ----- Sulaiman's lines: the DEV lane (Jim never sees it) and the daily "ran" line
@@ -219,19 +232,35 @@ def card_message(card: Card) -> Message:
 
 @dataclass(frozen=True)
 class DevLine:
-    """One DEV item: when it was raised, what happened in plain words, and its job if any."""
+    """One DEV item: when it was raised, what happened in plain words, its job if any, and its
+    code in the DEV lane, which stands in for its words when they can't be sent."""
 
     at: datetime
     text: str
     job: str | None = None
+    code: str = ""
 
 
 def dev(items: Sequence[DevLine], *, day: date) -> Message:
-    """The open DEV items for Sulaiman, each naming its job or NG Runner itself."""
-    lines = [f"{item.job or ABOUT_ITSELF} at {_clock_on(item.at, day)}: {_ended(item.text)}"
-             for item in items]
-    return Message("dev", f"NG Runner DEV · {fmt_day(day)}",
-                   _numbered(lines) if lines else ("No DEV items are open.",))
+    """The open DEV items for Sulaiman, each naming its job or NG Runner itself. Each one's text
+    comes from elsewhere, so it is made safe first (lint.redact), and a line that still fails
+    the lint is replaced by its code alone, so one bad text never costs the others."""
+    title = f"NG Runner DEV · {fmt_day(day)}"
+    lines = [_dev_line(item, title=title, day=day) for item in items]
+    return Message("dev", title, _numbered(lines) if lines else ("No DEV items are open.",))
+
+
+def _dev_line(item: DevLine, *, title: str, day: date) -> str:
+    when = _clock_on(item.at, day)
+    whose = item.job or ABOUT_ITSELF
+    coded = f"a DEV item ({item.code.replace('_', ' ')})" if item.code else "a DEV item"
+    withheld = "did not pass the message check; its text is in NG Runner's database."
+    for line in (f"{whose} at {when}: {_ended(redact(item.text))}",
+                 f"{whose} at {when}: {coded} {withheld}",
+                 f"{ABOUT_ITSELF} at {when}: {coded} {withheld}"):
+        if not lint(Message("dev", title, (f"1. {line}",))):
+            return line
+    return f"{ABOUT_ITSELF} at {when}: a DEV item {withheld}"
 
 
 def ran(day: date, *, version: str, new_rows: int, filed: int, cards_opened: int,
@@ -243,17 +272,17 @@ def ran(day: date, *, version: str, new_rows: int, filed: int, cards_opened: int
         f" {_count(writes_refused, 'write')} refused, {_count(dev_open, 'DEV item')} open.",))
 
 
-# ----- the urgent one: sent straight to Pushover when receipts stop
+# ----- the urgent one: receipts have stopped, so it goes straight to Pushover if its keys exist
 
 
 def cant_send(*, since: datetime, now: datetime, waiting: int) -> Message:
     """The urgent "NG Runner can't send messages": no receipt has come back for 5 minutes
-    (design 4, "Silence and failure"), so urgent items now go to the phone directly."""
+    (design 4, "Silence and failure"). It goes straight to Pushover only if its keys were added,
+    which P1a doesn't need (docs/decisions.md), so its words promise no phone."""
     are = "is" if waiting == 1 else "are"
     return Message("cant_send", "NG Runner can't send messages", (
         f"No message has been confirmed sent since {_clock_on(since, pacific_day(now))}, and"
-        f" {waiting} {are} waiting. Urgent items now come here directly; the board has the"
-        " rest.",), urgent=True)
+        f" {waiting} {are} waiting. The board still shows everything.",), urgent=True)
 
 
 # ----- echoes: what the command box answers once a command is done
@@ -273,26 +302,38 @@ def echo(command: Command) -> str:
     return "Looking for that Studio project in the job list."
 
 
+# ----- shadow mode: what would have gone to someone else goes to Sulaiman, marked
+
+SHADOW = "SHADOW"
+
+
+def shadow(message: Message) -> Message:
+    """message redirected to Sulaiman (integration spec section 7): its kind and words as they
+    are, its title marked. Redirect before vetted(), so he sees what would have gone out."""
+    return replace(message, title=f"{SHADOW} {message.title}")
+
+
 # ----- at runtime: the lint once more, and each kind's fixed template
 
 # What goes out instead of a message that fails the lint: words fixed here, no outside data
-# but the day (from NG Runner's own clock). Each says where the real thing is.
+# but the day (from NG Runner's own clock). Each says where the real thing is, or what to do.
 FIXED = {
     "digest": ("{digest_title}", "Today's list did not pass NG Runner's message check, so it is"
                " on the board instead."),
     "quiet_digest": ("{digest_title}", "Today's list did not pass NG Runner's message check, so"
                      " it is on the board instead."),
     "card": ("A question for you", "NG Runner has a question for you on the board."),
-    "filed": ("A Fab row is filed", "NG Runner filed one of your Fab rows; Jim's board shows"
-              " which."),
-    "which_job_email": ("Which job is this row?", "NG Runner could not tell which job one of"
-                        " your Fab rows is; Jim's board shows which."),
-    "dev": ("NG Runner DEV · {day}", "NG Runner: a DEV note did not pass the message check; it"
-            " is on the board."),
+    "filed": ("A Fab row is filed", "NG Runner filed one of your Fab rows, but could not name it"
+              " in this email; there is nothing for you to do."),
+    "which_job_email": ("Which job is this row?", "NG Runner could not tell which job one of your"
+                        " Fab rows is, and could not name it in this email. Check your newest"
+                        " rows, and type the full job name as Salesforce spells it."),
+    "dev": ("NG Runner DEV · {day}", "NG Runner: a DEV note did not pass the message check; its"
+            " text is in NG Runner's database."),
     "ran": ("NG Runner ran · {day}", "NG Runner ran, but its daily line did not pass the message"
             " check."),
-    "cant_send": ("NG Runner can't send messages", "Messages are not being confirmed sent, so"
-                  " urgent items come here directly; the board has the rest."),
+    "cant_send": ("NG Runner can't send messages", "Messages are not being confirmed sent. The"
+                  " board still shows everything."),
 }
 _ANY_OTHER = ("NG Runner", "NG Runner has a message for you on the board.")
 _URGENT_KINDS = frozenset({"cant_send"})
@@ -321,11 +362,13 @@ def fixed(kind: str, *, day: date, urgent: bool = False) -> Message:
 
 def vetted(message: Message, *, now: datetime) -> Vetted:
     """message once more through the lint, just before it is sent: nothing waits on Sulaiman,
-    and nothing that fails goes out."""
+    and nothing that fails goes out. What replaces a redirected message is marked as it was."""
     problems = tuple(lint(message))
     if not problems:
         return Vetted(message, ())
-    return Vetted(fixed(message.kind, day=pacific_day(now), urgent=message.urgent), problems)
+    replacement = fixed(message.kind, day=pacific_day(now), urgent=message.urgent)
+    return Vetted(shadow(replacement) if message.title.startswith(f"{SHADOW} ") else replacement,
+                  problems)
 
 
 # ----- small pieces
@@ -342,8 +385,18 @@ def _row(text: str, designer: str, install: date | None) -> str:
     details = [f"designer {designer.strip()}"] if designer.strip() else []
     if install is not None:
         details.append(f"installs {fmt_day(install)}")
-    shown = f'Fab row "{_spaced(text)}"'
+    shown = _fab_row(text)
     return f"{shown} ({', '.join(details)})" if details else shown
+
+
+def _fab_row(text: str) -> str:
+    return f'Fab row "{_typed(text)}"'
+
+
+def _typed(text: str) -> str:
+    """What Barbara typed, to quote: one line, and any double quote of hers made a curly one, so
+    the lint can see where her words end (it holds them to fewer rules than NG Runner's own)."""
+    return _spaced(text).replace('"', "”")
 
 
 def _spaced(text: str) -> str:

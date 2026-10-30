@@ -8,26 +8,32 @@ was learned about each fetch (its hash, page count, the content fingerprint, the
 check's verdict and what it found missing) and where the bytes are cached on this PC; the PDF
 itself is never in the database. creation_date is the PDF's own CreationDate text, kept
 verbatim: it is the file's claim, not a time NG Runner measured.
+
+A fingerprint hashes pypdf's text extraction, so another pypdf version can read the same file
+differently. Each fingerprint therefore keeps the version that read it, and render_fingerprint()
+reads the file again before one read by another version is compared with a new one: otherwise
+the first nightly re-fetch after an upgrade would raise a false "IC changed" card.
 """
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
 from ngrunner.config import LAYOUTS
 from ngrunner.store.db import (
-    Db, dumps, iso, key_text, loads, one_of, optional_text, session, sha256_value, time_of,
-    whole_number,
+    Db, Store, StoreError, Transaction, dumps, iso, key_text, loads, one_of, optional_text,
+    session, sha256_value, text_value, time_of, whole_number,
 )
 
 
 @dataclass(frozen=True)
 class RenderRecord:
     """One fetch. check_ok and missing are check_summary's verdict; layout is "landscape" or
-    "portrait"; cache_path is where its bytes are kept on this PC (AppPaths.renders)."""
+    "portrait"; cache_path is where its bytes are kept on this PC (AppPaths.renders); pypdf is
+    the version that read its fingerprint (None: not known)."""
 
     id: int
     studio_id: str
@@ -43,6 +49,7 @@ class RenderRecord:
     project_name: str | None
     cache_path: Path | None
     governing: bool
+    pypdf: str | None
 
 
 def add_render(
@@ -60,10 +67,12 @@ def add_render(
     missing: Sequence[str] = (),
     project_name: str | None = None,
     cache_path: Path | None = None,
+    pypdf: str | None = None,
 ) -> RenderRecord:
     """Record one fetch of a job's IC summary (not governing). sha256 is 64 lowercase hex
-    characters; cache_path a full path. A job the store doesn't have is refused (StoreError:
-    its foreign key)."""
+    characters; cache_path a full path; pypdf the version that read the fingerprint
+    (check_summary's details["pypdf"]). A job the store doesn't have is refused (StoreError: its
+    foreign key)."""
     if not isinstance(check_ok, bool):
         raise ValueError("check_ok must be True or False")
     values = (
@@ -74,13 +83,13 @@ def add_render(
         optional_text(fingerprint, "a fingerprint"),
         None if layout is None else one_of(layout, LAYOUTS, "a report layout"),
         int(check_ok), _missing(missing), optional_text(project_name, "a project name"),
-        _path(cache_path),
+        _path(cache_path), None if pypdf is None else _version(pypdf),
     )
     with session(db, write=True) as conn:
         cursor = conn.execute(
             "INSERT INTO renders (studio_id, fetched_at, url, sha256, page_count, creation_date,"
-            " fingerprint, layout, check_ok, missing, project_name, cache_path)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " fingerprint, layout, check_ok, missing, project_name, cache_path, pypdf)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             values,
         )
         return _render(conn, int(cursor.lastrowid))
@@ -127,6 +136,42 @@ def governing_render(db: Db, studio_id: str) -> RenderRecord | None:
     return None if row is None else _record(row)
 
 
+def render_fingerprint(
+    db: Store, render_id: int, *, pypdf: str, read: Callable[[Path], str]
+) -> str | None:
+    """The render's fingerprint as this pypdf version reads it, ready to compare with a new one.
+    pypdf is the version that read the new one (check_summary's details["pypdf"]). A fingerprint
+    read by another version, or by one not recorded, is read again with read(cache_path)
+    (summary_check.content_fingerprint), and stored with this version. None when there is nothing
+    to compare: no cached file, one gone or unreadable (the row stays as it was), or a render
+    with no fingerprint. That is "could not verify": raise no card from it. Reading a PDF is slow
+    work, so a transaction is refused (StoreError). No such render: LookupError."""
+    if isinstance(db, Transaction):
+        raise StoreError("A render's file can't be read inside one of the store's transactions.")
+    version = _version(pypdf)
+    render = get_render(db, render_id)
+    if render is None:
+        raise LookupError("there is no render with that id in the store")
+    if render.pypdf == version:
+        return render.fingerprint
+    if render.cache_path is None:
+        return None
+    try:
+        fingerprint = read(render.cache_path)
+    except (OSError, ValueError):  # the file is gone, or no longer reads as a PDF
+        return None
+    with session(db, write=True) as conn:
+        conn.execute(
+            "UPDATE renders SET fingerprint = ?, pypdf = ? WHERE id = ?",
+            (text_value(fingerprint, "a fingerprint"), version, render.id),
+        )
+    return fingerprint
+
+
+def _version(value: object) -> str:
+    return text_value(value, "a pypdf version")
+
+
 def _missing(value: object) -> str:
     if not isinstance(value, list | tuple) or not all(isinstance(m, str) for m in value):
         raise ValueError("missing must be a list of sentences")
@@ -162,4 +207,5 @@ def _record(row: sqlite3.Row) -> RenderRecord:
         project_name=row["project_name"],
         cache_path=None if row["cache_path"] is None else Path(row["cache_path"]),
         governing=bool(row["governing"]),
+        pypdf=row["pypdf"],
     )

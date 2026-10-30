@@ -7,24 +7,30 @@ from __future__ import annotations
 import hashlib
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import MappingProxyType
 
 import pytest
+from helpers_pdf import summary_pdf
 
 from ngrunner.clock import PACIFIC
-from ngrunner.match import FabRow, Opportunity, match_file_to_job
+from ngrunner.intake.summary_check import check_summary, content_fingerprint
+from ngrunner.joblist import JobList
+from ngrunner.match import FabRow, Opportunity, match_fab_row, match_file_to_job
 from ngrunner.store import (
     AliasRecord, Db, ListState, OpportunityRecord, Store, StoreError, accept_envelope, accept_seq,
     add_alias, add_card, add_fab_row, add_outbox, add_pending, add_render, allocate_card_id,
     answer_card, clear_state, close_dev, due_pending, end_run, ensure_job, finish_pending,
     freeze_name, get_card, get_dev, get_fab_row, get_job, get_job_list, get_list_state,
     get_opportunity, get_outbox, get_pending, get_render, get_run, get_state, get_state_time,
-    governing_render, last_accepted_seq, last_sent_seq, list_aliases, list_cards, list_dev,
+    governing_render, jump_after_restore, last_accepted_seq, last_sent_seq, list_aliases,
+    list_cards, list_dev,
     list_events, list_fab_rows, list_jobs, list_outbox, list_pending, list_renders, list_runs,
     list_write_records, log_event, mark_dev_told_jim, mark_outbox_fallback, mark_outbox_written,
     next_seq, open_dev, open_store, outbox_without_receipt, owned_sha, past_deadline_pending,
-    path_key, record_commit, record_owned, record_receipt, record_reminder, replace_opportunities,
-    retry_pending, seen_id, set_governing, set_state, set_state_time, start_run, update_fab_row,
-    update_job, withdraw_card,
+    path_key, prune_seen_ids, record_commit, record_owned, record_receipt, record_reminder,
+    replace_opportunities,
+    render_fingerprint, retry_pending, seen_id, set_governing, set_state, set_state_time, start_run,
+    update_fab_row, update_job, withdraw_card,
 )
 from ngrunner.writes import CommitResult, FileWrite, Roots, commit_write
 
@@ -191,6 +197,42 @@ def test_an_edited_row_keeps_its_original_text_and_first_sight(store: Store) -> 
     assert get_fab_row(store, row.id) == matched
 
 
+def test_a_row_is_measured_from_when_its_text_last_changed(store: Store) -> None:
+    row = add_fab_row(store, first_seen=T0, text="Testersn", designer="AB", sheet_row=12)
+    assert row.text_changed_at == T0
+    assert row.to_match() == FabRow("Testersn", "AB", T0)
+
+    corrected = update_fab_row(store, row.id, now=T1, text="Testerson")
+
+    assert corrected.text_changed_at == T1
+    assert corrected.to_match() == FabRow("Testerson", "AB", T1)
+    assert (corrected.first_seen, corrected.original_text) == (T0, "Testersn")  # the record stays
+    assert get_fab_row(store, row.id) == corrected
+
+
+def test_only_a_change_of_its_text_moves_when_a_row_last_changed(store: Store) -> None:
+    row = add_fab_row(store, first_seen=T0, text="Testerson", designer="AB")
+
+    moved = update_fab_row(store, row.id, now=T1, sheet_row=14, designer="CD", state="asked",
+                           install=("Wednesday", " 7 /1"), fab_date="10/30", reason="asked")
+    same = update_fab_row(store, row.id, now=T2, text="Testerson")  # the same text read again
+
+    assert (moved.text_changed_at, moved.updated_at) == (T0, T1)
+    assert (same.text_changed_at, same.updated_at) == (T0, T2)
+    assert same.to_match().first_seen == T0
+
+
+def test_a_corrected_row_needs_a_job_list_read_after_the_correction(store: Store) -> None:
+    sold = [Opportunity("Testerson_101426", SID, "Pat Example", "Ready to Order")]
+    row = add_fab_row(store, first_seen=T0, text="Testersn", designer="PE")
+    assert match_fab_row(row.to_match(), sold, [], T1).status != "stale_list"  # read after T0
+
+    corrected = update_fab_row(store, row.id, now=T2, text="Testerson")
+
+    assert match_fab_row(corrected.to_match(), sold, [], T1).status == "stale_list"
+    assert match_fab_row(corrected.to_match(), sold, [], T3).status == "matched"
+
+
 def test_fab_rows_are_listed_oldest_first_and_by_state(store: Store) -> None:
     a = add_fab_row(store, first_seen=T1, text="Fakeley", designer="CD", state="seen_at_install")
     b = add_fab_row(store, first_seen=T0, text="Testerson", designer="AB")
@@ -260,6 +302,54 @@ def test_each_fetch_replaces_the_whole_list(store: Store) -> None:
 
     assert state == ListState(None, T2, 1)
     assert get_job_list(store) == (state, (mockford,))
+
+
+def test_a_job_list_from_render_keeps_its_clients(store: Store) -> None:
+    # match.Opportunity has no client: the list carries them beside it, by Studio project ID.
+    job_list = JobList(
+        synced_at=T0, fetched_at=T1,
+        opportunities=(
+            Opportunity(name=JOB, studio_id=SID, owner="AB", stage="Ready to Order"),
+            Opportunity(name="Fakeley_101526", studio_id="2", owner="CD", stage="Ready to Install"),
+            Opportunity(name="Mockford_101626", studio_id="3", owner="EF", stage="Ready to Order"),
+        ),
+        clients=MappingProxyType({SID: "Testerson Family", "2": ""}),
+    )
+
+    replace_opportunities(store, job_list.opportunities, synced_at=job_list.synced_at,
+                          fetched_at=job_list.fetched_at, clients=job_list.clients)
+
+    assert get_opportunity(store, SID) == OpportunityRecord(
+        studio_id=SID, name=JOB, stage="Ready to Order", owner="AB", client="Testerson Family")
+    assert get_opportunity(store, "2").client is None  # the list had none for it: one way to say so
+    assert get_opportunity(store, "3").client is None  # nor is it in the clients at all
+
+
+def test_clients_given_say_every_client_and_without_them_each_record_says_its_own(
+    store: Store,
+) -> None:
+    record = OpportunityRecord(studio_id=SID, name=JOB, stage="Sold", owner="AB",
+                               client="Testerson")
+
+    replace_opportunities(store, [record], synced_at=T0, fetched_at=T0, clients={SID: "Fakeley"})
+    assert get_opportunity(store, SID).client == "Fakeley"
+
+    replace_opportunities(store, [record], synced_at=T1, fetched_at=T1, clients={})
+    assert get_opportunity(store, SID).client is None
+
+    replace_opportunities(store, [record], synced_at=T2, fetched_at=T2)
+    assert get_opportunity(store, SID).client == "Testerson"
+
+
+@pytest.mark.parametrize("clients", [["Testerson"], "Testerson", {SID: 7}])
+def test_clients_that_are_not_names_by_studio_id_are_refused(store: Store, clients) -> None:
+    old = OpportunityRecord(studio_id=SID, name=JOB, stage="Sold", owner="AB")
+    replace_opportunities(store, [old], synced_at=T0, fetched_at=T0)
+
+    with pytest.raises(ValueError):
+        replace_opportunities(store, [old], synced_at=T1, fetched_at=T1, clients=clients)
+
+    assert get_job_list(store) == (ListState(T0, T0, 1), (old,))
 
 
 def test_a_list_that_can_not_be_stored_whole_leaves_the_old_one(store: Store) -> None:
@@ -349,6 +439,110 @@ def test_one_render_governs_a_job_at_a_time(store: Store) -> None:
         set_governing(store, other.id + 1)
 
 
+NEW_PYPDF, OLD_PYPDF = "6.21.4", "5.0.0"
+STALE, FRESH = "1" * 64, "2" * 64
+
+
+def never_read(path: Path) -> str:
+    raise AssertionError(f"{path} should not have been read")
+
+
+def test_a_render_keeps_the_pypdf_version_that_read_its_fingerprint(store: Store) -> None:
+    ensure_job(store, SID, JOB, now=T0)
+
+    render = render_of(store, T0, pypdf=NEW_PYPDF)
+
+    assert render.pypdf == NEW_PYPDF and get_render(store, render.id) == render
+    assert render_of(store, T1).pypdf is None  # not said: not known
+
+
+def test_a_fingerprint_read_by_the_same_pypdf_is_used_as_it_is(store: Store) -> None:
+    ensure_job(store, SID, JOB, now=T0)
+    render = render_of(store, T0, fingerprint=STALE, pypdf=NEW_PYPDF)
+
+    assert render_fingerprint(store, render.id, pypdf=NEW_PYPDF, read=never_read) == STALE
+
+
+@pytest.mark.parametrize("recorded", [OLD_PYPDF, None], ids=["another version", "not recorded"])
+def test_a_fingerprint_read_by_another_pypdf_is_read_again_from_its_file(store: Store,
+                                                                         recorded) -> None:
+    ensure_job(store, SID, JOB, now=T0)
+    render = render_of(store, T0, fingerprint=STALE, pypdf=recorded)
+    asked: list[Path] = []
+
+    def read(path: Path) -> str:
+        asked.append(path)
+        return FRESH
+
+    assert render_fingerprint(store, render.id, pypdf=NEW_PYPDF, read=read) == FRESH
+
+    assert asked == [render.cache_path]
+    stored = get_render(store, render.id)
+    assert (stored.fingerprint, stored.pypdf) == (FRESH, NEW_PYPDF)
+    assert render_fingerprint(store, render.id, pypdf=NEW_PYPDF, read=never_read) == FRESH  # once
+
+
+def test_a_fingerprint_is_read_again_by_the_real_reader(store: Store, tmp_path: Path) -> None:
+    pdf = tmp_path / "render.pdf"
+    pdf.write_bytes(summary_pdf(project_name=JOB))
+    check = check_summary(pdf)
+    ensure_job(store, SID, JOB, now=T0)
+    render = render_of(store, T0, fingerprint=STALE, pypdf=OLD_PYPDF, cache_path=pdf)
+
+    found = render_fingerprint(store, render.id, pypdf=check.details["pypdf"],
+                               read=content_fingerprint)
+
+    assert found == check.details["fingerprint"] == content_fingerprint(pdf)
+
+
+def test_a_fingerprint_that_can_not_be_read_again_could_not_be_verified(store: Store,
+                                                                        tmp_path: Path) -> None:
+    ensure_job(store, SID, JOB, now=T0)
+    damaged = tmp_path / "damaged.pdf"
+    damaged.write_bytes(b"not a PDF")
+    no_file = render_of(store, T0, fingerprint=STALE, pypdf=OLD_PYPDF, cache_path=None)
+    gone = render_of(store, T0, fingerprint=STALE, pypdf=OLD_PYPDF,
+                     cache_path=tmp_path / "gone.pdf")
+    bad = render_of(store, T0, fingerprint=STALE, pypdf=OLD_PYPDF, cache_path=damaged)
+
+    for render in (no_file, gone, bad):
+        assert render_fingerprint(store, render.id, pypdf=NEW_PYPDF,
+                                  read=content_fingerprint) is None
+        assert get_render(store, render.id) == render  # never a stale value passed off as current
+
+
+def test_a_render_with_no_fingerprint_has_none_to_compare(store: Store) -> None:
+    ensure_job(store, SID, JOB, now=T0)
+    refused = render_of(store, T0, check_ok=False, fingerprint=None, pypdf=NEW_PYPDF)
+
+    assert render_fingerprint(store, refused.id, pypdf=NEW_PYPDF, read=never_read) is None
+
+
+def test_a_fingerprint_is_never_read_again_inside_a_transaction(store: Store) -> None:
+    ensure_job(store, SID, JOB, now=T0)
+    render = render_of(store, T0, fingerprint=STALE, pypdf=OLD_PYPDF)
+
+    with store.transaction() as tx:  # reading a PDF is slow, and this holds the write lock
+        with pytest.raises(StoreError, match="transaction"):
+            render_fingerprint(tx, render.id, pypdf=NEW_PYPDF, read=never_read)
+
+    assert get_render(store, render.id) == render
+
+
+@pytest.mark.parametrize("version", ["", " ", None, 6])
+def test_a_fingerprint_needs_the_version_to_compare_with(store: Store, version) -> None:
+    ensure_job(store, SID, JOB, now=T0)
+    render = render_of(store, T0)
+
+    with pytest.raises(ValueError):
+        render_fingerprint(store, render.id, pypdf=version, read=never_read)
+
+
+def test_the_fingerprint_of_a_render_that_is_not_there_is_refused(store: Store) -> None:
+    with pytest.raises(LookupError):
+        render_fingerprint(store, 1, pypdf=NEW_PYPDF, read=never_read)
+
+
 def test_a_render_of_a_job_the_store_does_not_have_is_refused(store: Store) -> None:
     with pytest.raises(StoreError, match="breaks its rules"):
         render_of(store, T0)
@@ -357,6 +551,7 @@ def test_a_render_of_a_job_the_store_does_not_have_is_refused(store: Store) -> N
 @pytest.mark.parametrize("bad", [
     {"sha256": "not a hash"}, {"layout": "square"}, {"page_count": -1}, {"check_ok": None},
     {"missing": "Page 1 lists no designs."}, {"cache_path": Path("renders") / "x.pdf"},
+    {"pypdf": ""}, {"pypdf": " "}, {"pypdf": 6},
 ])
 def test_a_render_with_a_bad_value_is_refused(store: Store, bad) -> None:
     ensure_job(store, SID, JOB, now=T0)
@@ -520,13 +715,13 @@ WHICH = ("Testerson_101426", "Testerson_102026", "None of these")
 
 
 def test_card_ids_are_the_prefix_and_the_next_number(store: Store) -> None:
-    assert [allocate_card_id(store, "ROD") for _ in range(2)] == ["ROD-1", "ROD-2"]
-    assert allocate_card_id(store, "DIA") == "DIA-1"  # each prefix counts on its own
+    assert [allocate_card_id(store, "TES") for _ in range(2)] == ["TES-1", "TES-2"]
+    assert allocate_card_id(store, "FAK") == "FAK-1"  # each prefix counts on its own
 
-    card = add_card(store, prefix="ROD", kind="which_job", text="Which job is this row?",
+    card = add_card(store, prefix="TES", kind="which_job", text="Which job is this row?",
                     choices=WHICH, created_at=T0, fab_row_id=7)
 
-    assert card.id == "ROD-3"
+    assert card.id == "TES-3"
 
 
 def test_a_card_is_stored_and_read_back_whole(store: Store) -> None:
@@ -543,6 +738,48 @@ def test_a_card_is_stored_and_read_back_whole(store: Store) -> None:
     assert (card.answer, card.answer_words, card.answered_by) == (None, None, None)
     assert (card.answered_at, card.channel) == (None, None)
     assert get_card(store, "TES-2") is None
+
+
+def test_a_card_keeps_which_job_each_choice_means(store: Store) -> None:
+    # Two sales can share a name, and the job list is replaced whole before Jim may answer: the
+    # candidates exist only in memory when the card is made.
+    card = add_card(store, prefix="TES", kind="which_job", text="Which job is this row?",
+                    choices=WHICH, choice_ids=["84213", "84377", None], created_at=T0,
+                    fab_row_id=7)
+
+    assert card.choice_ids == ("84213", "84377", None)
+    assert get_card(store, card.id) == card
+    assert list_cards(store) == [card]
+    assert answer_card(store, card.id, answer=WHICH[1], answer_words="TES-1 2",
+                       answered_by="jim", answered_at=T1, channel="command")
+    answered = get_card(store, card.id)
+    assert answered.choice_ids[answered.choices.index(answered.answer)] == "84377"
+
+
+def test_a_card_keeps_its_jobs_through_a_restart_and_a_new_job_list(tmp_path: Path) -> None:
+    path = tmp_path / "ngrunner.db"
+    store = open_store(path)
+    replace_opportunities(store, [OpportunityRecord("84213", "Testerson_101426", "Sold", "AB")],
+                          synced_at=T0, fetched_at=T0)
+    card = add_card(store, prefix="TES", kind="which_job", text="Which job is this row?",
+                    choices=("Testerson_101426", "None of these"), choice_ids=("84213", None),
+                    created_at=T0)
+
+    restarted = open_store(path)
+    replace_opportunities(restarted, [OpportunityRecord("90000", "Fakeley_101526", "Sold", "CD")],
+                          synced_at=T1, fetched_at=T1)
+
+    assert get_card(restarted, card.id).choice_ids == ("84213", None)
+
+
+@pytest.mark.parametrize("no_ids", [{}, {"choice_ids": None}, {"choice_ids": ()},
+                                    {"choice_ids": []}])
+def test_a_card_whose_choices_name_no_job_says_so_for_each_choice(store: Store, no_ids) -> None:
+    card = add_card(store, prefix="TES", kind="closet_or_garage", text="Closet or garage?",
+                    choices=("Closet", "Garage"), created_at=T0, **no_ids)
+
+    assert card.choice_ids == (None, None)
+    assert get_card(store, card.id) == card
 
 
 def test_an_answer_is_kept_verbatim_and_given_once(store: Store) -> None:
@@ -621,6 +858,9 @@ def test_cards_are_listed_oldest_first_by_state_job_and_row(store: Store) -> Non
     {"prefix": "rod"}, {"prefix": "RO D"}, {"prefix": ""}, {"prefix": "R-1"}, {"prefix": "ROD1"},
     {"choices": ()}, {"choices": ("Closet", "Closet")}, {"choices": "Closet"},
     {"default_choice": "Pantry"}, {"kind": "Which job"}, {"text": " "},
+    {"choice_ids": ("84213",)}, {"choice_ids": ("84213", None, None)}, {"choice_ids": "ab"},
+    {"choice_ids": (84213, None)}, {"choice_ids": (" ", None)}, {"choice_ids": ("", None)},
+    {"choice_ids": {"Closet": "84213", "Garage": None}},
 ])
 def test_a_card_with_a_bad_value_is_refused(store: Store, bad) -> None:
     with pytest.raises(ValueError):
@@ -669,6 +909,50 @@ def test_a_dev_item_is_opened_once_while_it_stands(store: Store) -> None:
     assert reopened.id not in (item.id, other.id)  # it came back: a new item
     with pytest.raises(LookupError):
         close_dev(store, reopened.id + 1)
+
+
+def test_a_dev_item_can_name_its_job_and_say_it_is_urgent(store: Store) -> None:
+    stuck = open_dev(store, at=T0, code="too_big", text="The render was too big.", studio_id=SID,
+                     urgent=True)
+    plain = open_dev(store, at=T0, code="no_receipt", text="No receipt for 5 minutes.")
+
+    assert (stuck.studio_id, stuck.urgent) == (SID, True)
+    assert (plain.studio_id, plain.urgent) == (None, False)
+    assert get_dev(store, stuck.id) == stuck and list_dev(store) == [stuck, plain]
+
+
+def test_a_dev_item_is_opened_once_per_code_text_and_job(store: Store) -> None:
+    text = "The render was too big."
+    mine = open_dev(store, at=T0, code="too_big", text=text, studio_id=SID)
+    other_job = open_dev(store, at=T0, code="too_big", text=text, studio_id="2")
+    no_job = open_dev(store, at=T0, code="too_big", text=text)
+
+    assert len({mine.id, other_job.id, no_job.id}) == 3
+    assert open_dev(store, at=T1, code="too_big", text=text, studio_id=SID) == mine
+    assert open_dev(store, at=T1, code="too_big", text=text, studio_id="2") == other_job
+    assert open_dev(store, at=T1, code="too_big", text=text) == no_job
+    assert list_dev(store) == [mine, other_job, no_job]
+
+
+def test_a_standing_dev_item_raised_as_urgent_becomes_urgent_and_stays_so(store: Store) -> None:
+    text = "No receipt for 5 minutes."
+    item = open_dev(store, at=T0, code="no_receipt", text=text)
+
+    raised = open_dev(store, at=T1, code="no_receipt", text=text, urgent=True)
+    again = open_dev(store, at=T2, code="no_receipt", text=text)
+
+    assert (raised.id, raised.at, raised.urgent) == (item.id, T0, True)  # one item, the tray red
+    assert again == raised == get_dev(store, item.id)
+    assert list_dev(store) == [raised]
+
+
+@pytest.mark.parametrize("bad", [{"studio_id": " "}, {"studio_id": 101}, {"urgent": "yes"},
+                                 {"urgent": 1}, {"urgent": None}])
+def test_a_dev_item_with_a_bad_job_or_urgency_is_refused(store: Store, bad) -> None:
+    with pytest.raises(ValueError):
+        open_dev(store, at=T0, code="no_receipt", text="No receipt.", **bad)
+
+    assert list_dev(store, state=None) == []
 
 
 def test_telling_jim_about_a_dev_item_is_recorded_once(store: Store) -> None:
@@ -877,6 +1161,86 @@ def test_each_outgoing_stream_counts_up_from_one(store: Store) -> None:
     assert (last_sent_seq(store, "heartbeat"), last_sent_seq(store, "outbox")) == (3, 1)
 
 
+def test_a_new_outgoing_stream_begins_at_its_start(store: Store) -> None:
+    second = 1_793_000_000  # a Unix second, as the messenger and the heartbeat pass
+
+    assert next_seq(store, "heartbeat", start=second) == second
+    assert next_seq(store, "heartbeat", start=second + 300) == second + 1  # no gap: it carries on
+    assert next_seq(store, "heartbeat") == second + 2
+    assert next_seq(store, "outbox", start=second + 300) == second + 300   # each on its own
+
+    assert last_sent_seq(store, "heartbeat") == second + 2
+
+
+def test_a_new_database_on_a_used_control_folder_sends_above_what_the_old_one_sent(
+    tmp_path: Path,
+) -> None:
+    second = 1_793_000_000
+    old = open_store(tmp_path / "old.db")
+    with old.transaction() as tx:
+        for _ in range(288):  # a day of heartbeats
+            seen_by_apps_script = next_seq(tx, "heartbeat", start=second)
+    a_day_later = second + 86_400
+
+    new = open_store(tmp_path / "new.db")  # a wiped data folder: no restore, nothing remembered
+
+    assert next_seq(new, "heartbeat", start=a_day_later) > seen_by_apps_script
+
+
+def test_a_seq_taken_in_a_transaction_that_fails_is_not_used_up(store: Store) -> None:
+    with pytest.raises(RuntimeError):
+        with store.transaction() as tx:
+            assert next_seq(tx, "outbox", start=500) == 500
+            raise RuntimeError("stopped half-way")
+
+    assert last_sent_seq(store, "outbox") == 0
+    assert next_seq(store, "outbox", start=900) == 900
+
+
+def test_a_restore_jumps_every_outgoing_stream_and_every_card_number(store: Store) -> None:
+    for _ in range(3):
+        next_seq(store, "heartbeat")
+    next_seq(store, "outbox", start=500)
+    next_seq(store, "pause")
+    allocate_card_id(store, "TES")
+    allocate_card_id(store, "TES")
+    allocate_card_id(store, "FAK")
+
+    jump_after_restore(store)
+
+    assert last_sent_seq(store, "heartbeat") == 1_000_003
+    assert last_sent_seq(store, "outbox") == 1_000_500
+    assert next_seq(store, "heartbeat") == 1_000_004
+    assert allocate_card_id(store, "TES") == "TES-1003"
+    assert allocate_card_id(store, "FAK") == "FAK-1002"
+
+
+def test_a_restore_keeps_what_ng_runner_has_received_in_its_place(store: Store) -> None:
+    assert accept_seq(store, "fab_export", 7)
+    assert accept_seq(store, "pause", 3)
+    next_seq(store, "pause")  # the same name used both ways: only what is sent jumps
+
+    jump_after_restore(store)
+
+    assert last_accepted_seq(store, "fab_export") == 7
+    assert last_accepted_seq(store, "pause") == 3
+    assert last_sent_seq(store, "pause") == 1_000_001
+    assert accept_seq(store, "fab_export", 8)
+
+
+def test_a_restore_jump_is_part_of_its_transaction(store: Store) -> None:
+    next_seq(store, "heartbeat")
+    allocate_card_id(store, "TES")
+
+    with pytest.raises(RuntimeError):
+        with store.transaction() as tx:
+            jump_after_restore(tx)
+            raise RuntimeError("stopped half-way")
+
+    assert last_sent_seq(store, "heartbeat") == 1
+    assert allocate_card_id(store, "TES") == "TES-2"
+
+
 def test_an_incoming_seq_is_accepted_only_above_the_last_one(store: Store) -> None:
     assert last_accepted_seq(store, "fab_export") == 0
 
@@ -918,16 +1282,75 @@ def test_an_envelope_is_accepted_only_with_a_new_seq_and_a_new_id(store: Store) 
     assert last_accepted_seq(store, "pause") == 4
 
 
+def test_only_the_newest_seen_ids_of_a_stream_are_kept(store: Store) -> None:
+    # Ten ids seen, highest first: "newest" must mean last seen, whatever the id says.
+    ids = [f"{n:032x}" for n in range(10, 0, -1)]
+    for envelope_id in ids:
+        assert seen_id(store, "receipt", envelope_id)
+
+    assert prune_seen_ids(store, keep_last=3) == 7
+
+    assert [seen_id(store, "receipt", i) for i in ids[-3:]] == [False, False, False]  # still known
+    assert seen_id(store, "receipt", ids[0])                                # forgotten: looks new
+    assert prune_seen_ids(store, keep_last=3) == 1                          # that one, just seen
+
+
+def test_a_busy_stream_never_pushes_out_a_quiet_streams_ids(store: Store) -> None:
+    assert seen_id(store, "pause", ID_1)
+    for n in range(5):
+        assert seen_id(store, "receipt", f"{n:032x}")
+
+    assert prune_seen_ids(store, keep_last=2) == 3
+
+    assert not seen_id(store, "pause", ID_1)
+    assert seen_id(store, "pause", ID_2)
+
+
+def test_a_replayed_envelope_stays_refused_after_its_id_is_pruned(store: Store) -> None:
+    assert accept_envelope(store, "fab_export", seq=1, id=ID_1)
+    assert accept_envelope(store, "fab_export", seq=2, id=ID_2)
+
+    assert prune_seen_ids(store, keep_last=1) == 1
+
+    assert not accept_envelope(store, "fab_export", seq=1, id=ID_1)  # the seq rule still holds
+    assert last_accepted_seq(store, "fab_export") == 2
+
+
+def test_pruning_seen_ids_keeps_5000_of_each_stream_by_default(store: Store) -> None:
+    with store.transaction() as tx:
+        for n in range(5003):
+            seen_id(tx, "fab_export", f"{n:032x}")
+        assert prune_seen_ids(tx) == 3
+
+    assert prune_seen_ids(store) == 0
+    assert seen_id(store, "fab_export", f"{2:032x}")      # the third seen is gone
+    assert not seen_id(store, "fab_export", f"{3:032x}")  # the fourth is the oldest kept
+
+
+@pytest.mark.parametrize("keep_last", [0, -1, True, "5", 1.5, None])
+def test_a_bad_number_of_seen_ids_to_keep_is_refused(store: Store, keep_last) -> None:
+    assert seen_id(store, "pause", ID_1)
+
+    with pytest.raises(ValueError):
+        prune_seen_ids(store, keep_last=keep_last)
+
+    assert not seen_id(store, "pause", ID_1)
+
+
 @pytest.mark.parametrize("call", [
     lambda s: next_seq(s, "Heart Beat"), lambda s: accept_seq(s, "fab_export", 0),
     lambda s: accept_seq(s, "fab_export", True), lambda s: seen_id(s, "pause", " "),
     lambda s: accept_envelope(s, "out:pause", seq=1, id=ID_1),
+    lambda s: next_seq(s, "pause", start=0), lambda s: next_seq(s, "pause", start=-5),
+    lambda s: next_seq(s, "pause", start=True), lambda s: next_seq(s, "pause", start="5"),
+    lambda s: next_seq(s, "pause", start=1.5), lambda s: next_seq(s, "pause", start=None),
 ])
 def test_a_bad_stream_seq_or_id_is_refused(store: Store, call) -> None:
     with pytest.raises(ValueError):
         call(store)
 
     assert last_accepted_seq(store, "fab_export") == 0 and last_accepted_seq(store, "pause") == 0
+    assert last_sent_seq(store, "pause") == 0
 
 
 # ----- the state table

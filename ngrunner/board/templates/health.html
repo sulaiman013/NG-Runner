@@ -20,6 +20,19 @@
   {% endif %}
 </section>
 <section class="facts">
+  <h2 class="facts-title">Mode</h2>
+  <div class="mode">
+    {{ m.tag(mode_style(view.shadow)) }}
+    {% if view.shadow %}
+    <p class="fact-note">A trial run. NG Runner does all its work, but what it would file goes to the control folder instead of NG Jobs, and every message goes to Sulaiman only.</p>
+    {{ m.mode_switch(page, "live", "play", "Go live", "NG Runner will file new summaries into NG Jobs, and Barbara and you will get your messages. Go live only when Sulaiman says the trial run is done.", "Yes, go live") }}
+    {% else %}
+    <p class="fact-note">NG Runner files summaries into NG Jobs and sends its messages to the people they are for.</p>
+    {{ m.mode_switch(page, "shadow", "eye", "Back to shadow", "NG Runner will stop filing into NG Jobs and send every message to Sulaiman only. Nothing it has filed is removed.", "Yes, back to shadow") }}
+    {% endif %}
+  </div>
+</section>
+<section class="facts">
   <h2 class="facts-title">Last worked</h2>
   <dl class="fact-list">
     <div class="fact"><dt>Fab Schedule export</dt><dd>{{ stamp(h.last_export, "Not read yet") }}</dd></div>

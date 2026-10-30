@@ -16,6 +16,19 @@
 <input type="hidden" name="back" value="{{ page }}">
 {%- endmacro %}
 
+{% macro mode_switch(page, mode, icon_name, label, text, confirm) -%}
+{# Two steps on purpose: this changes where NG Runner files and who hears from it. #}
+<details class="reveal reveal--start">
+  <summary class="btn btn--secondary">{{ icon(icon_name) }}<span>{{ label }}</span></summary>
+  <form class="reveal-panel" method="post" action="{{ url_for('set_mode') }}">
+    {{ token_field() }}{{ back_field(page) }}
+    <input type="hidden" name="mode" value="{{ mode }}">
+    <p class="reveal-text">{{ text }}</p>
+    <button class="btn btn--primary" type="submit">{{ confirm }}</button>
+  </form>
+</details>
+{%- endmacro %}
+
 {% macro open_button(path, page, label="Open") -%}
 <form class="inline-form" method="post" action="{{ url_for('open_file') }}">
   {{ token_field() }}{{ back_field(page) }}

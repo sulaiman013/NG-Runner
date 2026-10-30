@@ -72,7 +72,7 @@ The IC summary's consolidated parts list for the whole job, headed PULLED. Its c
 _Avoid_: BOM, parts list (ambiguous)
 
 **Report layout**:
-Landscape or portrait: the two page layouts Studio renders an IC summary in, which Jim's BUILD.md calls "two document generations". All renders of one job use the same layout.
+Landscape or portrait: the two page layouts Studio renders an IC summary in, which Jim's BUILD.md calls "two document generations". All renders of one job use the same layout, and a summary already in the job's folder decides which.
 _Avoid_: orientation (Assembly Reports' setting), generation, version
 
 ### Mozaik work
@@ -108,7 +108,7 @@ Jim's lock clicks. Lock design records the job with calculated quantities before
 The three states a nested material can show; never silence, never "OK to cut".
 
 **Card**:
-A question for Jim with fixed choices and a recorded verbatim answer.
+A question for Jim with fixed choices and a recorded verbatim answer. A choice that names a job holds its Studio project ID, so an answer means that one job whenever it comes.
 
 **Digest**:
 The single 6:30 AM message summarising every job touched overnight.
@@ -126,6 +126,26 @@ _Avoid_: writer, saver
 **Owned file**:
 A file whose content is still exactly what NG Runner last wrote there (its hash matches); the only kind of existing file NG Runner overwrites.
 _Avoid_: our file, managed file
+
+**Control folder**:
+The private Drive folder, outside the CNC operations tree, through which NG Runner and its Apps Script exchange signed files.
+_Avoid_: shared folder, inbox
+
+**Fab export**:
+The Apps Script's copy of Sheet1 in the control folder, rewritten every 5 minutes; the only way NG Runner sees the NG Fab Schedule.
+_Avoid_: sheet dump, snapshot
+
+**Shadow mode**:
+NG Runner running for real on Jim's PC with nothing reaching anyone else: what it would file goes to the control folder instead of NG Jobs, and its messages go to Sulaiman, marked SHADOW. The shadow run is the test window spent in it.
+_Avoid_: dry run, test mode
+
+**Observed job**:
+A job whose NG Jobs folder was there when NG Runner was installed; NG Runner watches and checks it, and writes nothing into it.
+_Avoid_: existing job, old job (`NG Jobs\Old` is a folder)
+
+**DEV item**:
+A problem for Sulaiman, in a lane Jim doesn't see. One that holds up a job reaches Jim after 48 hours, with the way back to chat; an urgent one turns the tray red.
+_Avoid_: ticket, bug
 
 **Could not verify / Could not check**:
 "Could not verify" is a value NG Runner could not confirm, reported as such and never guessed. "Could not check" is a Setup Check item that could not run, always shown with its reason.

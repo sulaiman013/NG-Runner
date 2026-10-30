@@ -7,10 +7,11 @@
  * writes receipts/<outbox id>.json. A message goes out at most once. Its sequence number and id
  * are recorded before it is sent, so a run that dies half-way can lose a message but never
  * repeat one, and a lost one shows on Jim's PC as a missing receipt (the tray turns red within
- * 5 minutes and urgent items go straight to Pushover). Files are taken in sequence order. One
- * that arrives ahead of an earlier one (Drive for desktop uploads in any order) waits up to 2
- * minutes for it; then the gap is given up, and the late one is refused as any replay is.
- * Receipts and logs say what went wrong in plain words, never with an address or a token.
+ * 5 minutes, and urgent items go straight to Pushover once it is added). Files are taken in
+ * sequence order. One that arrives ahead of an earlier one (Drive for desktop uploads in any
+ * order) waits up to 2 minutes for it; then the gap is given up, and the late one is refused as
+ * any replay is. Receipts and logs say what went wrong in plain words, never with an address or
+ * a token.
  */
 
 var OUTBOX_CHANNELS = ['email', 'slack', 'pushover'];
@@ -107,7 +108,9 @@ function sendOutbox_(env) {
     log_('warn', 'outbox ' + env.id + ' failed unexpectedly: ' + err.message);
     result = { ok: false, error: 'the message could not be sent (an unexpected error)' };
   }
-  if (result.ok && payload.to === 'jim' && DIGEST_REF_RE.test(payload.ref)) setState_('digest.day', pacificDay_(sentAt));
+  if (result.ok && payload.to === listRole_() && DIGEST_REF_RE.test(payload.ref)) {
+    setState_('digest.day', pacificDay_(sentAt));
+  }
   var channel = typeof payload.channel === 'string' ? payload.channel : '';
   writeReceipt_({ outbox_id: env.id, sent_at: isoUtc_(sentAt), channel: channel, ok: result.ok,
     error: result.ok ? null : result.error });

@@ -28,9 +28,8 @@ def paths(tmp_path: Path) -> AppPaths:
 
 
 def set_up(paths: AppPaths, tmp_path: Path) -> None:
-    save_settings(paths, Settings(
-        ng_jobs=tmp_path / "NG Jobs", mozaik_shared=tmp_path / "Mozaik Shared", control=tmp_path / "control",
-        emails=(("barbara", "barbara@example.com"), ("jim", "jim@example.com"))))
+    save_settings(paths, Settings(ng_jobs=tmp_path / "NG Jobs", control=tmp_path / "control",
+                                  mozaik_shared=tmp_path / "Mozaik Shared"))
     with sqlite3.connect(paths.db) as con:
         con.execute("CREATE TABLE jobs(studio_id TEXT PRIMARY KEY, name TEXT NOT NULL)")
         con.executemany("INSERT INTO jobs VALUES (?, ?)", [("1001", "Testerson_101426"), ("1002", "Dummitt_110226")])
@@ -55,7 +54,8 @@ def test_the_bundle_holds_versions_settings_schema_counts_and_recent_logs(paths,
     assert facts["made_at"] == to_iso(NOW) and facts["app_version"] == launcher.app_version()
     assert facts["packages"]["cryptography"] == "50.0.2" and facts["packages"]["pypdf"] == "6.21.4"
     assert facts["settings"]["ng_jobs"] == str(tmp_path / "NG Jobs")
-    assert facts["settings"]["emails"] == ["barbara", "jim"]            # which roles have one
+    assert facts["settings"]["mode"] == "shadow" and "emails" not in facts["settings"]
+    assert facts["settings"]["set_aside"] == []
     assert facts["database"] == {"schema_version": 3, "tables": {"cards": 0, "jobs": 2}, "problems": []}
     assert facts["launcher"]["versions"]["0.0.1"]["self_test"]["ok"] is True
     assert facts["data_folder"]["db_bytes"] == paths.db.stat().st_size
@@ -65,10 +65,14 @@ def test_the_bundle_holds_versions_settings_schema_counts_and_recent_logs(paths,
 
 def test_the_bundle_never_holds_an_address_or_the_boards_token(paths, tmp_path):
     set_up(paths, tmp_path)
+    settings = json.loads(paths.settings.read_text(encoding="utf-8"))
+    settings["emails"] = {"barbara": "barbara@example.com"}  # nothing writes one: a hand edit
+    paths.settings.write_text(json.dumps(settings), encoding="utf-8")
     token = "Secret-Board-Token-0123456789abcdefghijk"
     single.publish_board(paths, f"http://127.0.0.1:50123/?t={token}")
     data = support.make_bundle(paths, clock=FakeClock(NOW))
     facts, files = unpack(data)
+    assert facts["settings"]["set_aside"] == ["emails"]                 # by name, never its value
     everything = json.dumps(facts).encode("utf-8") + b"".join(files.values())
     for secret in (b"@example.com", token.encode("utf-8")):
         assert secret not in everything and secret not in data

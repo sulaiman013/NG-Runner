@@ -31,6 +31,12 @@
     {% endif %}
   </div>
 </header>
+{% if view.shadow %}
+<div class="banner banner--shadow" role="status">
+  {{ m.icon("eye") }}
+  <p class="banner-text"><strong>SHADOW.</strong> A trial run: nothing goes into NG Jobs, and every message goes to Sulaiman only.</p>
+</div>
+{% endif %}
 {% if view.paused %}
 <div class="banner" role="status">
   {{ m.icon("pause") }}

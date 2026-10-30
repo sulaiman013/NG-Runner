@@ -4,7 +4,8 @@ Messages people see: Jim's digest and cards, Barbara's emails, Sulaiman's DEV an
 Every one is a Message, so one lint (messages.lint) can hold all of them to Jim's format
 (design section 4: numbered, one line per item, no intro or sign-off, no paths or hashes) before
 anything leaves NG Runner. A Message is plain data: the outbox puts it in a signed file for the
-Apps Script to send, and the Pushover client sends it directly when receipts stop.
+Apps Script to send, and the Pushover client, once its keys are added, sends it directly when
+receipts stop.
 """
 from __future__ import annotations
 
@@ -22,7 +23,7 @@ class Message:
         runtime is replaced by the fixed template for its kind (templates.vetted).
     title: its first line: an email subject, a phone notification's title, a card's header.
     lines: the body, one item per line.
-    urgent: sent at once and on the direct phone path when receipts stop.
+    urgent: sent at once, and straight to Pushover when receipts stop and its keys exist.
     """
 
     kind: str

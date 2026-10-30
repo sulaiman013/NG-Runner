@@ -20,8 +20,7 @@ function beat(h, seq, at, { risks = [], key = KEY, name, payload } = {}) {
 }
 
 const alerts = (h) => h.mail.sent.filter((m) => m.to === 'dev@example.com');
-const toJim = (h) => h.fetch.requests.filter((r) => r.params.payload && r.params.payload.user === 'pushover-user-jim')
-  .map((r) => r.params.payload);
+const toJim = (h) => h.mail.sent.filter((m) => m.to === 'jim@example.com');
 
 test('a heartbeat 45 minutes old is fine; past that Sulaiman is alerted once per gap', () => {
   const h = load({ now: '2026-10-30T20:00:00Z' });              // 1:00 PM PDT
@@ -81,13 +80,23 @@ test('with no digest by 7:00 AM Jim hears there is no list, with the open risks'
   assert.deepEqual(toJim(h), []);
   h.clock.set('2026-10-30T14:00:00Z');                          // 7:00 AM
   h.gs.runWatchdog();
-  assert.deepEqual(toJim(h), [{ token: 'pushover-app-token', user: 'pushover-user-jim', title: 'No list today',
-    message: 'NG Runner has not checked in since 11:42 PM, so there is no list today. Your PC may be asleep, off'
-      + ` or signed out. Sulaiman has been alerted.\n1. ${RISK}`, priority: '1' }]);
+  assert.deepEqual(toJim(h).map((m) => [m.subject, m.body]), [['No list today',
+    'NG Runner has not checked in since 11:42 PM, so there is no list today. Your PC may be'
+      + ` asleep, off or signed out. Sulaiman has been alerted.\n1. ${RISK}`]]);
   assert.equal(alerts(h).length, 1);
   for (let i = 0; i < 4; i++) { h.clock.advance(5); h.gs.runWatchdog(); }
   assert.equal(toJim(h).length, 1);
   assert.ok(!JSON.stringify(toJim(h)).includes('Nothing is lost'));
+});
+
+test('Jim hears by email unless ROLE_JIM_CHANNEL says otherwise; Pushover is then urgent', () => {
+  const h = load({ now: '2026-10-30T14:00:00Z', props: { ROLE_JIM_CHANNEL: 'pushover' } });
+  h.gs.runWatchdog();
+  assert.deepEqual(toJim(h), []);
+  assert.deepEqual(h.fetch.requests.map((r) => r.params.payload), [{ token: 'pushover-app-token',
+    user: 'pushover-user-jim', title: 'No list today', priority: '1',
+    message: 'NG Runner has not checked in, so there is no list today. Your PC may be asleep,'
+      + ' off or signed out. Sulaiman has been alerted.' }]);
 });
 
 test('7:00 AM is Pacific wall time on both sides of each clock change', () => {
@@ -101,14 +110,14 @@ test('7:00 AM is Pacific wall time on both sides of each clock change', () => {
     h.clock.set(at);
     h.gs.runWatchdog();
     assert.equal(toJim(h).length, 1, at);
-    assert.match(toJim(h)[0].message, /^NG Runner has not checked in, so there is no list today\./);
+    assert.match(toJim(h)[0].body, /^NG Runner has not checked in, so there is no list today\./);
   }
 });
 
 test('a digest sent by 7:00 AM means no message, even one still waiting in the outbox', () => {
   const sent = load({ now: '2026-10-30T13:30:00Z' });           // 6:30 AM
-  const digest = { channel: 'pushover', to: 'jim', subject: 'NG Runner · Fri 10/30', lines: ['1. Quiet night.'],
-    urgent: false, ref: 'digest:2026-10-30' };
+  const digest = { channel: 'email', to: 'jim', subject: 'NG Runner · Fri 10/30',
+    lines: ['1. Quiet night.'], urgent: false, ref: 'digest:2026-10-30' };
   const put = (h, seq) => {
     const id = crypto.randomBytes(16).toString('hex');
     h.control.put(`outbox/${id}.json`, h.gs.sealEnvelope_('outbox', digest, { key: KEY, seq, issuedAt: h.clock.now(), id }));
@@ -118,12 +127,12 @@ test('a digest sent by 7:00 AM means no message, even one still waiting in the o
   beat(sent, 100, '2026-10-30T13:30:00Z');
   sent.clock.set('2026-10-30T14:00:00Z');
   sent.gs.runWatchdog();
-  assert.deepEqual(toJim(sent).map((p) => p.title), ['NG Runner · Fri 10/30']);
+  assert.deepEqual(toJim(sent).map((m) => m.subject), ['NG Runner · Fri 10/30']);
   const waiting = load({ now: '2026-10-30T14:00:00Z' });        // the outbox trigger has not run yet
   beat(waiting, 100, '2026-10-30T13:59:00Z');
   put(waiting, 1);
   waiting.gs.runWatchdog();
-  assert.deepEqual(toJim(waiting).map((p) => p.title), ['NG Runner · Fri 10/30']);
+  assert.deepEqual(toJim(waiting).map((m) => m.subject), ['NG Runner · Fri 10/30']);
 });
 
 test('a digest that went out counts even when its receipt could not be written', () => {
@@ -133,22 +142,22 @@ test('a digest that went out counts even when its receipt could not be written',
   const set = h.props.setProperty.bind(h.props);
   h.props.setProperty = (k, v) => { if (k === 'state.receipts.owed') throw new Error('quota'); return set(k, v); };
   const id = crypto.randomBytes(16).toString('hex');
-  const digest = { channel: 'pushover', to: 'jim', subject: 'NG Runner · Fri 10/30', lines: ['1. Quiet night.'],
-    urgent: false, ref: 'digest:2026-10-30' };
+  const digest = { channel: 'email', to: 'jim', subject: 'NG Runner · Fri 10/30',
+    lines: ['1. Quiet night.'], urgent: false, ref: 'digest:2026-10-30' };
   h.control.put(`outbox/${id}.json`, h.gs.sealEnvelope_('outbox', digest, { key: KEY, seq: 1, issuedAt: h.clock.now(), id }));
   assert.throws(() => h.gs.processOutbox(), /quota/);
   h.props.setProperty = set;
   beat(h, 100, '2026-10-30T13:59:00Z');
   h.clock.set('2026-10-30T14:00:00Z');
   h.gs.runWatchdog();
-  assert.deepEqual(toJim(h).map((p) => p.title), ['NG Runner · Fri 10/30']);
+  assert.deepEqual(toJim(h).map((m) => m.subject), ['NG Runner · Fri 10/30']);
 });
 
 test('when the PC checked in but no list came, Jim and Sulaiman are told just that', () => {
   const h = load({ now: '2026-10-30T14:00:00Z' });
   beat(h, 100, '2026-10-30T13:55:00Z');                         // 6:55 AM
   h.gs.runWatchdog();
-  assert.deepEqual(toJim(h).map((p) => p.message), [
+  assert.deepEqual(toJim(h).map((m) => m.body), [
     'NG Runner checked in at 6:55 AM but sent no list today. Sulaiman has been alerted.']);
   assert.deepEqual(alerts(h).map((m) => [m.subject, m.body]), [['No list reached Jim',
     'NG Runner checked in at 6:55 AM, but no list reached Jim by 7:00 AM.']]);
@@ -158,7 +167,7 @@ test('Jim is never told Sulaiman was alerted when he could not be', () => {
   const h = load({ now: '2026-10-30T14:00:00Z', props: { ROLE_SULAIMAN_EMAIL: null } });
   beat(h, 100, '2026-10-30T06:42:00Z');
   h.gs.runWatchdog();
-  assert.match(toJim(h)[0].message, /signed out\. Sulaiman could not be alerted\.$/);
+  assert.match(toJim(h)[0].body, /signed out\. Sulaiman could not be alerted\.$/);
 });
 
 test('a PC declared to sleep at night gets no morning alarm', () => {
@@ -206,6 +215,162 @@ test('a heartbeat sealed by NG Runner in Python is read', (t) => {
   h.control.put(`heartbeat/20261030/${sealed.seq}.json`, sealed.text, { createdMinutesAgo: 4 });
   h.clock.set('2026-10-30T14:00:00Z');
   h.gs.runWatchdog();
-  assert.deepEqual(toJim(h).map((p) => p.message), [
+  assert.deepEqual(toJim(h).map((m) => m.body), [
     `NG Runner checked in at 6:55 AM but sent no list today. Sulaiman has been alerted.\n1. ${sealed.payload.open_risks[0]}`]);
+});
+
+// ----- the shadow run: NG Runner sends everything to Sulaiman, so Jim expects no list yet
+
+const SHADOW = { SHADOW: 'true' };
+const LIST = 'SHADOW NG Runner · Fri 10/30';
+const NO_LIST = 'SHADOW No list today';
+const subjects = (messages) => messages.map((m) => m.subject);
+
+/** Today's digest in the outbox, addressed to one role, as NG Runner's outbox file reads. */
+function digestTo(h, to) {
+  const id = crypto.randomBytes(16).toString('hex');
+  const digest = { channel: 'email', to, subject: LIST, lines: ['1. Quiet night.'], urgent: false,
+    ref: 'digest:2026-10-30' };
+  const options = { key: KEY, seq: 1, issuedAt: h.clock.now(), id };
+  h.control.put(`outbox/${id}.json`, h.gs.sealEnvelope_('outbox', digest, options));
+}
+
+test('in the shadow run a digest to the alert role counts, so nobody hears of no list', () => {
+  const h = load({ now: '2026-10-30T13:30:00Z', props: SHADOW });   // 6:30 AM
+  digestTo(h, 'sulaiman');
+  h.gs.processOutbox();
+  beat(h, 100, '2026-10-30T13:30:00Z');
+  h.clock.set('2026-10-30T14:00:00Z');                          // 7:00 AM
+  h.gs.runWatchdog();
+  assert.deepEqual(subjects(alerts(h)), [LIST]);
+  assert.deepEqual(toJim(h), []);
+  const waiting = load({ now: '2026-10-30T14:00:00Z', props: SHADOW });   // the trigger has not run
+  beat(waiting, 100, '2026-10-30T13:59:00Z');
+  digestTo(waiting, 'sulaiman');
+  waiting.gs.runWatchdog();
+  assert.deepEqual(subjects(alerts(waiting)), [LIST]);
+  assert.deepEqual(toJim(waiting), []);
+});
+
+test('the alert role may be a backup contact, in capitals or not: a digest to it counts', () => {
+  const props = { ...SHADOW, ALERT_ROLE: 'Backup_Contact',
+    ROLE_BACKUP_CONTACT_EMAIL: 'backup@example.com' };
+  const h = load({ now: '2026-10-30T13:30:00Z', props });
+  digestTo(h, 'backup_contact');
+  h.gs.processOutbox();
+  beat(h, 100, '2026-10-30T13:30:00Z');
+  h.clock.set('2026-10-30T14:00:00Z');
+  h.gs.runWatchdog();
+  assert.deepEqual(h.mail.sent.map((m) => [m.to, m.subject]), [['backup@example.com', LIST]]);
+});
+
+test('no digest by 7:00 AM in the shadow run tells the alert role, once a day, never Jim', () => {
+  const h = load({ now: '2026-10-30T13:55:00Z', props: SHADOW });
+  beat(h, 100, '2026-10-30T13:55:00Z', { risks: [RISK] });      // 6:55 AM
+  h.gs.runWatchdog();
+  assert.deepEqual(alerts(h), []);
+  h.clock.set('2026-10-30T14:00:00Z');                          // 7:00 AM
+  h.gs.runWatchdog();
+  assert.deepEqual(alerts(h).map((m) => [m.subject, m.body]), [[NO_LIST,
+    `NG Runner checked in at 6:55 AM but sent no list today.\n1. ${RISK}`]]);
+  for (let i = 0; i < 4; i++) { h.clock.advance(5); h.gs.runWatchdog(); }
+  assert.equal(alerts(h).length, 1);
+  h.clock.set('2026-10-31T14:00:00Z');                          // the next morning
+  beat(h, 101, '2026-10-31T13:55:00Z');
+  h.gs.runWatchdog();
+  assert.equal(alerts(h).length, 2);
+  assert.deepEqual(toJim(h), []);
+  assert.deepEqual(h.fetch.requests, []);
+});
+
+test('a PC that stopped checking in is called Jim\'s, and only the alert role hears', () => {
+  const stale = load({ now: '2026-10-30T14:00:00Z', props: SHADOW });
+  beat(stale, 100, '2026-10-30T06:42:00Z');                     // 11:42 PM PDT on 10/29
+  stale.gs.runWatchdog();
+  assert.deepEqual(alerts(stale).map((m) => [m.subject, m.body]), [
+    ['NG Runner is not checking in', 'NG Runner has not checked in since 11:42 PM (7 hours ago).'],
+    [NO_LIST, 'NG Runner has not checked in since 11:42 PM, so there is no list today.'
+      + " Jim's PC may be asleep, off or signed out."]]);
+  assert.deepEqual(toJim(stale), []);
+  const never = load({ now: '2026-10-30T14:00:00Z', props: SHADOW });
+  never.gs.runWatchdog();
+  assert.deepEqual(alerts(never).map((m) => [m.subject, m.body]), [
+    ['NG Runner is not checking in', 'NG Runner has not checked in yet.'],
+    [NO_LIST, 'NG Runner has not checked in, so there is no list today.'
+      + " Jim's PC may be asleep, off or signed out."]]);
+  assert.deepEqual(toJim(never), []);
+});
+
+test('an alert role that can\'t be reached is tried again, and Jim still hears nothing', () => {
+  const h = load({ now: '2026-10-30T14:00:00Z', props: { ...SHADOW, ROLE_SULAIMAN_EMAIL: null } });
+  beat(h, 100, '2026-10-30T13:55:00Z');
+  assert.equal(h.gs.runWatchdog().noList.ok, false);
+  assert.deepEqual(h.mail.sent, []);
+  h.props.setProperty('ROLE_SULAIMAN_EMAIL', 'dev@example.com');
+  h.clock.advance(5);
+  h.gs.runWatchdog();
+  assert.deepEqual(h.mail.sent.map((m) => [m.to, m.subject]), [['dev@example.com', NO_LIST]]);
+});
+
+test('a SHADOW left on at go-live shows itself: a digest to Jim goes out, uncounted', () => {
+  const h = load({ now: '2026-10-30T13:30:00Z', props: SHADOW });
+  digestTo(h, 'jim');
+  h.gs.processOutbox();
+  beat(h, 100, '2026-10-30T13:30:00Z');
+  h.clock.set('2026-10-30T14:00:00Z');
+  h.gs.runWatchdog();
+  assert.deepEqual(subjects(toJim(h)), [LIST]);
+  assert.deepEqual(subjects(alerts(h)), [NO_LIST]);
+});
+
+test('without SHADOW a digest to the alert role does not count, and Jim hears of no list', () => {
+  for (const value of [null, ' ', 'false', '0', 'no', 'off']) {
+    const h = load({ now: '2026-10-30T13:30:00Z', props: { SHADOW: value } });
+    digestTo(h, 'sulaiman');
+    h.gs.processOutbox();
+    beat(h, 100, '2026-10-30T13:30:00Z');
+    h.clock.set('2026-10-30T14:00:00Z');
+    h.gs.runWatchdog();
+    assert.deepEqual(subjects(toJim(h)), ['No list today'], String(value));
+    assert.deepEqual(subjects(alerts(h)), [LIST, 'No list reached Jim'], String(value));
+  }
+});
+
+test('clearing SHADOW at go-live brings Jim back: the next morning with no list he hears', () => {
+  const h = load({ now: '2026-10-30T14:00:00Z', props: SHADOW });
+  beat(h, 100, '2026-10-30T13:55:00Z');
+  h.gs.runWatchdog();
+  assert.deepEqual(toJim(h), []);
+  h.props.deleteProperty('SHADOW');
+  h.clock.set('2026-10-31T14:00:00Z');
+  beat(h, 101, '2026-10-31T13:55:00Z');
+  h.gs.runWatchdog();
+  assert.deepEqual(subjects(toJim(h)), ['No list today']);
+  assert.deepEqual(subjects(alerts(h)), [NO_LIST, 'No list reached Jim']);
+});
+
+test('in the shadow run a PC declared to sleep at night still gets no morning alarm', () => {
+  const props = { ...SHADOW, PC_SLEEPS_AT_NIGHT: 'true' };
+  const h = load({ now: '2026-10-30T14:00:00Z', props });
+  beat(h, 100, '2026-10-30T13:55:00Z');
+  h.gs.runWatchdog();
+  assert.deepEqual(h.mail.sent, []);
+});
+
+test('a digest NG Runner made in Python and sent on to the alert role counts', (t) => {
+  const python = pythonEnvelopes();
+  if (!python) {
+    t.skip('run through pytest (tests/test_fab.py) to get the digest Python makes');
+    return;
+  }
+  const props = { ...SHADOW, SIGNING_KEY: python.key_hex };
+  const h = load({ now: '2026-10-30T13:55:00Z', props });
+  const heartbeat = python.envelopes.find((e) => e.kind === 'heartbeat');
+  h.control.put(`heartbeat/20261030/${heartbeat.seq}.json`, heartbeat.text);
+  h.control.put(python.shadow_digest.path, python.shadow_digest.text);
+  h.gs.processOutbox();
+  h.clock.set('2026-10-30T14:00:00Z');
+  h.gs.runWatchdog();
+  assert.deepEqual(h.mail.sent.map((m) => [m.to, m.subject]),
+    [['dev@example.com', python.shadow_digest.subject]]);
 });

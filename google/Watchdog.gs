@@ -9,11 +9,15 @@
  *   risks of the last heartbeat. It is sent between 7:00 AM and noon, once a day, never for a PC
  *   declared to sleep at night (its digest comes at first wake). It never says "Nothing is lost",
  *   and it says Sulaiman has been alerted only when he has.
+ * During the shadow run (the Script Property SHADOW) NG Runner sends everything to Sulaiman, so
+ * the digest waited for is the alert role's, and no digest by 7:00 AM tells the alert role, never
+ * Jim, who expects no list yet.
  * Ages are real elapsed time; "7:00 AM" and the expected hours are Pacific wall time, so both
  * hold across the clock changes. A heartbeat dated in the future counts from when it was first
  * seen, so a PC clock that runs fast can't look alive for hours.
  */
 
+var SHADOW_TITLE = 'SHADOW ';           // as NG Runner marks what it sends Sulaiman in Jim's place
 var WATCHDOG_STALE_MS = 45 * 60 * 1000;
 var WATCHDOG_NO_LIST_FROM = 7 * 60;     // 7:00 AM Pacific
 var WATCHDOG_NO_LIST_UNTIL = 12 * 60;   // the "no list" message is a morning message
@@ -128,7 +132,7 @@ function alertNoList_(beat, now, day) {
 
 /** To ALERT_ROLE (sulaiman; a backup contact while he is away), on that role's channel. */
 function alert_(subject, lines) {
-  var role = setting_('ALERT_ROLE', 'sulaiman');
+  var role = alertRole_();
   var channel = setting_('ROLE_' + role.toUpperCase() + '_CHANNEL', 'email');
   var result = sendTo_(role, channel, subject, lines, true);
   if (!result.ok) log_('warn', 'the watchdog could not alert ' + role + ': ' + result.error);
@@ -149,29 +153,40 @@ function noListCheck_(now, beat, stale, alerted) {
     log_('warn', 'the outbox could not be checked before telling Jim: ' + err.message);
   }
   if (state_('digest.day') === day) return null;
+  if (shadowRun_()) return shadowNoList_(beat, now, stale, day);
   if (!stale) alerted = alertNoList_(beat, now, day);
   else if (alerted === null) alerted = alertGap_(beat, now);
   var message = noListMessage_(beat, now, stale, alerted);
-  var result = sendTo_('jim', setting_('ROLE_JIM_CHANNEL', 'pushover'), message.subject, message.lines, true);
+  var channel = setting_('ROLE_JIM_CHANNEL', 'email');
+  var result = sendTo_('jim', channel, message.subject, message.lines, true);
   if (result.ok) setState_('watchdog.nolist', day);
   else log_('warn', 'Jim could not be told there is no list today: ' + result.error);
+  return result;
+}
+
+/** The shadow run's morning with no list: the alert role hears it, once a day; Jim never does. */
+function shadowNoList_(beat, now, stale, day) {
+  var lines = [noListLead_(beat, now, stale, "Jim's PC")].concat(riskLines_(beat));
+  var result = alert_(SHADOW_TITLE + 'No list today', lines);
+  if (result.ok) setState_('watchdog.nolist', day);
   return result;
 }
 
 /** Design section 4's words: what is known, what it may mean, and who knows. */
 function noListMessage_(beat, now, stale, alerted) {
   var name = setting_('ALERT_NAME', 'Sulaiman');
-  var lead;
-  if (!beat) {
-    lead = 'NG Runner has not checked in, so there is no list today. Your PC may be asleep, off or signed out.';
-  } else if (stale) {
-    lead = 'NG Runner has not checked in since ' + when_(beat.at, now)
-      + ', so there is no list today. Your PC may be asleep, off or signed out.';
-  } else {
-    lead = 'NG Runner checked in at ' + when_(beat.at, now) + ' but sent no list today.';
-  }
+  var lead = noListLead_(beat, now, stale, 'Your PC');
   lead += alerted ? ' ' + name + ' has been alerted.' : ' ' + name + ' could not be alerted.';
   return { subject: 'No list today', lines: [lead].concat(riskLines_(beat)) };
+}
+
+/** What is known and what it may mean, naming the PC as this reader would. */
+function noListLead_(beat, now, stale, pc) {
+  var mayBe = ' ' + pc + ' may be asleep, off or signed out.';
+  if (!beat) return 'NG Runner has not checked in, so there is no list today.' + mayBe;
+  if (!stale) return 'NG Runner checked in at ' + when_(beat.at, now) + ' but sent no list today.';
+  return 'NG Runner has not checked in since ' + when_(beat.at, now)
+    + ', so there is no list today.' + mayBe;
 }
 
 function riskLines_(beat) {

@@ -24,6 +24,7 @@ from ngrunner.cards import CARD_KINDS
 from ngrunner.config import AppPaths
 from ngrunner.messages import templates
 from ngrunner.messages.lint import lint as real_lint
+from ngrunner.store import MIGRATIONS, Store, migrate
 from ngrunner.writes import CommitResult
 
 NOW = datetime(2026, 10, 29, 20, 0, tzinfo=timezone.utc)
@@ -158,8 +159,10 @@ def test_a_fresh_install_migrates_a_new_empty_database(paths):
 
 
 def test_by_default_the_stores_own_migrations_run_on_the_copy(paths):
-    # The store slice's open_store() creates or upgrades a database; nothing is faked here.
-    _live_database(paths)
+    # The store slice's open_store() creates or upgrades a database; nothing is faked here, so
+    # the live database is one the store's first version really left, upgraded on the copy only.
+    paths.app_data.mkdir(parents=True)
+    migrate(Store(paths.db), MIGRATIONS[:1])
     before = paths.db.read_bytes()
     problems = selftest.run_self_test(paths, modules=(), samples=clean_samples, lint=no_problems)
     assert problems == [] and paths.db.read_bytes() == before

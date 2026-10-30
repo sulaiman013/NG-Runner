@@ -65,8 +65,9 @@ def add_outbox(
     ref: str | None = None,
 ) -> OutboxRecord:
     """Record a message before its file is written (state "queued"). id is its envelope id
-    (32 lowercase hex), seq its envelope seq (take it with next_seq(db, "outbox") in the same
-    transaction); a seq or id already used is refused (StoreError)."""
+    (32 lowercase hex), seq its envelope seq (take it with next_seq(tx, "outbox", start=the
+    current Unix second) in the same transaction); a seq or id already used is refused
+    (StoreError)."""
     if not isinstance(urgent, bool):
         raise ValueError("urgent must be True or False")
     values = (

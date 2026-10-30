@@ -12,7 +12,10 @@ from pathlib import Path
 
 import pytest
 
-from ngrunner import fab
+from ngrunner import fab, support, writes
+from ngrunner.digest import DigestView, compose
+from ngrunner.messages import templates
+from ngrunner.messages.outbox import outbox_file
 from ngrunner.signing import EnvelopeError, key_from_text, new_key, open_envelope, seal
 
 KEY = key_from_text("00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff")
@@ -425,10 +428,20 @@ def _python_envelopes() -> dict:
                        "pending": 1, "dev_open": 0}, 3, "cd" * 16),
         ("pause", {"reason": "testing the pause path"}, 1, "ef" * 16),
     ]
-    return {"key_hex": KEY.hex(), "envelopes": [
+    # Prune.gs names these files itself, so the two sides are checked against each other. The
+    # chokepoint keeps its job-file names private, and this is the one reader outside it.
+    names = {"support": support.bundle_name(WHEN), "job_suffixes": list(writes._JOB_FILE_SUFFIXES),
+             "temp_suffix": writes._TMP_SUFFIX}
+    # A quiet night's digest from NG Runner's own code, sent on as the shadow run sends it.
+    digest = templates.shadow(compose(DigestView(now=issued)))
+    shadow = outbox_file(digest, to="sulaiman", channel="email", key=KEY, seq=8, now=issued)
+    envelopes = [
         {"kind": kind, "payload": payload, "seq": seq, "id": id_,
          "text": seal(kind, payload, key=KEY, seq=seq, issued_at=issued, id=id_).decode("utf-8")}
-        for kind, payload, seq, id_ in items]}
+        for kind, payload, seq, id_ in items]
+    return {"key_hex": KEY.hex(), "names": names, "envelopes": envelopes,
+            "shadow_digest": {"path": "/".join(shadow.path_parts), "subject": digest.title,
+                              "text": shadow.data.decode("utf-8")}}
 
 
 @pytest.fixture(scope="module")

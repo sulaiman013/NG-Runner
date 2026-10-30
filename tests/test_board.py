@@ -25,13 +25,17 @@ from ngrunner.board.views import (
     PathCheck,
     Tick,
     TrayState,
+    tray_tooltip,
 )
+from ngrunner.cards import new_card
 from ngrunner.clock import FakeClock
+from ngrunner.messages import templates
 
 TOKEN = "t" * 43
 PORT = 50123
 BASE = f"http://127.0.0.1:{PORT}"
 NOW = datetime(2026, 10, 30, 22, 0, tzinfo=timezone.utc)  # Fri 10/30 3:00 PM Pacific
+SHADOW_TRAY = TrayState("green", 0, tray_tooltip("NG Runner is running", shadow=True))
 
 
 # ----- fakes
@@ -69,6 +73,7 @@ def _view(**changes) -> BoardView:
         health=_health(),
         tray=TrayState("amber", 1, "NG Runner: 1 item for you"),
         paused=False,
+        shadow=False,
     )
     values.update(changes)
     return BoardView(**values)
@@ -112,6 +117,9 @@ class FakeActions:
 
     def add_job(self, text: str) -> str:
         return self._record("add_job", text)
+
+    def set_mode(self, mode: str) -> str:
+        return self._record("set_mode", mode)
 
 
 @pytest.fixture
@@ -230,7 +238,8 @@ def test_a_short_token_is_refused_when_the_board_is_made(views, actions):
 
 # ----- actions: POST only, with the token and the board's own Origin
 
-ACTION_ROUTES = ("/pause", "/resume", "/check", "/command", "/add-job", "/cards/answer", "/open")
+ACTION_ROUTES = ("/pause", "/resume", "/check", "/command", "/add-job", "/cards/answer", "/open",
+                 "/mode")
 
 
 def _post(client, path: str, data: dict | None = None, *, token: str | None = TOKEN,
@@ -272,15 +281,20 @@ def test_the_token_may_come_in_a_header_instead_of_the_form(browser, actions):
     {"host": f"rebind.example.com:{PORT}"},
 ], ids=["no token", "wrong token", "no origin", "other site", "localhost", "other port",
         "other host"])
-def test_a_post_that_fails_any_check_is_refused_and_does_nothing(browser, actions, change):
-    response = _post(browser, "/pause", **change)
+@pytest.mark.parametrize("path, data", [("/pause", {}), ("/mode", {"mode": "live"})],
+                         ids=["pause", "going live"])
+def test_a_post_that_fails_any_check_is_refused_and_does_nothing(browser, actions, change, path,
+                                                                 data):
+    response = _post(browser, path, data, **change)
 
     assert response.status_code == 403
     assert actions.calls == []
 
 
-def test_a_post_without_the_cookie_is_refused_even_with_the_token(anonymous, actions):
-    response = _post(anonymous, "/pause")
+@pytest.mark.parametrize("path, data", [("/pause", {}), ("/mode", {"mode": "live"})],
+                         ids=["pause", "going live"])
+def test_a_post_without_the_cookie_is_refused_even_with_the_token(anonymous, actions, path, data):
+    response = _post(anonymous, path, data)
 
     assert response.status_code == 403
     assert actions.calls == []
@@ -300,7 +314,7 @@ def test_a_post_with_cookie_token_and_origin_still_needs_the_boards_host(raw, ac
 
 @pytest.mark.parametrize("path", ACTION_ROUTES)
 def test_nothing_changes_on_a_get(browser, actions, path):
-    response = browser.get(f"{path}?text=pause&card=FAK-1&choice=Garage&path=C:/x.pdf",
+    response = browser.get(f"{path}?text=pause&card=FAK-1&choice=Garage&path=C:/x.pdf&mode=live",
                            base_url=BASE)
 
     assert response.status_code == 405
@@ -459,6 +473,39 @@ def test_names_are_shown_as_text_never_as_markup(browser, views):
     assert "&lt;script&gt;alert(1)&lt;/script&gt;" in page
 
 
+def test_a_fab_row_with_no_job_yet_is_a_row_on_the_board(browser, views):
+    views.view = _view(jobs=(JobRow(None, "Mockford closet", None,
+                                    _ticks("done", "todo", "todo", "todo", "na"),
+                                    "Card MOC-1: which job is this row?"),))
+
+    row = _row(_page(browser, "/"), "Mockford closet")
+
+    assert "Card MOC-1: which job is this row?" in row and "Not set" in row
+    assert "None" not in row
+
+
+@pytest.mark.parametrize("job", [None, 900001, ("Fakeley_102726",)],
+                         ids=["no job", "an ID", "a tuple"])
+def test_a_card_is_refused_when_made_with_anything_but_a_name_as_its_job(job):
+    """Otherwise the Cards page shows the word None on a which-job card (the job model passes
+    templates.card_subject(card), which is the job's name or the row as Barbara typed it)."""
+    with pytest.raises(ValueError, match="a card's job"):
+        CardView("MOC-1", job, "Which job is this row?", ("None of these",), 0)
+
+
+def test_a_which_job_card_shows_the_row_it_asks_about_and_never_the_word_none(browser, views):
+    """The join the job model makes: a card with no job yet stands in the Fab row it asks about."""
+    card = new_card(templates.which_job_card("Mockford closet"), created_at=NOW,
+                    allocate=lambda prefix: 1)
+    assert card.job is None
+    views.view = _view(cards=(CardView(card.id, templates.card_subject(card), card.text,
+                                       card.choices, 0),))
+
+    page = _page(browser, "/cards")
+
+    assert '<span class="job-name">Fab row "Mockford closet"</span>' in page
+
+
 def test_the_board_with_no_jobs_says_where_jobs_come_from(browser, views):
     views.view = _view(jobs=())
 
@@ -481,6 +528,155 @@ def test_while_running_the_board_offers_pause_and_while_paused_resume(browser, v
     assert 'action="/pause"' in running and 'action="/resume"' not in running
     assert 'action="/resume"' in paused and 'action="/pause"' not in paused
     assert "Paused." in paused
+
+
+# ----- shadow or live
+
+
+@pytest.mark.parametrize("path", PAGES)
+def test_in_shadow_mode_every_page_says_so_in_a_banner(browser, views, path):
+    views.view = _view(shadow=True, tray=SHADOW_TRAY)
+
+    page = _page(browser, path)
+
+    assert '<div class="banner banner--shadow"' in page
+    assert "<strong>SHADOW.</strong>" in page
+    assert "nothing goes into NG Jobs" in page and "every message goes to Sulaiman only" in page
+
+
+@pytest.mark.parametrize("path", PAGES)
+def test_when_live_no_page_says_shadow(browser, path):
+    page = _page(browser, path)
+
+    assert "SHADOW" not in page and "banner--shadow" not in page
+
+
+def test_shadow_and_paused_each_keep_their_own_banner(browser, views):
+    views.view = _view(shadow=True, paused=True,
+                       tray=TrayState("grey", 0, tray_tooltip("NG Runner is paused", shadow=True)))
+
+    page = _page(browser, "/")
+
+    assert "<strong>SHADOW.</strong>" in page and "<strong>Paused.</strong>" in page
+    assert 'action="/resume"' in page
+
+
+def test_in_shadow_mode_the_trays_tooltip_starts_shadow():
+    assert tray_tooltip("NG Runner: 1 item for you", shadow=True).startswith("SHADOW")
+    assert tray_tooltip("NG Runner: 1 item for you", shadow=False) == "NG Runner: 1 item for you"
+
+
+def test_the_status_beside_the_tabs_carries_the_trays_shadow_tooltip(browser, views):
+    views.view = _view(shadow=True, tray=SHADOW_TRAY)
+
+    assert tray_tooltip("NG Runner is running", shadow=True) in _page(browser, "/")
+
+
+@pytest.mark.parametrize("change", [
+    {"shadow": True},
+    {"shadow": False, "tray": SHADOW_TRAY},
+], ids=["shadow with a plain tooltip", "live with a SHADOW tooltip"])
+def test_a_view_whose_tray_disagrees_about_the_mode_fails_where_it_is_made(change):
+    with pytest.raises(ValueError, match="SHADOW"):
+        _view(**change)
+
+
+@pytest.mark.parametrize("shadow", ["shadow", "live", None, 1], ids=str)
+def test_a_view_given_anything_but_true_or_false_for_shadow_fails_where_it_is_made(shadow):
+    """settings.mode passed straight in would show the banner on a live board too."""
+    with pytest.raises(ValueError, match="shadow must be"):
+        _view(shadow=shadow)
+
+
+def test_a_view_can_not_be_made_without_saying_which_mode_it_is_in():
+    values = dict(jobs=(), your_list=(), cards=(), health=_health(),
+                  tray=TrayState("green", 0, "NG Runner is running"), paused=False)
+
+    with pytest.raises(TypeError, match="shadow"):
+        BoardView(**values)
+
+
+def _mode_section(page: str) -> str:
+    start = page.index('<h2 class="facts-title">Mode</h2>')
+    return page[start: page.index("</section>", start)]
+
+
+def test_health_in_shadow_mode_says_so_and_offers_going_live_behind_a_second_step(browser, views):
+    views.view = _view(shadow=True, tray=SHADOW_TRAY)
+
+    section = _mode_section(_page(browser, "/health"))
+
+    assert "<span>SHADOW</span>" in section and "control folder" in section
+    assert '<input type="hidden" name="mode" value="live">' in section
+    assert 'value="shadow"' not in section
+    assert section.index("<summary") < section.index("<form") < section.index("Yes, go live")
+    assert section.index('action="/mode"') < section.index("</details>")
+
+
+def test_health_when_live_says_so_and_offers_going_back_behind_a_second_step(browser):
+    section = _mode_section(_page(browser, "/health"))
+
+    assert "<span>Live</span>" in section and "SHADOW" not in section
+    assert '<input type="hidden" name="mode" value="shadow">' in section
+    assert 'value="live"' not in section
+    assert section.index("<summary") < section.index("<form") < section.index("Yes, back to shadow")
+    assert "Nothing it has filed is removed" in section
+
+
+def test_the_switch_carries_what_every_post_needs_and_comes_back_to_health(browser):
+    form = _mode_section(_page(browser, "/health"))
+
+    assert f'<input type="hidden" name="token" value="{TOKEN}">' in form
+    assert '<input type="hidden" name="back" value="health">' in form
+
+
+@pytest.mark.parametrize("path", [p for p in PAGES if p != "/health"])
+def test_only_health_offers_the_switch(browser, path):
+    assert 'action="/mode"' not in _page(browser, path)
+
+
+def test_a_switch_from_the_boards_own_page_runs_the_action_with_that_mode(browser, actions):
+    actions.reply = "NG Runner is live."
+
+    response = _post(browser, "/mode", {"mode": "live", "back": "health"})
+
+    assert actions.calls == [("set_mode", "live")]
+    assert response.status_code == 303 and response.headers["Location"] == "/health"
+    assert "NG Runner is live." in _page(browser, "/health")
+
+
+@pytest.mark.parametrize("data", [
+    {"mode": "LIVE"}, {"mode": "Live"}, {"mode": " live"}, {"mode": "live "}, {"mode": ""},
+    {"mode": "dry run"}, {},
+], ids=["capitals", "title case", "space before", "space after", "blank", "other", "none"])
+def test_a_mode_the_board_does_not_know_changes_nothing_and_says_so(browser, actions, data):
+    response = _post(browser, "/mode", data | {"back": "health"})
+
+    assert actions.calls == []
+    assert response.status_code == 303
+    assert "Nothing changed" in _page(browser, "/health")
+
+
+def test_a_mode_in_the_address_instead_of_the_form_changes_nothing(browser, actions):
+    _post(browser, "/mode?mode=live", {"back": "health"})
+
+    assert actions.calls == []
+
+
+def test_a_switch_that_fails_shows_plain_words_and_never_the_error(browser, actions):
+    def broken(mode: str) -> str:
+        raise OSError(f"could not save C:\\secret\\settings.json for {mode}")
+
+    actions.set_mode = broken
+
+    _post(browser, "/mode", {"mode": "live", "back": "health"})
+    page = _page(browser, "/health")
+
+    assert "That didn't go through" in page
+    assert "settings.json" not in page and "OSError" not in page
+
+
+# ----- Your list
 
 
 def test_your_list_numbers_each_item_with_its_answer_and_open_buttons(browser, views, tmp_path):

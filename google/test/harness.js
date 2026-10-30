@@ -482,7 +482,6 @@ function defaultProperties(controlId) {
     ROLE_JIM_EMAIL: 'jim@example.com',
     ROLE_JIM_PUSHOVER: 'pushover-user-jim',
     ROLE_JIM_SLACK: 'D0JIM',
-    ROLE_JIM_CHANNEL: 'pushover',
     ROLE_BARBARA_EMAIL: 'barbara@example.com',
     ROLE_SULAIMAN_EMAIL: 'dev@example.com',
     PUSHOVER_TOKEN: 'pushover-app-token',

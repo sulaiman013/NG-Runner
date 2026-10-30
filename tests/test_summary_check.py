@@ -15,13 +15,13 @@ import json
 import re
 import zlib
 from collections import defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from itertools import combinations
 from pathlib import Path
 
 import pytest
 from pypdf import PdfReader
-from pypdf.generic import StreamObject
+from pypdf.generic import DictionaryObject, StreamObject
 
 from ngrunner.intake.summary_check import (
     SummaryCheck,
@@ -64,32 +64,70 @@ def _encoded(data: bytes, filters: tuple[str, ...]) -> bytes:
     return data
 
 
+@dataclass(frozen=True)
+class _Art:
+    """How the writer stores pictures and fonts, where a test needs more than its plain defaults."""
+    picture: str = "/Width 2 /Height 2 /ColorSpace /DeviceGray /BitsPerComponent 8"
+    pixels: bytes | None = None  # as stored before the filters; None: 4 bytes, the first the picture's initial
+    picture_parms: str | None = None  # each picture's /DecodeParms (`pixels` written to match)
+    mask: bool = False  # each picture is drawn through one shared /SMask
+    font_file: str | None = None  # e.g. "/FontFile2": a font with this font file and a /ToUnicode map
+    metadata: bool = False  # the catalog has XML /Metadata, as a linearized render's does
+    indirect_length: bool = False  # each stream's /Length is a reference to the object after it
+
+
+_MASK_PIXELS = b"M\x80\xc0\xff"
+_FONT_PROGRAM = b"\x00\x01\x00\x00 a made-up font program"
+_TO_UNICODE = (b"/CIDInit /ProcSet findresource begin\n12 dict begin\nbegincmap\n1 begincodespacerange\n"
+               b"<00> <FF>\nendcodespacerange\n1 beginbfrange\n<00> <FF> <0000>\nendbfrange\nendcmap\nend\nend\n")
+
+
 def _write_pdf(pages: list[_FakePage], info: dict[str, str], filters: tuple[str, ...] = (),
-               decode_parms: str | None = None) -> bytes:
+               decode_parms: str | None = None, art: _Art = _Art()) -> bytes:
     objects: list[bytes] = []
 
     def add(body: bytes) -> int:
         objects.append(body)
         return len(objects)
 
-    def stream(head: str, data: bytes) -> int:
+    def stream(head: str, data: bytes, parms: str | None = decode_parms) -> int:
         data = _encoded(data, filters)
         chain = f" /Filter [{' '.join(filters)}]" if filters else ""
-        chain += f" /DecodeParms {decode_parms}" if decode_parms is not None else ""
-        return add(f"<< {head}{chain} /Length {len(data)} >>\nstream\n".encode() + data + b"\nendstream")
+        chain += f" /DecodeParms {parms}" if parms is not None else ""
+        length = f"{len(objects) + 2} 0 R" if art.indirect_length else f"{len(data)}"
+        number = add(f"<< {head}{chain} /Length {length} >>\nstream\n".encode() + data + b"\nendstream")
+        if art.indirect_length:
+            add(b"%d " % len(data))
+        return number
 
-    font = add(b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>")
+    if art.font_file:
+        head = {"/FontFile": f"/Length1 10 /Length2 {len(_FONT_PROGRAM) - 10} /Length3 0",
+                "/FontFile2": f"/Length1 {len(_FONT_PROGRAM)}",
+                "/FontFile3": "/Subtype /OpenType"}[art.font_file]
+        program, to_unicode = stream(head, _FONT_PROGRAM), stream("", _TO_UNICODE)
+        descriptor = add(f"<< /Type /FontDescriptor /FontName /Fake /Flags 32 /FontBBox [0 0 1000 1000]"
+                         f" /ItalicAngle 0 /Ascent 800 /Descent -200 /CapHeight 700 /StemV 80"
+                         f" {art.font_file} {program} 0 R >>".encode())
+        font = add(f"<< /Type /Font /Subtype /TrueType /BaseFont /Fake /Encoding /WinAnsiEncoding"
+                   f" /FontDescriptor {descriptor} 0 R /ToUnicode {to_unicode} 0 R >>".encode())
+    else:
+        font = add(b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>")
     tree = add(b"")  # the page tree, filled in once the pages exist
+    mask = stream(f"/Type /XObject /Subtype /Image {_Art.picture}", _MASK_PIXELS) if art.mask else None
+    # a colour profile, or any object a colour space may refer to
+    icc = stream("/N 3", b"a made-up colour profile") if "{icc}" in art.picture else None
+    described = art.picture.format(icc=icc)
     pictures: dict[str, int] = {}
     kids: list[int] = []
     for page in pages:
         ops = [f"BT /F1 {size:g} Tf 1 0 0 1 {x:g} {y:g} Tm ({_pdf_string(t)}) Tj ET"
                for x, y, size, t in page.texts]
         for name, x, y, w, h in page.images:
-            if name not in pictures:  # 2 x 2 grey pixels, the first one the picture's initial
-                pixels = name.encode()[:1] + b"\x80\xc0\xff"
-                pictures[name] = stream("/Type /XObject /Subtype /Image /Width 2 /Height 2"
-                                        " /ColorSpace /DeviceGray /BitsPerComponent 8", pixels)
+            if name not in pictures:  # by default 2 x 2 grey pixels, the first one the picture's initial
+                pixels = name.encode()[:1] + b"\x80\xc0\xff" if art.pixels is None else art.pixels
+                masked = f" /SMask {mask} 0 R" if mask else ""
+                pictures[name] = stream(f"/Type /XObject /Subtype /Image {described}{masked}", pixels,
+                                        art.picture_parms)
             ops.append(f"q {w:g} 0 0 {h:g} {x:g} {y:g} cm /{name} Do Q")
         contents = stream("", "\n".join(ops).encode("cp1252"))
         xobjects = " ".join(f"/{n} {pictures[n]} 0 R" for n in sorted({i[0] for i in page.images}))
@@ -98,7 +136,10 @@ def _write_pdf(pages: list[_FakePage], info: dict[str, str], filters: tuple[str,
                          f" /Contents {contents} 0 R >>").encode()))
     objects[tree - 1] = (f"<< /Type /Pages /Kids [{' '.join(f'{k} 0 R' for k in kids)}]"
                          f" /Count {len(kids)} >>").encode()
-    catalog = add(f"<< /Type /Catalog /Pages {tree} 0 R >>".encode())
+    metadata = ""
+    if art.metadata:
+        metadata = f" /Metadata {stream('/Type /Metadata /Subtype /XML', b'<x:xmpmeta/>')} 0 R"
+    catalog = add(f"<< /Type /Catalog /Pages {tree} 0 R{metadata} >>".encode())
     meta = add(("<< " + " ".join(f"/{k} ({_pdf_string(v)})" for k, v in info.items()) + " >>").encode())
     out = bytearray(b"%PDF-1.4\n")
     offsets = []
@@ -162,7 +203,8 @@ def fake_summary(*, geometry: _Geometry = PORTRAIT, project_name: str | None = "
                  pulled_items: int = 3, pulled_wraps: int = 0, pulled_pages: int = 1,
                  pulled_header: list[str] | None = None, numbered: bool = True,
                  numbered_out_of: int | None = None, filters: tuple[str, ...] = (),
-                 decode_parms: str | None = None, created: str = "D:20261014120000-07'00'") -> bytes:
+                 decode_parms: str | None = None, art: _Art = _Art(),
+                 created: str = "D:20261014120000-07'00'") -> bytes:
     g = geometry
     w, h = g.size
     project = project_name or "Testerson_101426"
@@ -245,7 +287,7 @@ def fake_summary(*, geometry: _Geometry = PORTRAIT, project_name: str | None = "
         if numbered:
             page.text(g.footer[2], g.footer[3], 8, f"Page {k} of {total}")
     return _write_pdf(pages, {"Producer": "test", "Title": f"{project} Install Summary",
-                              "CreationDate": created, "ModDate": created}, filters, decode_parms)
+                              "CreationDate": created, "ModDate": created}, filters, decode_parms, art)
 
 
 # ----- check_summary on complete summaries
@@ -468,10 +510,19 @@ def test_a_damaged_drawing_is_refused_though_reading_the_text_never_opens_it():
     assert verdict(damaged) == DAMAGED
 
 
-def _in_picture(pdf: bytes, name: str, old: bytes, new: bytes) -> bytes:
-    """`pdf` with `old` turned into `new` (padded to its length) in the dictionary of picture `name`."""
-    number = re.search(rb"/%s (\d+) 0 R" % name.encode(), pdf)[1]
-    start = pdf.index(b"\n%s 0 obj\n" % number)
+def _number(pdf: bytes, key: str) -> int:
+    """The number of the object that dictionary key `key` first refers to, e.g. "Elev0w2" or "ToUnicode"."""
+    return int(re.search(rb"/%s (\d+) 0 R" % key.encode(), pdf)[1])
+
+
+def _start(pdf: bytes, number: int) -> int:
+    """Where object `number` starts."""
+    return pdf.index(b"\n%d 0 obj\n" % number) + 1
+
+
+def _in_dictionary(pdf: bytes, key: str, old: bytes, new: bytes) -> bytes:
+    """`pdf` with `old` turned into `new` (padded to its length) in the stream dictionary `key` refers to."""
+    start = _start(pdf, _number(pdf, key))
     end = pdf.index(b"stream\n", start)
     assert old in pdf[start:end]
     return pdf[:start] + pdf[start:end].replace(old, new.ljust(len(old)), 1) + pdf[end:]
@@ -488,9 +539,210 @@ def test_a_drawing_whose_filter_is_damaged_is_refused_though_reading_the_text_ne
     # render. Text extraction never decodes a picture, and its page still draws it, so the drawing
     # check counted a drawing that no reader can decode.
     pdf = fake_summary(filters=("/FlateDecode",))
-    damaged = _in_picture(pdf, "Elev0w2", old, new)  # wall 2's elevation drawing
+    damaged = _in_dictionary(pdf, "Elev0w2", old, new)  # wall 2's elevation drawing
     assert len(damaged) == len(pdf) and damaged != pdf
     assert verdict(damaged) == DAMAGED
+
+
+def test_a_stream_nothing_decodes_is_refused_for_a_damaged_filter_too():
+    pdf = fake_summary(filters=("/FlateDecode",), art=_Art(metadata=True))
+    assert check_summary(pdf).missing == []
+    assert verdict(_in_dictionary(pdf, "Metadata", b"/FlateDecode", b"/FlateDecodd")) == DAMAGED
+
+
+# ----- a stream that one bit turns into a plain dictionary
+
+_WIDE = _Art(picture="/Width 16 /Height 1 /ColorSpace /DeviceGray /BitsPerComponent 8", pixels=bytes(range(16)))
+
+
+@pytest.mark.parametrize("letter", range(len("stream")))
+@pytest.mark.parametrize("key", ["Elev0w2", "FontFile2", "ToUnicode", "Metadata"],
+                         ids=["a drawing", "a font file", "a /ToUnicode map", "a stream nothing else reads"])
+def test_a_damaged_stream_keyword_is_refused_though_pypdf_reads_a_plain_dictionary(key, letter):
+    # Re-verification: one bit in any letter of 'stream' passed on every archived render, for every
+    # picture and font file. pypdf finds no stream, so no check of streams saw it, and the page's
+    # Do still counted as a drawing.
+    pdf = fake_summary(filters=("/ASCII85Decode", "/FlateDecode"),
+                       art=_Art(font_file="/FontFile2", metadata=True))
+    assert check_summary(pdf).missing == []
+    keyword = pdf.index(b"stream\n", _start(pdf, _number(pdf, key)))
+    damaged = bytearray(pdf)
+    damaged[keyword + letter] ^= 0x01
+    assert verdict(bytes(damaged)) == DAMAGED
+
+
+def test_a_length_object_read_on_the_way_to_its_stream_must_end_at_its_endobj_too():
+    # pypdf reads a stream's indirect /Length as it reads the stream, so it never parses that
+    # object again when its own turn comes.
+    pdf = fake_summary(art=_Art(indirect_length=True))
+    assert check_summary(pdf).missing == []
+    assert verdict(pdf.replace(b"\n4 \nendobj", b"\n4>\nendobj", 1)) == DAMAGED
+
+
+@pytest.mark.parametrize("old, new", [(b"/Length 16", b"/Length 1>"), (b"/Width 16", b"/Width 1>")],
+                         ids=["in /Length", "in /Width"])
+def test_a_digit_turned_into_the_end_of_a_dictionary_is_refused_though_pypdf_stops_reading_there(old, new):
+    # Re-verification: "6" and ">" are one bit apart, and pypdf ends a dictionary at ">" and any
+    # byte. It then finds no 'stream' and never looks for 'endobj', so a drawing no reader can
+    # decode still counted as a drawing, on every archived render.
+    pdf = fake_summary(art=_WIDE)
+    assert check_summary(pdf).missing == []
+    assert verdict(_in_dictionary(pdf, "Elev0w2", old, new)) == DAMAGED
+
+
+# ----- a picture must decode to what its dictionary describes
+
+_SOME_FILTERS = [("/FlateDecode",), ("/ASCII85Decode", "/FlateDecode")]
+_SOME_FILTER_IDS = ["Flate", "ASCII85 then Flate, as Studio writes them"]
+
+
+@pytest.mark.parametrize("filters", _SOME_FILTERS, ids=_SOME_FILTER_IDS)
+def test_a_drawing_whose_filter_key_is_renamed_is_refused_though_no_checksum_reaches_it(filters):
+    # Re-verification: one bit renames the key, which leaves a stream with no filter. It passed for
+    # every picture of every archived render, with the stream decoding to other bytes.
+    pdf = fake_summary(filters=filters)
+    assert verdict(_in_dictionary(pdf, "Elev0w2", b"/Filter", b"/Filteq")) == DAMAGED
+
+
+@pytest.mark.parametrize("old, new", [
+    (b"/Width 16", b"/Width 17"),
+    (b"/Height 1", b"/Height 3"),
+    (b"/BitsPerComponent 8", b"/BitsPerComponent 9"),
+    (b"/DeviceGray", b"/DeviceRGB"),
+    (b"/DeviceGray", b"/DeviceGraz"),
+    (b"/DeviceGray", b"/G"),  # /DeviceGray's short name, which only an inline image may use
+    (b"/Width", b"/Widti"),
+    (b"/Height", b"/Heighu"),
+    (b"/BitsPerComponent", b"/BitsPerComponens"),
+    (b"/ColorSpace", b"/ColorSpacd"),
+], ids=["a wrong width", "a wrong height", "wrong bits", "another colour space", "a damaged colour space",
+        "an inline-image colour space", "no width", "no height", "no bits", "no colour space"])
+def test_a_picture_that_does_not_decode_to_what_its_dictionary_describes_is_refused(old, new):
+    # Reading the text never decodes a picture, so these pass strict pypdf: a reader would draw
+    # the pixels wrongly or not at all.
+    pdf = fake_summary(art=_WIDE)
+    assert check_summary(pdf).missing == []
+    assert verdict(_in_dictionary(pdf, "Elev0w2", old, new)) == DAMAGED
+
+
+@pytest.mark.parametrize("picture, size", [
+    ("/Width 2 /Height 2 /ColorSpace /DeviceGray /BitsPerComponent 8", 4),
+    ("/Width 3 /Height 2 /ColorSpace /DeviceRGB /BitsPerComponent 8", 18),
+    ("/Width 2 /Height 1 /ColorSpace /DeviceCMYK /BitsPerComponent 8", 8),
+    ("/Width 2 /Height 1 /ColorSpace /DeviceRGB /BitsPerComponent 16", 12),
+    ("/Width 9 /Height 2 /ColorSpace /DeviceGray /BitsPerComponent 1", 4),  # rows end on whole bytes
+    ("/Width 9 /Height 2 /ImageMask true", 4),
+    ("/Width 2 /Height 1 /ColorSpace [/DeviceRGB] /BitsPerComponent 8", 6),
+    ("/Width 2 /Height 1 /ColorSpace [/CalGray << /WhitePoint [1 1 1] >>] /BitsPerComponent 8", 2),
+    ("/Width 2 /Height 1 /ColorSpace [/CalRGB << /WhitePoint [1 1 1] >>] /BitsPerComponent 8", 6),
+    ("/Width 2 /Height 1 /ColorSpace [/Lab << /WhitePoint [1 1 1] >>] /BitsPerComponent 8", 6),
+    ("/Width 2 /Height 2 /ColorSpace [/Indexed /DeviceRGB 1 <000000FFFFFF>] /BitsPerComponent 8", 4),
+    ("/Width 2 /Height 1 /ColorSpace [/ICCBased {icc} 0 R] /BitsPerComponent 8", 6),
+    ("/Width 2 /Height 1 /ColorSpace [/Separation /Spot /DeviceGray {icc} 0 R] /BitsPerComponent 8", 2),
+    ("/Width 2 /Height 1 /ColorSpace [/DeviceN [/Spot /Other] /DeviceGray {icc} 0 R] /BitsPerComponent 8", 4),
+], ids=["grey", "RGB", "CMYK", "16 bits", "1 bit", "a stencil", "a colour space in an array", "CalGray",
+        "CalRGB", "Lab", "indexed", "ICC", "a spot colour", "DeviceN"])
+def test_a_picture_of_each_kind_the_pdf_standard_allows_passes_at_its_own_size(picture, size):
+    art = _Art(picture=picture, pixels=bytes(size))
+    assert check_summary(fake_summary(art=art)).missing == []
+    assert verdict(fake_summary(art=replace(art, pixels=bytes(size + 1)))) == DAMAGED
+
+
+@pytest.mark.parametrize("codec", ["/DCTDecode", "/JPXDecode", "/CCITTFaxDecode", "/JBIG2Decode"],
+                         ids=["JPEG", "JPEG 2000", "CCITT", "JBIG2"])
+def test_a_picture_in_its_own_image_format_is_not_measured(codec):
+    # pypdf does not decode these to samples, so there is no size to compare. No real render has one.
+    pdf = fake_summary(filters=("/ASCII85Decode", "/FlateDecode"))
+    coded = _in_dictionary(pdf, "Elev0w2", b"/ASCII85Decode /FlateDecode", codec.encode())
+    assert check_summary(coded).missing == []
+
+
+_PNG_ROWS = "<< /Predictor 15 /Colors 1 /BitsPerComponent 8 /Columns 2 >>"
+# 2 rows of 2 grey pixels, each row's first byte its PNG filter
+_PREDICTED = _Art(pixels=b"\x00\x10\x20\x00\x30\x40", picture_parms=_PNG_ROWS)
+
+
+@pytest.mark.parametrize("filters, parms", [(("/FlateDecode",), _PNG_ROWS),
+                                            (("/ASCII85Decode", "/FlateDecode"), f"[null {_PNG_ROWS}]")],
+                         ids=_SOME_FILTER_IDS)
+def test_a_picture_is_measured_after_its_predictor(filters, parms):
+    pdf = fake_summary(filters=filters, art=replace(_PREDICTED, picture_parms=parms))
+    assert check_summary(pdf).missing == []
+
+
+@pytest.mark.parametrize("art, old, new", [
+    (_PREDICTED, b"/Predictor 15", b"/Predictor 1"),
+    (_PREDICTED, b"/Predictor", b"/Predictos"),
+    (_PREDICTED, b"/Columns 2", b"/Columns 3"),
+    (_PREDICTED, b"/Columns", b"/Columnr"),
+    (_PREDICTED, b"/Colors 1", b"/Colors 3"),
+    (_PREDICTED, b"/BitsPerComponent 8 /Columns", b"/BitsPerComponent 1 /Columns"),
+    (_Art(picture_parms="<< /Predictor 1 >>"), b"/Predictor 1", b"/Predictor 3"),
+], ids=["predictor off", "predictor key renamed", "wrong columns", "columns key renamed", "wrong colors",
+        "wrong bits", "no such predictor"])
+def test_a_picture_whose_filter_parameters_are_damaged_is_refused(art, old, new):
+    # Re-verification: /DecodeParms were checked for their shape only, so one bit in a value passed
+    # with the pixels decoding differently or not at all.
+    pdf = fake_summary(filters=("/FlateDecode",), art=art)
+    assert check_summary(pdf).missing == []
+    assert verdict(_in_dictionary(pdf, "Elev0w2", old, new)) == DAMAGED
+
+
+# ----- a font file must decode to its stated length, a /ToUnicode map to a CMap
+
+
+@pytest.mark.parametrize("key", ["FontFile2", "ToUnicode"], ids=["a font file", "a /ToUnicode map"])
+def test_a_font_stream_whose_filter_key_is_renamed_is_refused_though_no_checksum_reaches_it(key):
+    # Re-verification: this passed for every font file of every archived render and for most maps,
+    # and for two maps the text changed: 1 or 2 lines of page 1 were no longer the file's.
+    pdf = fake_summary(filters=("/ASCII85Decode", "/FlateDecode"), art=_Art(font_file="/FontFile2"))
+    assert check_summary(pdf).missing == []
+    assert verdict(_in_dictionary(pdf, key, b"/Filter", b"/Filteq")) == DAMAGED
+
+
+@pytest.mark.parametrize("old, new", [
+    (b"/Length1 %d" % len(_FONT_PROGRAM), b"/Length1 %d" % (len(_FONT_PROGRAM) + 1)),
+    (b"/Length1", b"/Length0"),
+], ids=["a wrong length", "no length"])
+def test_a_font_file_that_does_not_decode_to_its_stated_length_is_refused(old, new):
+    pdf = fake_summary(art=_Art(font_file="/FontFile2"))
+    assert verdict(_in_dictionary(pdf, "FontFile2", old, new)) == DAMAGED
+
+
+def test_a_type_1_font_file_is_measured_by_its_three_parts():
+    pdf = fake_summary(art=_Art(font_file="/FontFile"))
+    assert check_summary(pdf).missing == []
+    assert verdict(_in_dictionary(pdf, "FontFile", b"/Length2 ", b"/Length0 ")) == DAMAGED
+
+
+def test_a_compact_font_file_has_no_length_to_compare():
+    assert check_summary(fake_summary(art=_Art(font_file="/FontFile3"))).missing == []
+
+
+def test_a_font_file_entry_that_leads_to_no_font_file_is_refused():
+    pdf = fake_summary(art=_Art(font_file="/FontFile2"))
+    reference = b"/FontFile2 %d 0 R" % _number(pdf, "FontFile2")
+    other = b"/FontFile2 %d 0 R" % _number(pdf, "ToUnicode")  # a stream, with no /Length1
+    assert len(other) == len(reference) and verdict(pdf.replace(reference, other)) == DAMAGED
+
+
+@pytest.mark.parametrize("word", [b"begincmap", b"endcmap"])
+def test_a_to_unicode_stream_that_does_not_decode_to_a_cmap_is_refused(word):
+    pdf = fake_summary(art=_Art(font_file="/FontFile2"))
+    assert verdict(pdf.replace(word, word[:-1] + bytes([word[-1] ^ 0x01]), 1)) == DAMAGED
+
+
+def test_a_to_unicode_entry_that_leads_to_no_stream_is_refused():
+    pdf = fake_summary(art=_Art(font_file="/FontFile2"))
+    reference = b"/ToUnicode %d 0 R" % _number(pdf, "ToUnicode")
+    other = b"/ToUnicode %d 0 R" % _number(pdf, "FontDescriptor")
+    assert len(other) == len(reference) and verdict(pdf.replace(reference, other)) == DAMAGED
+
+
+def test_a_to_unicode_entry_may_name_a_predefined_map():
+    pdf = fake_summary(art=_Art(font_file="/FontFile2"))
+    reference = b"/ToUnicode %d 0 R" % _number(pdf, "ToUnicode")
+    assert check_summary(pdf.replace(reference, b"/ToUnicode /Id".ljust(len(reference)))).missing == []
 
 
 @pytest.mark.parametrize("filters, parms", [
@@ -550,13 +802,18 @@ def _recounted(pdf: bytes, extra: int) -> bytes:
     return pdf[:table] + b"%d %d" % (first, count + extra) + pdf[end:]
 
 
-@pytest.mark.parametrize("damage", [
-    lambda pdf, entry: pdf[:entry + 8] + b"O" + pdf[entry + 9:],  # "00000000O9 00000 n"
-    lambda pdf, entry: pdf[:entry + 18] + pdf[entry + 19:],  # 19 bytes: no space before its line end
-    lambda pdf, entry: _recounted(pdf, 1),
-    lambda pdf, entry: pdf[:entry + 17] + b"o" + pdf[entry + 18:],  # "0000000009 00000 o"
-], ids=["a letter in an offset", "a short entry", "a subsection header whose count is wrong",
-        "an entry neither in use (n) nor free (f)"])
+_MALFORMED_INDEXES = {  # each is given the file and where the first object's entry starts
+    "a letter in an offset":
+        lambda pdf, entry: pdf[:entry + 8] + b"O" + pdf[entry + 9:],  # "00000000O9 00000 n"
+    "a short entry":
+        lambda pdf, entry: pdf[:entry + 18] + pdf[entry + 19:],  # 19 bytes: no space before its line end
+    "a subsection header whose count is wrong": lambda pdf, entry: _recounted(pdf, 1),
+    "an entry neither in use (n) nor free (f)":
+        lambda pdf, entry: pdf[:entry + 17] + b"o" + pdf[entry + 18:],  # "0000000009 00000 o"
+}
+
+
+@pytest.mark.parametrize("damage", _MALFORMED_INDEXES.values(), ids=_MALFORMED_INDEXES)
 def test_an_index_that_is_not_strictly_well_formed_is_refused_though_pypdf_repairs_it(damage):
     # Strict pypdf repairs each of these and reads on: it looks for a garbled entry's object in
     # the file (6.21.4 then swaps its offset and generation, the only reason the first was ever
@@ -565,6 +822,50 @@ def test_an_index_that_is_not_strictly_well_formed_is_refused_though_pypdf_repai
     pdf = fake_summary()
     assert pdf[_index_entry(pdf, 1):_index_entry(pdf, 2)] == b"0000000009 00000 n \n"
     assert verdict(damage(pdf, _index_entry(pdf, 1))) == DAMAGED
+
+
+def _stream_updated(pdf: bytes, prev: bytes | None = None) -> bytes:
+    """`pdf` plus an update whose index is a cross-reference stream listing only itself, /Prev the old section."""
+    old = int(re.search(rb"startxref\n(\d+)\n%%EOF\n$", pdf)[1])
+    trailer = re.search(rb"trailer\n<< (.*) >>\n", pdf[old:])[1]
+    size = int(re.search(rb"/Size (\d+)", trailer)[1])
+    rows = b"\x01" + len(pdf).to_bytes(4, "big") + b"\x00"  # in use, at this offset, generation 0
+    newest = trailer.replace(b"/Size %d" % size, b"/Size %d" % (size + 1))
+    head = b"<< /Type /XRef %s /Prev %s /W [1 4 1] /Index [%d 1] /Length %d >>" % (
+        newest, prev or b"%d" % old, size, len(rows))
+    return (pdf + b"%d 0 obj\n%s\nstream\n%s\nendstream\nendobj\n" % (size, head, rows)
+            + b"startxref\n%d\n%%%%EOF\n" % len(pdf))
+
+
+def test_a_classic_index_section_behind_a_cross_reference_stream_passes_when_well_formed():
+    assert check_summary(_stream_updated(fake_summary())).missing == []
+
+
+@pytest.mark.parametrize("damage", _MALFORMED_INDEXES.values(), ids=_MALFORMED_INDEXES)
+def test_a_classic_index_section_behind_a_cross_reference_stream_is_read_as_strictly_as_any(damage):
+    # Re-verification: the walk stopped at any object header, taking it for a cross-reference
+    # stream, so a section chained behind one was left to pypdf's lenient reading.
+    pdf = fake_summary()
+    assert verdict(_stream_updated(damage(pdf, _index_entry(pdf, 1)))) == DAMAGED
+
+
+@pytest.mark.parametrize("chained", [
+    lambda pdf: _updated(pdf, prev=9),
+    lambda pdf: re.sub(rb"startxref\n\d+\n%%EOF\n$", b"startxref\n9\n%%EOF\n", pdf),
+    lambda pdf: _stream_updated(pdf, prev=b"9"),
+    lambda pdf: _stream_updated(pdf, prev=b"%d" % len(pdf)),
+    lambda pdf: _stream_updated(pdf, prev=b"1 0 R"),
+    lambda pdf: _stream_updated(pdf).replace(b"/Type /XRef", b"/Type /XReg"),
+], ids=["a trailer's /Prev leading to an ordinary object", "startxref leading to an ordinary object",
+        "a cross-reference stream's /Prev leading to an ordinary object",
+        "a cross-reference stream chained to itself", "a cross-reference stream's /Prev that is not an offset",
+        "an object that is not quite a cross-reference stream"])
+def test_an_index_chain_leading_anywhere_but_to_an_index_is_refused(chained):
+    # A /Prev at an ordinary object: pypdf dropped the older section with a warning and searched
+    # the file for its objects. (Object 1 of the synthetic writer starts at byte 9.)
+    pdf = fake_summary()
+    assert pdf[9:].startswith(b"1 0 obj\n")
+    assert verdict(chained(pdf)) == DAMAGED
 
 
 def _line_ends(pdf: bytes, entry_end: bytes, line_end: bytes) -> bytes:
@@ -581,12 +882,12 @@ def test_an_index_may_end_its_lines_in_each_way_the_pdf_standard_allows(entry_en
     assert check_summary(_line_ends(fake_summary(), entry_end, line_end)).missing == []
 
 
-def _updated(pdf: bytes) -> bytes:
+def _updated(pdf: bytes, prev: int | None = None) -> bytes:
     """`pdf` plus an update: a newer index section, listing object 1 again, whose /Prev is the old one."""
     old = int(re.search(rb"startxref\n(\d+)\n%%EOF\n$", pdf)[1])
     trailer = re.search(rb"trailer\n<< (.*) >>\n", pdf[old:])[1]
     entry = pdf[_index_entry(pdf, 1):_index_entry(pdf, 2)]
-    return pdf + (b"xref\n1 1\n" + entry + b"trailer\n<< " + trailer + b" /Prev %d >>\n" % old
+    return pdf + (b"xref\n1 1\n" + entry + b"trailer\n<< " + trailer + b" /Prev %d >>\n" % (prev or old)
                   + b"startxref\n%d\n%%%%EOF\n" % len(pdf))
 
 
@@ -597,6 +898,164 @@ def test_an_older_index_section_is_read_as_strictly_as_the_newest():
     assert check_summary(updated).missing == []
     entry = _index_entry(updated, 2)  # in the older section
     assert verdict(updated[:entry + 17] + b"o" + updated[entry + 18:]) == DAMAGED
+
+
+# ----- PDF 1.5: no real render uses these, but what the module notes say of them must hold
+
+
+def _compressed(pdf: bytes, *, hybrid: bool = False) -> bytes:
+    """
+    `pdf` rewritten as PDF 1.5: its dictionaries in one object stream, listed by a cross-reference stream.
+
+    hybrid: a classic section lists the rest, its trailer's /XRefStm leading to that stream, as the
+    PDF standard allows so that older readers can read the file.
+    """
+    bodies = {int(m[1]): m[2] for m in re.finditer(rb"(\d+) 0 obj\n(.*?)\nendobj\n", pdf, re.S)}
+    trailer = re.search(rb"trailer\n<< (.*) >>\n", pdf)[1]
+    size = max(bodies) + 3
+    holder, listing = size - 2, size - 1
+    held = [number for number, body in bodies.items() if b"\nstream\n" not in body]
+    first, inner = b"", b""
+    for number in held:
+        first += b"%d %d " % (number, len(inner))
+        inner += bodies[number] + b"\n"
+    first += b"\n"
+    plain = {number: body for number, body in bodies.items() if number not in held}
+    plain[holder] = (b"<< /Type /ObjStm /N %d /First %d /Length %d >>\nstream\n%s\nendstream"
+                     % (len(held), len(first), len(first + inner), first + inner))
+    out, offsets = bytearray(b"%PDF-1.5\n"), {}
+    for number, body in sorted(plain.items()):
+        offsets[number] = len(out)
+        out += b"%d 0 obj\n%s\nendobj\n" % (number, body)
+    at = offsets[listing] = len(out)
+    keys = re.sub(rb"/Size \d+", b"/Size %d" % size, trailer)
+
+    def row(number: int) -> bytes:
+        if number in offsets:
+            return b"\x01" + offsets[number].to_bytes(4, "big") + b"\x00"
+        if number in held:
+            return b"\x02" + holder.to_bytes(4, "big") + bytes([held.index(number)])
+        return b"\x00\x00\x00\x00\x00\xff"  # free
+
+    if not hybrid:
+        rows = b"".join(row(number) for number in range(size))
+        out += (b"%d 0 obj\n<< /Type /XRef %s /W [1 4 1] /Length %d >>\nstream\n%s\nendstream\nendobj\n"
+                % (listing, keys, len(rows), rows) + b"startxref\n%d\n%%%%EOF\n" % at)
+        return bytes(out)
+    rows = b"".join(row(number) for number in held)
+    index = b" ".join(b"%d 1" % number for number in held)
+    out += (b"%d 0 obj\n<< /Type /XRef /Size %d /Index [%s] /W [1 4 1] /Length %d >>\n"
+            b"stream\n%s\nendstream\nendobj\n" % (listing, size, index, len(rows), rows))
+    section = len(out)
+    out += b"xref\n0 1\n0000000000 65535 f \n" + b"".join(
+        b"%d 1\n%010d 00000 n \n" % (number, offsets[number]) for number in sorted(offsets))
+    return bytes(out + b"trailer\n<< %s /XRefStm %d >>\nstartxref\n%d\n%%%%EOF\n" % (keys, at, section))
+
+
+@pytest.mark.parametrize("hybrid", [False, True], ids=["cross-reference stream only", "hybrid"])
+def test_a_pdf_1_5_file_passes_and_has_the_fingerprint_of_its_classic_twin(hybrid):
+    pdf = fake_summary(art=_Art(font_file="/FontFile2"))
+    rewritten = _compressed(pdf, hybrid=hybrid)
+    assert b"/ObjStm" in rewritten and check_summary(rewritten).missing == []
+    assert content_fingerprint(rewritten) == content_fingerprint(pdf)
+
+
+def test_a_cross_reference_stream_entry_pointing_away_from_its_object_is_refused():
+    rewritten = _compressed(fake_summary())
+    row = b"\x01\x00\x00\x00\x09\x00"  # in use, at byte 9: the first object in the file
+    assert row in rewritten
+    assert verdict(rewritten.replace(row, b"\x01\x00\x00\x00\x0a\x00", 1)) == DAMAGED
+
+
+def test_what_an_object_stream_holds_is_checked_like_any_other_object():
+    # The font dictionary, in the object stream, leads to a map that is no CMap.
+    pdf = fake_summary(art=_Art(font_file="/FontFile2")).replace(b"begincmap", b"begincmaq", 1)
+    assert verdict(_compressed(pdf)) == DAMAGED
+
+
+def test_a_hybrid_file_that_lost_its_cross_reference_stream_is_refused():
+    # pypdf reads on without a stream it cannot find, with only a warning, but no search finds the
+    # objects that stream listed.
+    rewritten = _compressed(fake_summary(), hybrid=True)
+    assert rejected(rewritten.replace(b"/XRefStm", b"/XRefStn")) == ["unreadable"]
+
+
+def test_an_update_holding_a_newer_copy_of_an_object_in_an_object_stream_passes():
+    # It has no endobj of its own, and the older copy the classic section lists no longer counts.
+    pdf = fake_summary()
+    old = int(re.search(rb"startxref\n(\d+)\n%%EOF\n$", pdf)[1])
+    keys = re.search(rb"trailer\n<< (.*) >>\n", pdf[old:])[1]
+    size = int(re.search(rb"/Size (\d+)", keys)[1])
+    info = _number(pdf, "Info")
+    first, copy = b"%d 0 " % info, b"<< /Producer (newer) >>"
+    holder = (b"%d 0 obj\n<< /Type /ObjStm /N 1 /First %d /Length %d >>\nstream\n%s\nendstream\nendobj\n"
+              % (size, len(first), len(first + copy), first + copy))
+    at = len(pdf) + len(holder)
+    rows = (b"\x02" + size.to_bytes(4, "big") + b"\x00" + b"\x01" + len(pdf).to_bytes(4, "big") + b"\x00"
+            + b"\x01" + at.to_bytes(4, "big") + b"\x00")
+    newest = keys.replace(b"/Size %d" % size, b"/Size %d" % (size + 2))
+    updated = pdf + holder + (
+        b"%d 0 obj\n<< /Type /XRef %s /Prev %d /W [1 4 1] /Index [%d 1 %d 2] /Length %d >>\n"
+        b"stream\n%s\nendstream\nendobj\n" % (size + 1, newest, old, info, size, len(rows), rows)
+        + b"startxref\n%d\n%%%%EOF\n" % at)
+    assert check_summary(updated).missing == []
+
+
+# ----- objects the index does not list, which pypdf finds by searching the file
+
+
+def _turned_free(pdf: bytes, number: int) -> bytes:
+    """`pdf` with object `number`'s index entry marked free: one bit, "n" to "f"."""
+    letter = _index_entry(pdf, number) + 17
+    assert pdf[letter:letter + 1] == b"n"
+    return pdf[:letter] + b"f" + pdf[letter + 1:]
+
+
+_FONTED = fake_summary(filters=("/ASCII85Decode", "/FlateDecode"), art=_Art(font_file="/FontFile2"))
+
+
+@pytest.mark.parametrize("key", ["Elev0w2", "Contents", "F1", "FontFile2", "ToUnicode", "Info", "Root"],
+                         ids=["a drawing", "a page's text", "a font", "a font file", "a /ToUnicode map",
+                              "the file's Info", "the catalog"])
+def test_an_index_entry_turned_free_is_refused_though_pypdf_finds_the_object_by_searching(key):
+    # Re-verification: this one bit passed on every archived render. Even strict, pypdf searches
+    # the file for an object its index does not list, and the PDF standard reads it as null.
+    assert check_summary(_FONTED).missing == []
+    assert verdict(_turned_free(_FONTED, _number(_FONTED, key))) == DAMAGED
+
+
+def test_an_object_that_only_a_reference_leads_to_counts_too():
+    # Nothing here or in pypdf reads a file's XML metadata, so only following the reference shows
+    # that its entry was turned free.
+    pdf = fake_summary(art=_Art(metadata=True))
+    assert check_summary(pdf).missing == []
+    assert verdict(_turned_free(pdf, _number(pdf, "Metadata"))) == DAMAGED
+
+
+def test_a_reference_leading_nowhere_is_refused():
+    # Every reference in every real render leads to an object; strict pypdf cannot read one that
+    # does not. (A digit flipped in a reference nothing reads would otherwise go unseen.)
+    pdf = fake_summary(art=_Art(metadata=True))
+    reference = b"/Metadata %d 0 R" % _number(pdf, "Metadata")
+    assert rejected(pdf.replace(reference, b"/Metadata 99 0 R".ljust(len(reference)))) == ["unreadable"]
+
+
+def test_damage_in_a_drawing_the_index_hides_is_refused():
+    # Two faults. A bit in the drawing's data alone fails its checksum, but pypdf found the object
+    # by searching only while it read the pages, after every checksum had been checked.
+    pdf = fake_summary(filters=("/ASCII85Decode", "/FlateDecode"))
+    number = _number(pdf, "Elev0w2")
+    damaged = _flipped(_turned_free(pdf, number), b"E\x80\xc0\xff", b"E\x81\xc0\xff")
+    assert len(damaged) == len(pdf) and damaged != pdf
+    assert verdict(damaged) == DAMAGED
+
+
+def test_a_renamed_prev_hiding_an_older_index_section_is_refused():
+    # One bit, on the /Prev of a linearized render, passed: pypdf found every object of the section
+    # it no longer knew about by searching the file.
+    updated = _updated(fake_summary())
+    assert check_summary(updated).missing == []
+    assert verdict(updated.replace(b"/Prev", b"/Prew")) == DAMAGED
 
 
 def test_a_pdf_with_no_pages_is_rejected():
@@ -631,6 +1090,70 @@ def test_a_partial_render_complete_in_itself_passes_but_its_fingerprint_differs(
     early, finished = fake_summary(designs=(FakeDesign(),)), fake_summary(designs=(FakeDesign(), garage))
     assert check_summary(early).ok and check_summary(finished).ok
     assert content_fingerprint(early) != content_fingerprint(finished)
+
+
+def test_fingerprint_changes_when_a_drawing_changes():
+    # A shelf moved shows in the drawing alone: two fetches must not agree over it. (No filters
+    # here, so a changed pixel fails no checksum and the render still passes the check.)
+    pdf = fake_summary()
+    moved = pdf.replace(b"E\x80\xc0\xff", b"F\x80\xc0\xff", 1)
+    assert moved != pdf and check_summary(moved).missing == []
+    assert content_fingerprint(moved) != content_fingerprint(pdf)
+
+
+def test_fingerprint_changes_when_a_mask_changes():
+    pdf = fake_summary(art=_Art(mask=True))
+    changed = pdf.replace(_MASK_PIXELS, b"N\x80\xc0\xff", 1)
+    assert changed != pdf and check_summary(changed).missing == []
+    assert content_fingerprint(changed) != content_fingerprint(pdf)
+
+
+def test_fingerprint_counts_where_and_in_what_order_pictures_are_drawn():
+    def pages(*drawn: list[str]) -> bytes:
+        return _write_pdf([_FakePage(612, 792, images=[(name, 72, 72, 200, 200) for name in names])
+                           for names in drawn], {"Producer": "test"})
+
+    first = content_fingerprint(pages(["Aye", "Bee"], []))
+    assert first == content_fingerprint(pages(["Aye", "Bee"], []))  # the same again, so the rest are not noise
+    assert first != content_fingerprint(pages(["Bee", "Aye"], []))
+    assert first != content_fingerprint(pages(["Aye"], ["Bee"]))
+    assert first != content_fingerprint(pages(["Aye", "Bee", "Bee"], []))
+
+
+def test_fingerprint_counts_what_a_picture_decodes_to_not_how_it_is_stored():
+    art = _Art(pixels=b"\x10\x20\x30\x40")
+    plain = content_fingerprint(fake_summary(art=art))
+    assert content_fingerprint(fake_summary(filters=("/FlateDecode",), art=art)) == plain
+    assert content_fingerprint(fake_summary(filters=("/ASCII85Decode", "/FlateDecode"), art=art)) == plain
+    assert content_fingerprint(fake_summary(filters=("/FlateDecode",), art=_PREDICTED)) == plain
+
+
+def test_fingerprint_sees_a_picture_in_its_own_image_format_as_stored():
+    pdf = fake_summary(filters=("/ASCII85Decode", "/FlateDecode"))
+    coded = _in_dictionary(pdf, "Elev0w2", b"/ASCII85Decode /FlateDecode", b"/DCTDecode")
+    changed = _flipped(coded, b"E\x80\xc0\xff", b"E\x81\xc0\xff")
+    assert changed != coded and check_summary(changed).missing == []
+    assert content_fingerprint(changed) != content_fingerprint(coded)
+
+
+def test_a_damaged_drawing_has_no_fingerprint_to_agree_on():
+    pdf = fake_summary(filters=("/ASCII85Decode", "/FlateDecode"))
+    with pytest.raises(ValueError):
+        content_fingerprint(_flipped(pdf, b"E\x80\xc0\xff", b"E\x81\xc0\xff"))
+
+
+@pytest.mark.parametrize("damage", [
+    lambda pdf: re.sub(rb"/Elev0w2 (\d+ 0 R)", rb"/Elev0w3 \1", pdf, count=1),
+    lambda pdf: _in_dictionary(pdf, "Elev0w2", b"/Subtype /Image", b"/Subtype /Imagf"),
+    lambda pdf: _in_dictionary(pdf, "Elev0w2", b"/Subtype", b"/Subtypf"),
+    lambda pdf: _in_dictionary(pdf, "Elev0w2", b"/Subtype /Image", b"/Subtype /Form"),
+], ids=["a name its page does not hold", "a damaged kind", "no kind",
+        "a form, whose insides nothing here reads"])
+def test_a_page_that_draws_anything_but_a_picture_it_holds_is_refused(damage):
+    # Re-verification: one bit renaming the picture in the page's resources passed on every archived
+    # render, and the drawing check still counted a drawing. Every real Do draws a picture its page holds.
+    pdf = fake_summary()
+    assert verdict(damage(pdf)) == DAMAGED
 
 
 def test_check_reports_the_same_fingerprint():
@@ -739,26 +1262,128 @@ def test_the_whole_file_checks_refuse_no_real_render(real_summaries: list[_Real]
     assert [(label, codes) for label, codes in refused if codes] == []
 
 
+def _smallest_of_each_layout(real_summaries: list[_Real]) -> list[_Real]:
+    """The smallest archived render of each layout, so that flipping bits all through one takes little time."""
+    archived = [r for r in real_summaries if r.folder == "ngjobs"]
+    layouts = [[r for r in archived if r.landscape is landscape] for landscape in (True, False)]
+    return [min(renders, key=lambda r: r.path.stat().st_size) for renders in layouts if renders]
+
+
+def _flipped_bit(data: bytes, position: int, bit: int = 0x01) -> bytes:
+    damaged = bytearray(data)
+    damaged[position] ^= bit
+    return bytes(damaged)
+
+
 @pytest.mark.fixtures
 def test_a_bit_flipped_in_any_compressed_stream_of_a_real_render_is_refused(real_summaries: list[_Real]):
     # The re-verification flipped bits in real renders' text streams, and 17 of 628 passed with
     # other text; pictures and fonts never reach the text at all. Here: the smallest archived
     # render of each layout, one bit in the middle of every compressed stream it holds.
-    archived = [r for r in real_summaries if r.folder == "ngjobs"]
-    layouts = [[r for r in archived if r.landscape is landscape] for landscape in (True, False)]
     flipped = 0
-    for render in (min(renders, key=lambda r: r.path.stat().st_size) for renders in layouts if renders):
+    for render in _smallest_of_each_layout(real_summaries):
         data = render.path.read_bytes()
         reader = PdfReader(io.BytesIO(data))
         for number in sorted(reader.xref[0]):
             stream = reader.get_object(number)
             if isinstance(stream, StreamObject) and "/FlateDecode" in str(stream.get("/Filter")):
                 stored = stream._data  # the bytes as the file holds them
-                damaged = bytearray(data)
-                damaged[data.index(stored) + len(stored) // 2] ^= 0x01
-                assert verdict(bytes(damaged)) == DAMAGED, (render.label, number)
+                assert verdict(_flipped_bit(data, data.index(stored) + len(stored) // 2)) == DAMAGED, (
+                    render.label, number)
                 flipped += 1
     assert flipped
+
+
+@pytest.mark.fixtures
+def test_a_bit_flipped_in_the_stream_keyword_of_a_real_render_is_refused(real_summaries: list[_Real]):
+    # Re-verification: every bit of every letter passed for all 233 pictures and 54 font files of
+    # the archive. Here: one letter of every stream of the smallest render of each layout.
+    flipped = 0
+    for render in _smallest_of_each_layout(real_summaries):
+        data = render.path.read_bytes()
+        reader = PdfReader(io.BytesIO(data))
+        for number, offset in sorted(reader.xref[0].items()):
+            if isinstance(reader.get_object(number), StreamObject):
+                damaged = _flipped_bit(data, data.index(b"stream", offset) + 2)
+                assert verdict(damaged) == DAMAGED, (render.label, number)
+                flipped += 1
+    assert flipped
+
+
+@pytest.mark.fixtures
+def test_a_renamed_filter_key_on_a_real_picture_font_file_or_map_is_refused(real_summaries: list[_Real]):
+    # Re-verification: 17,187 such flips passed on the archive, for every picture and font file and
+    # for most maps. (A page's content stream shows it in the text it loses.) Pictures and fonts
+    # are told by their own keys, maps by the fonts that use them.
+    flipped = 0
+    for render in _smallest_of_each_layout(real_summaries):
+        data = render.path.read_bytes()
+        reader = PdfReader(io.BytesIO(data))
+        objects = {number: reader.get_object(number) for number in reader.xref[0]}
+        maps = {obj.raw_get("/ToUnicode").idnum for obj in objects.values()
+                if isinstance(obj, DictionaryObject) and "/ToUnicode" in obj}
+        for number, offset in sorted(reader.xref[0].items()):
+            obj = objects[number]
+            if number in maps or (isinstance(obj, StreamObject) and ("/Subtype" in obj or "/Length1" in obj)):
+                damaged = _flipped_bit(data, data.index(b"/Filter", offset) + 6)
+                assert verdict(damaged) == DAMAGED, (render.label, number)
+                flipped += 1
+    assert flipped
+
+
+@pytest.mark.fixtures
+def test_a_renamed_picture_in_the_resources_of_a_real_page_is_refused(real_summaries: list[_Real]):
+    # Re-verification: this passed on all 27 archived renders, and the page still counted as drawn.
+    flipped = 0
+    for render in _smallest_of_each_layout(real_summaries):
+        data = render.path.read_bytes()
+        for found in re.finditer(rb"/XObject\s*<<\s*/\S*(\S)\s+\d+ 0 R", data):
+            assert verdict(_flipped_bit(data, found.start(1))) == DAMAGED, (render.label, found.start(1))
+            flipped += 1
+    assert flipped
+
+
+@pytest.mark.fixtures
+def test_a_changed_digit_in_a_real_picture_or_font_file_dictionary_is_refused(real_summaries: list[_Real]):
+    flipped = 0
+    for render in _smallest_of_each_layout(real_summaries):
+        data = render.path.read_bytes()
+        for found in re.finditer(rb"/(?:Width|Height|BitsPerComponent|Length1)\s+\d*(\d)(?=[\s/>])", data):
+            assert verdict(_flipped_bit(data, found.start(1))) == DAMAGED, (render.label, found.start(1))
+            flipped += 1
+    assert flipped
+
+
+@pytest.mark.fixtures
+def test_an_index_entry_of_a_real_render_turned_free_is_refused_when_anything_refers_to_its_object(
+        real_summaries: list[_Real]):
+    # Re-verification: for a picture, a page's text or a font file this passed on all 27 archived
+    # renders, and then a flipped bit in its data passed too. Every entry of the smallest render
+    # of each layout; a linearized render's first dictionary and hint stream are referred to by nothing.
+    flipped = 0
+    for render in _smallest_of_each_layout(real_summaries):
+        data = render.path.read_bytes()
+        table = re.search(rb"(?<![a-z])xref\r?\n(\d+) (\d+)\r?\n", data)
+        if b"/Linearized" in data or int(table[1]) != 0:
+            continue
+        for number in range(1, int(table[2])):
+            letter = table.end() + 20 * number + 17
+            assert data[letter:letter + 1] == b"n", (render.label, number)
+            assert verdict(_flipped_bit(data, letter, 0x08))[0] == ["unreadable"], (render.label, number)
+            flipped += 1
+    assert flipped
+
+
+@pytest.mark.fixtures
+def test_a_renamed_prev_in_a_real_render_is_refused(real_summaries: list[_Real]):
+    # Re-verification: on a linearized render this hid the section listing all but the first page,
+    # and with it a flipped bit in any picture that section lists.
+    chained = [r for r in real_summaries if r.path.read_bytes().count(b"startxref") > 1]
+    if not chained:
+        pytest.skip("no real render has an index section that only /Prev leads to")
+    for render in chained:
+        data = render.path.read_bytes()
+        assert verdict(_flipped_bit(data, data.index(b"/Prev") + 4)) == DAMAGED, render.label
 
 
 @pytest.mark.fixtures
@@ -787,19 +1412,16 @@ _FIRST_FILTER = re.compile(rb"/Filter\s*\[?\s*/[A-Za-z0-9]+")  # up to the end o
 def test_a_bit_flipped_in_a_picture_filter_name_of_a_real_render_is_refused(real_summaries: list[_Real]):
     # Re-verification: this passed on all 27 archived renders, the first picture of each. Here:
     # the smallest archived render of each layout, the last letter of every picture's first filter.
-    archived = [r for r in real_summaries if r.folder == "ngjobs"]
-    layouts = [[r for r in archived if r.landscape is landscape] for landscape in (True, False)]
     flipped = 0
-    for render in (min(renders, key=lambda r: r.path.stat().st_size) for renders in layouts if renders):
+    for render in _smallest_of_each_layout(real_summaries):
         data = render.path.read_bytes()
         reader = PdfReader(io.BytesIO(data))
         for number, offset in sorted(reader.xref[0].items()):
             picture = reader.get_object(number)
             if isinstance(picture, StreamObject) and picture.get("/Subtype") == "/Image":
                 name = _FIRST_FILTER.search(data, offset, data.index(b"stream", offset)).end() - 1
-                damaged = bytearray(data)
-                damaged[name] ^= 0x01  # "/FlateDecode" becomes "/FlateDecodd"
-                assert verdict(bytes(damaged)) == DAMAGED, (render.label, number)
+                # "/FlateDecode" becomes "/FlateDecodd"
+                assert verdict(_flipped_bit(data, name)) == DAMAGED, (render.label, number)
                 flipped += 1
     assert flipped
 

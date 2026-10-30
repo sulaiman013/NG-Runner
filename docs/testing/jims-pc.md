@@ -8,7 +8,7 @@ Every window states how long it takes, what it changes and how to undo it. Each 
 
 1. Build the release: the PyInstaller folder build from `ngrunner.spec`, then its self-test.
 2. Run `install.ps1 -Root <scratch> -NoRegister` and the self-test from the installed copy.
-3. Run the canary (`python -m ngrunner canary`) on this PC's Google Drive, in a test folder of Sulaiman's own.
+3. Run the canary from the installed copy (`NGRunner.exe canary --folder <folder>`) on this PC's Google Drive, in a test folder of Sulaiman's own.
 4. Zip the test kit:
    - the build;
    - `tools\setup_check.cmd` and `setup_check.ps1`;
@@ -19,7 +19,7 @@ Ready outside Jim's PC before window 3:
 - **Google:**
   - the ICLA Google automation account;
   - the control folder, shared only by Jim's account, the automation account and Sulaiman;
-  - the Apps Script project (`google\`) deployed, with its Script Properties set: signing key, addresses, Pushover when added.
+  - the Apps Script project (`google\`) deployed, with its Script Properties set: signing key, addresses, Pushover when added, and, from the start, `SHADOW` set to `true` with `ALERT_ROLE` left at `sulaiman` (window 3 says why).
 - **Render:** the job-list export, shipped by Sulaiman's push to Assembly Reports, with `ASSEMBLY_EXPORT_KEY` set.
 
 ## Window 1 — first look (about 15 minutes, Jim present)
@@ -28,6 +28,7 @@ Ready outside Jim's PC before window 3:
 2. **Setup Check:** double-click `setup_check.cmd`. It is read-only, takes up to 3 minutes and saves two report files.
 
 3. **Mozaik:** open Mozaik's About screen and note the program's name, install folder and version, then close it. NG Runner must recognise Mozaik exactly to never write while it runs, and a new version can change the file format.
+4. **The night:** ask Jim whether this PC stays on overnight. The answer sets one setting in window 2.
 
 | Changes | Undo | Passes when |
 |---|---|---|
@@ -40,15 +41,18 @@ Ready outside Jim's PC before window 3:
    - a Start Menu shortcut;
    - the logon and "ensure running" scheduled tasks;
    - a Run-key fallback.
-2. Run `ngrunner --self-test`: it must report nothing.
-3. Run the canary on Jim's Google Drive in the control folder. It proves:
+2. Run `NGRunner.exe --self-test`: it must say it passed, with exit code 0.
+3. Run the canary on Jim's Google Drive in the control folder: `NGRunner.exe canary --folder <control folder>` (the build has no Python). It proves:
    - the no-follow create;
    - `fstat` and `lstat` give the same identity while the file is open, and a rename keeps it;
    - `fsync`, rename and replace;
    - read-back and rollback.
 
    It removes only the files it created, checked by identity. Mozaik Shared is not touched: P1a never writes there.
-4. Write the settings and the keys to Credential Manager, and start NG Runner in **shadow** mode.
+4. **Settings and keys.** Run `NGRunner.exe setup`. It asks for each setting in plain words, writes `settings.json`, puts the two keys in Credential Manager, shows no secret and checks the folders. Quit NG Runner from the tray and start it from the Start Menu, so it reads them. It starts in **shadow** mode, the default. Then, before window 3, set these in the Apps Script project's Script Properties:
+   - `ROLE_JIM_CHANNEL`: `email`, the default, since P1a has no push channel (`docs/decisions.md`), with his address in `ROLE_JIM_EMAIL`.
+   - If his PC is off at night (window 1), which P1a allows: `pc_sleeps_at_night` on in the setup and `PC_SLEEPS_AT_NIGHT` set to `true` here. Otherwise the 7:00 AM alarm fires every morning.
+   - `EXPECTED_ON_FROM` and `EXPECTED_ON_UNTIL`, the same hours as the setup's.
 5. **Copy the material for later phases.** Do this with Mozaik closed, without tidying or renaming anything, and only into Sulaiman's private Drive folder, never into git:
    - the `_NG_Automation` toolkit, zipped, including its 3 frozen regression jobs and `baseline.json`;
    - about 20 closed Mozaik job folders, newest first, covering if possible a garage, a Tafisa colour with 1/4 backs, a bridge between bays of different depths, REA and radius panels, a stacked tower and a remake.
@@ -57,16 +61,17 @@ Ready outside Jim's PC before window 3:
 
 | Changes | Undo | Passes when |
 |---|---|---|
-| The app, its shortcut, two scheduled tasks, a Run key, its data folder, two Credential Manager entries | `uninstall.ps1`, which keeps the data folder | The self-test is clean, the canary passes on G:, the tray shows SHADOW, and the heartbeat reaches the control folder |
+| The app, its shortcut, two scheduled tasks, a Run key, its data folder, two Credential Manager entries | `uninstall.ps1`, which keeps the data folder and the Credential Manager entries: remove those by hand if they should go too | The self-test is clean, the canary passes on G:, the tray shows SHADOW, and the heartbeat reaches the control folder |
 
 ## Window 3 — shadow run (1 to 2 weeks, unattended)
 
 NG Runner does everything except write into NG Jobs:
 - it reads the Fab Schedule export, matches rows, fetches and checks each summary twice, and decides the branch;
-- it writes the files it would have filed into `control\shadow\` instead;
+- it writes the files it would have filed into `control\shadow\` instead, where they are pruned after 30 days, since they hold client PDFs;
 - Barbara gets nothing (copies go to Sulaiman);
-- Jim's digest goes to Sulaiman only;
-- the board is labelled SHADOW.
+- Jim's digest goes to Sulaiman only. With the `SHADOW` Script Property set, the Apps Script counts that as the morning's list, and its "no list today" reaches Sulaiman only, never Jim;
+- no toasts pop up on Jim's PC: the two immediate card kinds would otherwise appear during an unattended window;
+- the board and tray are labelled SHADOW.
 
 Sulaiman checks once a day, remotely or from the heartbeat and digest copies. Each check compares every shadow decision with what really happened: the folder Jim's chat created and the summary it holds.
 
@@ -76,7 +81,12 @@ Sulaiman checks once a day, remotely or from the heartbeat and digest copies. Ea
 
 ## Window 4 — go live (5 minutes, over remote access)
 
-Switch shadow off. Barbara's emails and Jim's digest go to them. The design's P1a exit criteria then run for 10 working days:
+Switch shadow off, in both places:
+
+1. On the board's Health page, switch to live. The switch is logged as an event.
+2. In the Apps Script project, clear the `SHADOW` Script Property and run `checkSetup`, which now asks for Jim's channel. Left set, it would count no digest to Jim, so the next morning would show it.
+
+Barbara's emails and Jim's digest go to them, and his toasts show. The design's P1a exit criteria then run for 10 working days:
 - every new row filed within 45 minutes or carded;
 - 0 summaries filed to the wrong job;
 - the board right on 10 jobs Jim picks;
@@ -85,4 +95,4 @@ Switch shadow off. Barbara's emails and Jim's digest go to them. The design's P1
 - 20 of 20 forbidden writes refused;
 - the restore drill passed.
 
-Undo: switch back to shadow, or pause. Nothing NG Runner filed is ever removed by it.
+Undo: switch back to shadow and set `SHADOW` to `true` again, or pause. Nothing NG Runner filed is ever removed by it.

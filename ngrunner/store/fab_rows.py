@@ -4,9 +4,12 @@ spec section 4; design 3.3, "Fab row"; GLOSSARY: Fab row).
 
 Rows have no IDs in the sheet and move about, so NG Runner keeps its own: a row is first seen
 once, and Barbara's later edits update that same record (the Fab reader decides which edits
-are the same row). Its first sight and original text never change, because the matcher's
-freshness rule is measured from the first sight ("never match against a job list older than
-the row's first appearance").
+are the same row). Its first sight and original text never change: they are the record of what
+appeared, and when. text_changed_at moves with each change of its text, and it is what the
+matcher's freshness rule is measured from ("never match against a job list older than the
+row's first appearance"). A corrected name is new text: matched against a list read before the
+correction, the strict rule could pick the only sold sale while the sale Barbara meant isn't
+listed yet.
 
 States: "seen_at_install" (there before NG Runner: never acted on), "new", "waiting_list" (for
 a job list fresher than the row), "asked" (a card or Barbara's email is out), "matched",
@@ -35,7 +38,8 @@ FAB_ROW_STATES = (
 class FabRowRecord:
     """One Fab row as NG Runner knows it. text, designer, install (the two Install Date cells
     as shown), fab_date and sheet_row are as last read; original_text and first_seen as first
-    read. studio_id is the job it was matched to; reason says why it is in its state."""
+    read. text_changed_at is when its text last changed (first_seen until it is edited).
+    studio_id is the job it was matched to; reason says why it is in its state."""
 
     id: int
     first_seen: datetime
@@ -49,10 +53,12 @@ class FabRowRecord:
     studio_id: str | None
     reason: str | None
     updated_at: datetime
+    text_changed_at: datetime
 
     def to_match(self) -> FabRow:
-        """The row as the matcher takes it (match_fab_row)."""
-        return FabRow(self.text, self.designer, self.first_seen)
+        """The row as the matcher takes it (match_fab_row): its FabRow.first_seen is when this
+        text appeared, so a corrected row needs a job list read after the correction."""
+        return FabRow(text=self.text, designer=self.designer, first_seen=self.text_changed_at)
 
 
 def add_fab_row(
@@ -78,8 +84,9 @@ def add_fab_row(
     with session(db, write=True) as conn:
         cursor = conn.execute(
             "INSERT INTO fab_rows (first_seen, text, designer, install_text, fab_date,"
-            " original_text, sheet_row, state, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (*values[:5], values[1], values[5], values[6], values[0]),
+            " original_text, sheet_row, state, updated_at, text_changed_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (*values[:5], values[1], values[5], values[6], values[0], values[0]),
         )
         return _row(conn, int(cursor.lastrowid))
 
@@ -115,17 +122,22 @@ def update_fab_row(
     reason: str | None | Keep = KEEP,
 ) -> FabRowRecord:
     """Change only the fields given (None clears an optional one), stamp updated_at, and return
-    the row as it now is. first_seen and original_text never change. A studio_id the store has
-    no job for is refused (StoreError: its foreign key); no such row: LookupError."""
+    the row as it now is. A text that differs from the stored one, by any character, also stamps
+    text_changed_at; the same text read again does not. first_seen and original_text never
+    change. A studio_id the store has no job for is refused (StoreError: its foreign key); no
+    such row: LookupError."""
     rid = whole_number(row_id, "a Fab row id")
     changes = _changes(text, designer, install, fab_date, sheet_row, state, studio_id, reason)
     changes["updated_at"] = iso(now, "now")
     with session(db, write=True) as conn:
+        current = _row(conn, rid)
+        if current is None:
+            raise LookupError("there is no Fab row with that id in the store")
+        if changes.get("text", current.text) != current.text:
+            changes["text_changed_at"] = changes["updated_at"]
         # column names come from _changes (this code), values are parameters
         sets = ", ".join(f"{column} = ?" for column in changes)
-        cursor = conn.execute(f"UPDATE fab_rows SET {sets} WHERE id = ?", (*changes.values(), rid))
-        if cursor.rowcount == 0:
-            raise LookupError("there is no Fab row with that id in the store")
+        conn.execute(f"UPDATE fab_rows SET {sets} WHERE id = ?", (*changes.values(), rid))
         return _row(conn, rid)
 
 
@@ -171,4 +183,5 @@ def _record(row: sqlite3.Row) -> FabRowRecord:
         studio_id=row["studio_id"],
         reason=row["reason"],
         updated_at=time_of(row["updated_at"]),
+        text_changed_at=time_of(row["text_changed_at"]),
     )

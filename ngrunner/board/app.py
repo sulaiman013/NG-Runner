@@ -49,6 +49,7 @@ from ngrunner.board import display
 from ngrunner.board.files import open_inside
 from ngrunner.board.views import BoardActions, BoardView, BoardViews, EventView
 from ngrunner.clock import Clock, SystemClock, fmt_clock, fmt_day, pacific_day
+from ngrunner.config import MODES
 
 COOKIE = "ngrunner_board"
 TOKEN_FIELD = "token"
@@ -59,6 +60,7 @@ _EXTENSION = "ngrunner_board"
 _TOKEN_SHAPE = re.compile(r"[A-Za-z0-9_-]{32,}")
 _READS = ("GET", "HEAD")
 _FAILED = "That didn't go through: NG Runner hit a problem. Try again, or tell Sulaiman."
+_NO_SUCH_MODE = "That didn't go through: NG Runner runs either in shadow or live. Nothing changed."
 _log = logging.getLogger(__name__)
 
 
@@ -218,6 +220,7 @@ def _template_values() -> dict[str, object]:
         "overlay_style": display.OVERLAYS.__getitem__,
         "toasts_style": display.toasts_style,
         "path_style": display.path_style,
+        "mode_style": display.mode_style,
         "install_text": display.install_text,
         "age_text": display.age_text,
         "count_text": _count_text,
@@ -329,6 +332,14 @@ def _actions(app: Flask, actions: BoardActions, roots: tuple[Path, ...],
     @app.post("/add-job")
     def add_job() -> Response:
         return _run(lambda: actions.add_job(request.form.get("text", "")))
+
+    @app.post("/mode")
+    def set_mode() -> Response:
+        mode = request.form.get("mode", "")
+        if mode not in MODES:  # going live is never a guess: only an exact mode gets through
+            flash(_NO_SUCH_MODE, "bad")
+            return _back()
+        return _run(lambda: actions.set_mode(mode))
 
     @app.post("/open")
     def open_file() -> Response:

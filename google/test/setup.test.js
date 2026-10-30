@@ -24,19 +24,40 @@ test('installTriggers sets each job its cadence, once, however often it is run',
 });
 
 test('the setup check names what is missing in plain words, and installTriggers waits for it', () => {
-  const h = load({ props: { SIGNING_KEY: 'not hex', CONTROL_FOLDER_ID: null, ROLE_JIM_PUSHOVER: null, EXPECTED_ON_FROM: '6am' },
-    timeZone: 'Etc/UTC' });
+  const h = load({ props: { SIGNING_KEY: 'not hex', CONTROL_FOLDER_ID: null, ROLE_JIM_EMAIL: null,
+    EXPECTED_ON_FROM: '6am' }, timeZone: 'Etc/UTC' });
   const problems = h.gs.checkSetup();
   assert.deepEqual(Array.from(problems), [
     'the project time zone is Etc/UTC, not America/Los_Angeles (see appsscript.json)',
     'the Script Property SIGNING_KEY is not set to the 64-hex-character signing key',
     'the control folder could not be opened: the Script Property CONTROL_FOLDER_ID is not set (see README.md)',
-    'jim has no pushover set up (Script Properties ROLE_JIM_PUSHOVER and PUSHOVER_TOKEN)',
+    'jim has no email set up (Script Property ROLE_JIM_EMAIL)',
     'EXPECTED_ON_FROM is not a time like 06:00',
   ]);
   assert.throws(() => h.gs.installTriggers(), /fix the setup first/);
   assert.deepEqual(h.scriptApp.triggers, []);
   assert.deepEqual(Array.from(load().gs.checkSetup()), []);
+});
+
+test('Jim needs Pushover set up only once ROLE_JIM_CHANNEL asks for it, which P1a does not', () => {
+  const noPush = { ROLE_JIM_PUSHOVER: null, PUSHOVER_TOKEN: null };
+  assert.deepEqual(Array.from(load({ props: noPush }).gs.checkSetup()), []);
+  const asked = load({ props: { ...noPush, ROLE_JIM_CHANNEL: 'pushover' } });
+  assert.deepEqual(Array.from(asked.gs.checkSetup()),
+    ['jim has no pushover set up (Script Properties ROLE_JIM_PUSHOVER and PUSHOVER_TOKEN)']);
+});
+
+test('in the shadow run the setup check asks for the alert role but not for Jim', () => {
+  const h = load({ props: { SHADOW: 'true', ROLE_JIM_EMAIL: null, ROLE_JIM_CHANNEL: 'fax' } });
+  assert.deepEqual(Array.from(h.gs.checkSetup()), []);
+  assert.equal(h.gs.installTriggers(), 5);
+  h.props.deleteProperty('SHADOW');                             // go-live: Jim is needed again
+  assert.deepEqual(Array.from(h.gs.checkSetup()),
+    ["jim's channel fax is not email, slack or pushover"]);
+  const noAlert = load({ props: { SHADOW: 'true', ROLE_SULAIMAN_EMAIL: null } });
+  assert.deepEqual(Array.from(noAlert.gs.checkSetup()),
+    ['sulaiman has no email set up (Script Property ROLE_SULAIMAN_EMAIL)']);
+  assert.throws(() => noAlert.gs.installTriggers(), /fix the setup first/);
 });
 
 test('the setup check never shows a secret, even a wrong one', () => {

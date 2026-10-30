@@ -3,10 +3,15 @@ Cards and card numbers (build spec section 4; design 3.3, "Card"; GLOSSARY: Card
 
 A card is a question for Jim with fixed choices; his answer is recorded verbatim, with who
 gave it, when and through which channel. A card's ID is its prefix and the next number for
-that prefix (ROD-2). Numbers are never reused: card_numbers only counts up, under the write
+that prefix (TES-2). Numbers are never reused: card_numbers only counts up, under the write
 lock, so two threads or processes never get the same ID, and a withdrawn card, or a number
 handed out and never used, is skipped for good. Jim may still have an old card in an email or
 a toast, so an ID must never come to mean another question.
+
+A card keeps which job each of its choices means (choice_ids), beside the labels Jim reads. Two
+sales can share a name, and the candidates exist only in memory when the card is made: by the
+time he answers, after a restart or days later, the job list has been replaced whole and a new
+match could give others. So an answer links a job only through the ID stored with its choice.
 
 States: "open", then "answered" or "withdrawn"; an answered or withdrawn card never changes.
 """
@@ -29,7 +34,9 @@ _PREFIX_MAX = 16
 @dataclass(frozen=True)
 class CardRecord:
     """One card. choices are the fixed answers, in order; answer is the one Jim chose and
-    answer_words his own words, verbatim; reminded_at, when the digest brought it back."""
+    answer_words his own words, verbatim; reminded_at, when the digest brought it back.
+    choice_ids is parallel to choices: the Studio project ID each choice means, or None for one
+    that means no job ("None of these", "Keep <job>", or any choice of a card about no job)."""
 
     id: str
     studio_id: str | None
@@ -46,13 +53,14 @@ class CardRecord:
     answered_at: datetime | None
     channel: str | None
     reminded_at: tuple[datetime, ...]
+    choice_ids: tuple[str | None, ...]
 
 
 # ----- card numbers
 
 
 def allocate_card_id(db: Db, prefix: str) -> str:
-    """The next card ID for prefix ("ROD" gives ROD-1, ROD-2...). A prefix is uppercase
+    """The next card ID for prefix ("TES" gives TES-1, TES-2...). A prefix is uppercase
     letters (cards.card_prefix makes it from the job name). Never the same ID twice, across
     threads and processes. add_card allocates its own; this is for an ID needed first."""
     checked = _prefix(prefix)
@@ -72,7 +80,7 @@ def _next_id(conn: sqlite3.Connection, prefix: str) -> str:
 def _prefix(value: object) -> str:
     if not (isinstance(value, str) and 0 < len(value) <= _PREFIX_MAX and value.isalpha()
             and value == value.upper()):
-        raise ValueError("a card prefix is uppercase letters, like ROD")
+        raise ValueError("a card prefix is uppercase letters, like TES")
     return value
 
 
@@ -90,25 +98,28 @@ def add_card(
     studio_id: str | None = None,
     fab_row_id: int | None = None,
     default_choice: str | None = None,
+    choice_ids: Sequence[str | None] | None = None,
 ) -> CardRecord:
     """A new open card, with the next ID for prefix, given in the same transaction. choices
-    are distinct non-blank texts; default_choice, when given, is one of them. A refused card
-    uses no number."""
+    are distinct non-blank texts; default_choice, when given, is one of them. choice_ids gives
+    each choice's job, in the same order: a Studio project ID, or None for a choice that means
+    no job. Left out or empty, no choice means a job. A refused card uses no number."""
     options = _choices(choices)
     if default_choice is not None and default_choice not in options:
         raise ValueError("the default choice must be one of the card's choices")
+    ids = _choice_ids(choice_ids, options)
     values = (
         None if studio_id is None else key_text(studio_id, "a Studio project ID"),
         None if fab_row_id is None else whole_number(fab_row_id, "a Fab row id", at_least=1),
         code_value(kind, "a card's kind", "which_job"), text_value(text, "a card's text"),
-        dumps(list(options)), default_choice, iso(created_at, "created_at"),
+        dumps(list(options)), default_choice, iso(created_at, "created_at"), dumps(list(ids)),
     )
     checked = _prefix(prefix)
     with session(db, write=True) as conn:
         card_id = _next_id(conn, checked)
         conn.execute(
             "INSERT INTO cards (id, studio_id, fab_row_id, kind, text, choices, default_choice,"
-            " created_at, state) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open')",
+            " created_at, choice_ids, state) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'open')",
             (card_id, *values),
         )
         return _card(conn, card_id)
@@ -217,6 +228,14 @@ def _choices(value: object) -> tuple[str, ...]:
     return options
 
 
+def _choice_ids(value: object, choices: tuple[str, ...]) -> tuple[str | None, ...]:
+    if value is None or (isinstance(value, list | tuple) and not value):
+        return (None,) * len(choices)
+    if not isinstance(value, list | tuple) or len(value) != len(choices):
+        raise ValueError("choice_ids must give one Studio project ID or None for each choice")
+    return tuple(None if v is None else key_text(v, "a choice's Studio project ID") for v in value)
+
+
 def _card(conn: sqlite3.Connection, cid: str) -> CardRecord | None:
     row = conn.execute("SELECT * FROM cards WHERE id = ?", (cid,)).fetchone()
     return None if row is None else _record(row)
@@ -239,4 +258,5 @@ def _record(row: sqlite3.Row) -> CardRecord:
         answered_at=time_or_none(row["answered_at"]),
         channel=row["channel"],
         reminded_at=tuple(time_of(t) for t in loads(row["reminded_at"])),
+        choice_ids=tuple(loads(row["choice_ids"])),
     )

@@ -2,10 +2,10 @@
 The Pushover client: the one path to Jim's phone that doesn't go through the Apps Script.
 
 Normally every message leaves through the outbox and the Apps Script. When receipts stop (none
-within 5 minutes), urgent items come here instead (design section 4, "Silence and failure"),
-so a Google outage can't silence them. send() never raises and never logs: a failure is just
-False, for the caller to retry or alarm on, and the app token and user key (from Credential
-Manager) travel only in the request body, never in an address, a log line or an exception.
+within 5 minutes) and the keys are in Credential Manager, urgent items come here instead (design
+section 4, "Silence and failure"), so a Google outage can't silence them. send() never raises
+and never logs: a failure is just False, for the caller to retry or alarm on, and the app token
+and user key travel only in the request body, never in an address, a log line or an exception.
 """
 from __future__ import annotations
 

@@ -3,22 +3,23 @@ The outbox: how a message leaves NG Runner, and how its receipt comes back.
 
 NG Runner never sends email or Slack itself. It leaves a signed file in the control folder's
 outbox/ (build spec section 3), the Apps Script sends it from ICLA's own account and writes a
-signed receipt; no receipt within 5 minutes turns the tray red and sends urgent items to
-Pushover directly (design section 4, "Silence and failure"). A file names a role (jim,
-barbara...), never an address: the Apps Script turns roles into addresses from its own
-settings, so no address is ever written into a file. This module only builds the bytes and
-reads receipts; the write itself goes through commit_write (wave 2), and the replay rules
+signed receipt; no receipt within 5 minutes turns the tray red and, once Pushover's keys are
+added, sends urgent items there directly (design section 4, "Silence and failure"). A file
+names a role (jim, barbara...), never an address: the Apps Script turns roles into addresses from
+its own settings, so no address is ever written into a file. This module only builds the bytes
+and reads receipts; the write itself goes through commit_write (wave 2), and the replay rules
 (seq above the last accepted, id never seen) are the store's.
 """
 from __future__ import annotations
 
+import json
 import re
 import unicodedata
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, NamedTuple
 
-from ngrunner.clock import from_iso
+from ngrunner.clock import from_iso, pacific_day
 from ngrunner.config import ROLES
 from ngrunner.messages import Message
 from ngrunner.messages.lint import lint, redact
@@ -29,6 +30,7 @@ OUTBOX_KIND = "outbox"
 RECEIPT_KIND = "receipt"
 FOLDER = "outbox"            # in the control folder
 REF_LIMIT = 120
+_DIGEST_KINDS = frozenset({"digest", "quiet_digest"})
 _ENVELOPE_ID = re.compile(r"[0-9a-f]{32}")
 _RECEIPT_FIELDS = frozenset({"outbox_id", "sent_at", "channel", "ok", "error"})
 
@@ -56,20 +58,32 @@ class OutboxFile(NamedTuple):
         """The file's envelope id, which its receipt names."""
         return self.path_parts[-1].removesuffix(".json")
 
+    @property
+    def ref(self) -> str:
+        """The ref its payload carries, for the store's row: writing the row again needs it."""
+        return json.loads(json.loads(self.data)["body"])["payload"]["ref"]
+
 
 def outbox_file(message: Message, *, to: str, channel: str, key: bytes, seq: int,
-                now: datetime, ref: str | None = None) -> OutboxFile:
+                now: datetime, ref: str | None = None, id: str | None = None) -> OutboxFile:
     """One signed outbox file for message. to is a role; channel is email, slack or pushover;
     seq is the outbox stream's next number (the store's); ref says what the message is about
-    (a card ID, a job name; its kind by default), for the Apps Script's log and threading.
-    A message that fails the lint is refused: send templates.vetted(message) instead."""
+    (a card ID, a job name), for the Apps Script's log and threading. By default it is the
+    message's kind, or for a digest digest:<Pacific YYYY-MM-DD of now>, which is how the Apps
+    Script knows Jim's list went out, so leave it to the default on a digest. id is the envelope
+    id, new by default. A queued row is written again with its own: rebuild it as
+    Message("outbox", row.subject, row.lines, row.urgent) and pass id=row.id, seq=row.seq and
+    ref=row.ref, so the numbers have no gap. A message that fails the lint is refused: send
+    templates.vetted(message) instead."""
     if to not in ROLES:
         raise OutboxError("the recipient must be one of NG Runner's roles, never an address")
     if channel not in CHANNELS:
         raise OutboxError("the channel must be email, slack or pushover")
     if isinstance(seq, bool) or not isinstance(seq, int) or seq < 1:
         raise OutboxError("the outbox number must be a whole number from 1")
-    ref = message.kind if ref is None else ref
+    if id is not None and not (isinstance(id, str) and _ENVELOPE_ID.fullmatch(id)):
+        raise OutboxError("an outbox id is 32 lowercase hex characters")
+    ref = _default_ref(message.kind, now) if ref is None else ref
     _check_ref(ref)
     problems = lint(message)
     if problems:
@@ -78,9 +92,13 @@ def outbox_file(message: Message, *, to: str, channel: str, key: bytes, seq: int
         "channel": channel, "to": to, "subject": message.title, "lines": list(message.lines),
         "urgent": message.urgent, "ref": ref,
     }
-    file_id = new_id()
+    file_id = new_id() if id is None else id
     data = seal(OUTBOX_KIND, payload, key=key, seq=seq, issued_at=now, id=file_id)
     return OutboxFile((FOLDER, f"{file_id}.json"), data)
+
+
+def _default_ref(kind: str, now: datetime) -> str:
+    return f"digest:{pacific_day(now).isoformat()}" if kind in _DIGEST_KINDS else kind
 
 
 def _check_ref(ref: object) -> None:

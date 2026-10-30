@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 
 from ngrunner.cards import CardSpec, new_card
 from ngrunner.digest import DigestView, JobLine, compose, reminders
+from ngrunner.messages import templates
 from ngrunner.messages.lint import lint
 
 NOW = datetime(2026, 10, 30, 13, 30, tzinfo=timezone.utc)     # Fri 10/30 6:30 AM Pacific
@@ -146,6 +147,15 @@ def test_owner_items_come_first_on_one_line():
         "1. Fakeley_102826: filed 10/29 3:05 PM.",
         "Your list: nothing open.",
     )
+    assert lint(message) == []
+
+
+def test_a_late_digest_says_so_first_even_after_a_quiet_night():
+    late = datetime(2026, 10, 30, 15, 12, tzinfo=timezone.utc)      # 8:12 AM Pacific
+    message = compose(DigestView(now=late, owner=(templates.missed_digest(due=NOW, sent=late),)))
+    assert message.kind == "digest"
+    assert message.lines == ("For you: Missed the 6:30 AM digest: the PC was off. Sent at 8:12 AM.",
+                             "Your list: nothing open.")
     assert lint(message) == []
 
 

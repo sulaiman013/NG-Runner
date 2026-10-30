@@ -18,9 +18,12 @@ Tables are STRICT: a value of the wrong type is refused, never silently converte
 from __future__ import annotations
 
 import sqlite3
+import time
 from collections.abc import Sequence
 
-from ngrunner.store.db import Store, StoreError, connect, plain_errors, rollback_quietly
+from ngrunner.store.db import (
+    BUSY_TIMEOUT_MS, Store, StoreError, connect, plain_errors, rollback_quietly,
+)
 
 # Version 1: the P1a tables. Columns follow build spec section 4, in its order.
 _V1 = (
@@ -201,7 +204,29 @@ _V1 = (
     ) STRICT""",
 )
 
-MIGRATIONS: tuple[tuple[str, ...], ...] = (_V1,)
+# Version 2: what the parts of P1a turned out to need from each other. SQLite adds a NOT NULL
+# column only with a default, so where that default is no answer the next statement fills the
+# rows already there.
+_V2 = (
+    # Which job each of a card's choices means, parallel to choices. Nothing recorded it before
+    # this, so an older card names no job: an answer to it can never link one.
+    "ALTER TABLE cards ADD COLUMN choice_ids TEXT NOT NULL DEFAULT '[]'",
+    "UPDATE cards SET choice_ids ="
+    " (SELECT json_group_array(NULL) FROM json_each(cards.choices))",
+    # When a row's text last changed. An edit before this kept no time of its own, so an edited
+    # row takes its last update, the latest that edit can have been: a list must be fresher still.
+    "ALTER TABLE fab_rows ADD COLUMN text_changed_at TEXT NOT NULL DEFAULT ''",
+    "UPDATE fab_rows SET text_changed_at ="
+    " CASE WHEN text = original_text THEN first_seen ELSE updated_at END",
+    # Which job a DEV item is about, and whether it turns the tray red.
+    "ALTER TABLE dev ADD COLUMN studio_id TEXT",
+    "ALTER TABLE dev ADD COLUMN urgent INTEGER NOT NULL DEFAULT 0",
+    # The pypdf version that read a render's fingerprint. Not known for an older one, so it is
+    # read again before it is compared.
+    "ALTER TABLE renders ADD COLUMN pypdf TEXT",
+)
+
+MIGRATIONS: tuple[tuple[str, ...], ...] = (_V1, _V2)
 LATEST = len(MIGRATIONS)
 
 
@@ -213,7 +238,7 @@ def migrate(store: Store, steps: Sequence[Sequence[str]] = MIGRATIONS) -> int:
         conn = connect(store.path)
         try:
             _refuse_newer(conn, len(steps))  # before anything is written, WAL mode included
-            mode = conn.execute("PRAGMA journal_mode = WAL").fetchone()[0]  # persists in the file
+            mode = _use_wal(conn)  # persists in the file
             if str(mode).lower() != "wal":
                 raise StoreError(
                     "NG Runner's database can't use write-ahead logging on this disk; its data"
@@ -234,6 +259,21 @@ def migrate(store: Store, steps: Sequence[Sequence[str]] = MIGRATIONS) -> int:
             return len(steps)
         finally:
             conn.close()
+
+
+def _use_wal(conn: sqlite3.Connection) -> str:
+    """Switch the file to write-ahead logging. That takes the file for itself, and it is the one
+    lock SQLite answers at once instead of waiting busy_timeout for, so two processes opening a
+    new store would otherwise see one of them fail. Waits as busy_timeout would."""
+    deadline = time.monotonic() + BUSY_TIMEOUT_MS / 1000
+    while True:
+        try:
+            return str(conn.execute("PRAGMA journal_mode = WAL").fetchone()[0])
+        except sqlite3.OperationalError as exc:
+            busy = (getattr(exc, "sqlite_errorname", None) or "").startswith("SQLITE_BUSY")
+            if not busy or time.monotonic() >= deadline:
+                raise
+            time.sleep(0.05)
 
 
 def check_readable(store: Store) -> None:

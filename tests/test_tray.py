@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 import pytest
 from PIL import Image
 
-from ngrunner.board.views import TrayState
+from ngrunner.board.views import TrayState, tray_tooltip
 from ngrunner.tray import (
     COLOURS,
     MenuEntry,
@@ -234,6 +234,20 @@ def test_a_long_tooltip_is_cut_to_what_windows_holds():
     assert len(fitted.encode("utf-16-le")) // 2 <= 127
     assert fitted.endswith("…") and fitted.startswith("NG Runner: Testerson_101426")
     assert fit_tooltip("NG Runner is running") == "NG Runner is running"
+
+
+def test_in_shadow_mode_the_tray_says_so_first_so_a_long_tooltip_is_never_cut_to_lose_it(calls,
+                                                                                         icons):
+    text = tray_tooltip("NG Runner: " + "Testerson_101426 waits for you; " * 10, shadow=True)
+    tray = Tray(calls.actions(), TrayState("amber", 9, text), backend=_backend(icons))
+    tray.start()
+    try:
+        shown = icons[0].shown[-1][1]
+    finally:
+        tray.stop()
+
+    assert shown.startswith("SHADOW") and shown.endswith("…")
+    assert fit_tooltip(tray_tooltip("NG Runner is running", shadow=True)).startswith("SHADOW")
 
 
 def test_an_action_that_fails_leaves_the_tray_working(calls, icons, caplog):

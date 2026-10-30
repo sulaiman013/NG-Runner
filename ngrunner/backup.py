@@ -61,9 +61,6 @@ _HEADER_BYTES = len(MAGIC) + 1 + _ID_BYTES + _KEY_BYTES + _NONCE_BYTES
 _MAX_PLAIN = 2**31 - 1  # the most AES-GCM takes in one piece here
 _SQLITE = b"SQLite format 3\x00"
 _STAMP = re.compile(r"([0-9]{8}T[0-9]{12})Z(?:-[0-9]+)?")  # writes.py: %Y%m%dT%H%M%S%fZ[-n]
-_OUTGOING = "out:%"  # how store.sequences keys what NG Runner sends in the seqs table
-# Far above what can have been sent since the oldest backup kept: 30 days at one a minute is 43,200.
-_SEQ_JUMP = 1_000_000
 
 
 class BackupError(ValueError):
@@ -216,7 +213,10 @@ def _check_header(data: bytes, own_public: bytes) -> None:
 
 def snapshot(db: Path) -> bytes:
     """A consistent copy of the database, taken with SQLite's online backup while NG Runner
-    may be using it, as the bytes of a database file. It never creates a database."""
+    may be using it, as the bytes of a database file. It never creates a database. The nightly
+    backup, the self-test and the support bundle use this, as it leaves no temp file;
+    store.Store.backup_to, which makes a file, has one caller: the supervisor's copy before an
+    upgrade."""
     if not db.is_file():
         raise BackupError("There is no database to back up yet.")
     try:
@@ -265,19 +265,22 @@ def _openable(db: bytes) -> bytes:
 
 
 def for_a_new_pc(db: bytes) -> bytes:
-    """A restored database made ready to run on a new PC: its outgoing sequence numbers jump
-    far ahead. The backup is older than the last files NG Runner sent, and the Apps Script
-    ignores any number it has seen (spec section 3), so a restored NG Runner would go unheard
-    until the numbers caught up. What it has received keeps its place. restore() itself
+    """A restored database made ready to run on a new PC: store.jump_after_restore moves its
+    outgoing sequence numbers and its card numbers far ahead. The backup is older than the last
+    files NG Runner sent, and the Apps Script ignores any number it has seen (spec section 3), so
+    a restored NG Runner would go unheard until the numbers caught up; and a card ID given since
+    the backup would be given again. What it has received keeps its place. restore() itself
     changes nothing, so the drill checks the backup exactly as it was made."""
+    # Imported here, so the self-test and the support bundle, which use the rest of this module
+    # to report a broken build, still load when the store does not.
+    from ngrunner.store import jump_after_restore
     try:
         with closing(sqlite3.connect(":memory:")) as con:
             con.deserialize(_openable(db))
             if con.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'seqs'"
                            ).fetchone() is None:
                 return db
-            con.execute("UPDATE seqs SET last = last + ? WHERE stream LIKE ?",
-                        (_SEQ_JUMP, _OUTGOING))
+            jump_after_restore(con)
             con.commit()
             return con.serialize()
     except sqlite3.Error as exc:

@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
@@ -26,6 +27,7 @@ from ngrunner.match import (
     match_fab_row,
     match_file_to_job,
     normalize_job_file,
+    room_words,
 )
 
 
@@ -153,6 +155,39 @@ def test_a_file_match_that_forgets_the_salesforce_names_fails_closed():
             "Testerson_101426.des", JOBS, folder="Testerson_101426")
 
 
+def test_a_folder_match_that_forgets_the_salesforce_names_fails_closed():
+    with pytest.raises(TypeError):
+        match_by_folder("Testerson_101426", JOBS)  # type: ignore[call-arg]
+
+
+@pytest.mark.parametrize("names", ["Testerson_101426-2", b"Testerson_101426-2", None])
+def test_salesforce_names_that_are_no_list_are_refused(names):
+    # One name would be read as its letters, and None as no list, turning every guard off.
+    jobs = [Job("1", "Testerson_101426")]
+    with pytest.raises(TypeError):
+        match_file_to_job("Testerson_101426-2_summary.pdf", jobs, opportunity_names=names)
+    with pytest.raises(TypeError):
+        match_file_to_job("Testerson_101426_summary.pdf", jobs, opportunity_names=names)
+    with pytest.raises(TypeError):
+        match_file_to_job("Room1.des", jobs, folder="Testerson_101426", opportunity_names=names)
+    with pytest.raises(TypeError):
+        match_by_folder("Testerson_101426", jobs, opportunity_names=names)
+
+
+@pytest.mark.parametrize("filename, folder", [
+    ("Testerson_101426-2_rev2.pdf", None),
+    ("Testerson_101426-2_rev2.pdf", "Testerson_101426-2"),
+    ("Testerson_101426-2_rev2.pdf", "Testerson_101426"),
+    ("Testerson_101426_2.des", "Testerson_101426"),
+    ("testerson_pat_testerson_101426_summary.pdf", "Testerson_101426"),
+])
+def test_salesforce_names_count_on_every_pass_when_they_can_be_read_only_once(filename, folder):
+    jobs = [Job("1", "Testerson_101426")]
+    names = ["Testerson_101426", "Testerson_101426-2", "Testerson_101426_2", "Pat_Testerson_101426"]
+    once = match_file_to_job(filename, jobs, folder=folder, opportunity_names=iter(names))
+    assert once == match_file_to_job(filename, jobs, folder=folder, opportunity_names=names)
+
+
 @pytest.mark.parametrize("filename, studio_id", [
     ("Testerson_101426 (2026-09-22 #2).pdf", "1"),
     ("testerson_testerson_101426_summary.pdf", "1"),
@@ -230,7 +265,7 @@ def test_a_job_that_is_itself_a_variant_never_takes_the_parents_files(filename):
 
 
 def test_the_parents_folder_is_not_a_variant_jobs_folder():
-    r = match_by_folder("Testerson_101426", [Job("27", "Testerson_101426-2")])
+    r = match_by_folder("Testerson_101426", [Job("27", "Testerson_101426-2")], opportunity_names=())
     assert (r.status, r.job, r.reason) == ("none", None, "no_job")
 
 
@@ -309,6 +344,46 @@ def test_a_folder_named_for_a_sale_with_no_job_is_never_the_parents(
 ):
     r = match_file_to_job(filename, PARENT_AND_RUN[:1], folder=folder, opportunity_names=names)
     assert (r.status, r.job) == expected
+
+
+@pytest.mark.parametrize("folder", [
+    "Testerson_101426-2", "Testerson_101426-2_Gar", "Testerson_101426-2 remake",
+])
+@pytest.mark.parametrize("filename", [
+    "Testerson_101426_summary.pdf", "Testerson_101426.pdf", "Testerson_101426_rev2.pdf",
+    "testerson_testerson_101426_summary.pdf",
+])
+def test_a_file_naming_a_job_in_the_folder_of_a_sale_with_no_job_asks(filename, folder):
+    # With the "-2" sale listed this is "folder_disagrees"; with it unlisted, so is this.
+    jobs = PARENT_AND_RUN[:1]
+    sales = ["Testerson_101426", "Testerson_101426-2"]
+    r = match_file_to_job(filename, jobs, folder=folder, opportunity_names=sales)
+    assert (r.status, r.job, r.reason, r.candidates) == (
+        "ambiguous", None, "folder_disagrees", (jobs[0],))
+
+
+@pytest.mark.parametrize("jobs", [
+    [Job("1", "Testerson_101426")],
+    [Job("1", "Testerson_101426"), Job("12", "Testerson_101426")],   # the name is unclear as well
+])
+def test_a_file_naming_a_job_in_the_folder_of_another_familys_sale_with_no_job_asks(jobs):
+    r = match_file_to_job("Testerson_101426_summary.pdf", jobs, folder="Fakeley_101426",
+                          opportunity_names=["Testerson_101426", "Fakeley_101426"])
+    assert (r.status, r.job, r.reason, r.candidates) == (
+        "ambiguous", None, "folder_disagrees", tuple(jobs))
+
+
+@pytest.mark.parametrize("folder, names", [
+    ("Fakeley_101426", ["Testerson_101426"]),        # no job, and no sale Salesforce knows of
+    ("Testerson_101426-2", []),                      # no list: only a run's folder of the job
+    ("Old", ["Testerson_101426", "Old"]),            # no job name, whatever a sale is called
+    ("Parts requested", ["Testerson_101426"]),
+])
+def test_a_folder_that_is_no_known_sale_leaves_the_file_to_its_name(folder, names):
+    jobs = [Job("1", "Testerson_101426")]
+    r = match_file_to_job("Testerson_101426_summary.pdf", jobs, folder=folder,
+                          opportunity_names=names)
+    assert (r.status, r.job, r.reason) == ("matched", jobs[0], "exact")
 
 
 @pytest.mark.parametrize("filename", [
@@ -420,14 +495,29 @@ def test_name_without_a_date_is_never_matched_even_when_equal():
     (r"G:\NG Jobs\Testerson_101426", "1"),       # a path: its last part is the folder
 ])
 def test_job_folder_matches_its_job(folder, studio_id):
-    r = match_by_folder(folder, JOBS)
+    r = match_by_folder(folder, JOBS, opportunity_names=())
     assert (r.status, r.job and r.job.studio_id) == ("matched", studio_id)
 
 
 @pytest.mark.parametrize("folder", ["Old", "Parts requested", "bench", "LED test", "Test Lane Garage"])
 def test_shop_folders_are_not_jobs(folder):
-    r = match_by_folder(folder, JOBS)
+    r = match_by_folder(folder, JOBS, opportunity_names=())
     assert (r.status, r.reason) == ("none", "not_a_job_name")
+
+
+@pytest.mark.parametrize("folder", [
+    "Testerson_101426-2", "Testerson_101426-2_Gar", "Testerson_101426-2 remake",
+])
+@pytest.mark.parametrize("names, expected", [
+    (["Testerson_101426", "Testerson_101426-2"], ("none", None, "no_job")),  # the "-2" sale's
+    (["Testerson_101426"], ("matched", PARENT_AND_RUN[0], "base")),          # a run's folder
+    ((), ("matched", PARENT_AND_RUN[0], "base")),                            # no list to ask
+])
+def test_a_folder_named_for_a_sale_with_no_job_is_never_the_parents_by_folder_alone(
+    folder, names, expected
+):
+    r = match_by_folder(folder, PARENT_AND_RUN[:1], opportunity_names=names)
+    assert (r.status, r.job, r.reason) == expected
 
 
 def test_hand_named_file_belongs_to_its_job_folder():
@@ -767,11 +857,16 @@ def test_exact_name_with_text_after_the_date_is_that_opportunity_not_the_shorter
     assert (r.status, r.job and r.job.studio_id, r.reason) == ("matched", "202", "exact_name")
 
 
-def test_typed_text_that_is_one_opportunitys_whole_name_never_matches_another_one():
-    opps = [Opportunity("Testerson Garage", "201", "Pat Example", "Propose"),   # no date at all
+@pytest.mark.parametrize("owner, stage", [
+    ("Pat Example", "Propose"),         # it may be the newer sale as well
+    ("Pat Example", "Lost"),            # only its being the whole name stops these two
+    ("Quinn Sample", "Propose"),
+])
+def test_typed_text_that_is_one_opportunitys_whole_name_never_matches_another_one(owner, stage):
+    opps = [Opportunity("Testerson Garage", "201", owner, stage),   # no date at all
             Opportunity("Testerson_051526", "202", "Pat Example", "Ready to Order")]
     r = match_fab_row(_row("Testerson Garage"), opps, set(), FRESH)
-    assert (r.status, r.job) == ("ambiguous", None)
+    assert (r.status, r.job, r.reason) == ("ambiguous", None, "unconfirmed")
 
 
 def test_typed_date_keeps_an_opportunity_whose_name_goes_on_after_that_date():
@@ -920,6 +1015,26 @@ def test_a_typed_parent_name_never_matches_a_sale_whose_name_goes_on_after_the_d
         "ambiguous", None, "unconfirmed", ["504"])
 
 
+@pytest.mark.parametrize("real, ng", [
+    (None, set()),                                                  # it is not in the list
+    ({"stage": "Propose"}, set()),                                  # older, and not sold yet
+    ({"stage": "Ready to Order", "owner": "Quinn Sample"}, set()),  # another designer's
+    ({"stage": "Ready to Order"}, {"508"}),                         # it has an NG job already
+])
+@pytest.mark.parametrize("name", ["Testerson {}_031126", "Testerson-{}_031126", "Testerson{}_031126"])
+@pytest.mark.parametrize("text", ["Testerson {}", "Testerson-{}", "Testerson {} closet"])
+@pytest.mark.parametrize("word", ["Guest", "Master"])
+def test_a_room_like_word_that_is_also_a_surname_never_hides_a_second_family(
+    word, text, name, real, ng
+):
+    newer = Opportunity("Testerson_101426", "509", "Pat Example", "Ready to Order")
+    older = Opportunity(name.format(word), "508", "Pat Example", "Propose")
+    opps = [replace(older, **real), newer] if real else [newer]
+    r = match_fab_row(_row(text.format(word)), opps, ng, FRESH)
+    assert (r.status, r.job) == ("ambiguous", None)
+    assert any(o is newer for o in r.candidates)
+
+
 SAME_INITIALS = "Pia Exampleton"            # "PE" names her as well as Pat Example
 
 
@@ -941,6 +1056,93 @@ def test_a_designer_named_in_full_is_told_apart_from_one_with_the_same_initials(
             Opportunity("Testerson_051526", "506", SAME_INITIALS, "Propose")]
     r = match_fab_row(_row("Testerson", "Pat Example"), opps, set(), FRESH)
     assert (r.status, r.job and r.job.studio_id) == ("matched", "505")
+
+
+TYPED_NAME_SOLD = Opportunity("Testerson_101426", "510", "Pat Example", "Ready to Order")
+
+
+@pytest.mark.parametrize("other", [
+    {"owner": "Pat Example", "stage": "Propose"},      # the designer's: it may be the sale
+    {"owner": "Pat Example", "stage": "Complete"},
+    {"owner": "Pat Example", "stage": "Ready to Order"},
+    {"owner": SAME_INITIALS, "stage": "Propose"},      # "PE" names two owners, so neither
+    {"owner": SAME_INITIALS, "stage": "Lost"},
+])
+def test_several_opportunities_with_the_typed_name_ask_when_another_may_be_the_sale(other):
+    opps = [TYPED_NAME_SOLD, replace(TYPED_NAME_SOLD, studio_id="511", **other)]
+    r = match_fab_row(_row("Testerson_101426"), opps, set(), FRESH)
+    assert (r.status, r.job, r.reason, r.candidates) == (
+        "ambiguous", None, "several_opportunities", tuple(opps))
+
+
+@pytest.mark.parametrize("designer, other", [
+    ("PE", {"owner": "Pat Example", "stage": "Lost"}),     # never to be sold
+    ("PE", {"owner": "Pat Example", "stage": "Dead Lead"}),
+    ("PE", {"owner": "Quinn Sample", "stage": "Propose"}),  # another designer's
+    ("Pat Example", {"owner": SAME_INITIALS, "stage": "Propose"}),  # the full name tells them apart
+])
+def test_several_opportunities_with_the_typed_name_narrow_to_the_only_one_that_can_be_it(
+    designer, other
+):
+    opps = [TYPED_NAME_SOLD, replace(TYPED_NAME_SOLD, studio_id="511", **other)]
+    r = match_fab_row(_row("Testerson_101426", designer), opps, set(), FRESH)
+    assert (r.status, r.job, r.reason) == ("matched", TYPED_NAME_SOLD, "exact_name")
+
+
+# Letters the fold cannot take down to a-z, so no reader can read them. Dropped, they would make
+# another family's name of what is left (finding M5).
+UNREADABLE_LETTERS = [
+    ("Østerson", "Sterson_101426"), ("østerson closet", "Sterson_101426"),
+    ("Đặng", "Ang_101426"), ("Łata", "Ata_101426"), ("Þorson", "Orson_101426"),
+    ("Ðoe", "Oe_101426"), ("Æson", "Son_101426"), ("Œster", "Ster_101426"),
+    ("Tıger", "Tger_101426"), ("Ŧesterson", "Esterson_101426"),
+    ("Testerson Ø", "Testerson_101426"), ("Testerson Иван", "Testerson_101426"),
+]
+
+
+@pytest.mark.parametrize("text, name", UNREADABLE_LETTERS)
+def test_a_letter_no_reader_can_read_makes_the_row_ask(text, name):
+    opps = [Opportunity(name, "512", "Pat Example", "Ready to Order")]
+    r = match_fab_row(_row(text), opps, set(), FRESH)
+    assert (r.status, r.job, r.reason, [o.studio_id for o in r.candidates]) == (
+        "ambiguous", None, "unconfirmed", ["512"])
+
+
+@pytest.mark.parametrize("text", ["Sterson", "Østerson"])
+def test_a_letter_no_reader_can_read_in_the_name_makes_the_row_ask(text):
+    opps = [Opportunity("Østerson_101426", "512", "Pat Example", "Ready to Order")]
+    r = match_fab_row(_row(text), opps, set(), FRESH)
+    assert (r.status, r.job, r.reason, [o.studio_id for o in r.candidates]) == (
+        "ambiguous", None, "unconfirmed", ["512"])
+
+
+def test_a_letter_no_reader_can_read_never_stops_an_exact_name():
+    opps = [Opportunity("Østerson_101426", "512", "Pat Example", "Propose")]
+    r = match_fab_row(_row("Østerson_101426", designer=""), opps, set(), FRESH)
+    assert (r.status, r.job, r.reason) == ("matched", opps[0], "exact_name")
+
+
+@pytest.mark.parametrize("text, name", [
+    ("Tésterson", "Testerson_101426"),
+    ("TESTERSÖN closet", "Testerson_101426"),
+    ("Testerson", "Téstersön_101426"),
+    ("Straße", "Strasse_101426"),
+])
+def test_accents_the_fold_can_read_still_match(text, name):
+    opps = [Opportunity(name, "512", "Pat Example", "Ready to Order")]
+    r = match_fab_row(_row(text), opps, set(), FRESH)
+    assert (r.status, r.job and r.job.studio_id, r.reason) == ("matched", "512", "surname_designer")
+
+
+@pytest.mark.parametrize("owner, designer, matched", [
+    ("Østen Example", "Østen", True), ("Østen Example", "ØE", True),
+    ("Østen Example", "Sten", False), ("Østen Example", "SE", False),
+    ("Sten Example", "Østen", False), ("Sten Example", "ØE", False),
+])
+def test_a_designers_letter_no_reader_can_read_is_never_dropped(owner, designer, matched):
+    opps = [Opportunity("Testerson_101426", "513", owner, "Ready to Order")]
+    r = match_fab_row(_row("Testerson", designer), opps, set(), FRESH)
+    assert (r.status == "matched") is matched
 
 
 @pytest.mark.parametrize("text, name", [
@@ -965,7 +1167,7 @@ def test_room_words_that_differ_from_the_names_never_name_the_job(text, name):
     ("Testerson walk-in closet", "Testerson_101426"),
     ("Testerson walk in closets", "Testerson_101426"),
     ("Testerson reach-in", "Testerson_101426"),
-    ("Testerson master closet", "Testerson_101426"),
+    ("Testerson primary closet", "Testerson_101426"),
     ("Testerson his & hers closets", "Testerson_101426"),
     ("Testerson laundry room, pantry", "Testerson_101426"),
     ("Testerson Gar", "Testerson_101426"),             # the garage branch
@@ -973,6 +1175,9 @@ def test_room_words_that_differ_from_the_names_never_name_the_job(text, name):
     ("Fakeley pantry", "Fakeley_pantry_030926"),
     ("Fakeley closet", "Fakeley_030926"),
     ("Fakeley garage", "Fakeley_030926_Garage"),
+    # A word that is also a surname is a name word: the family that carries it is named.
+    ("Testerson Guest", "Testerson Guest_101426"),
+    ("Testerson Master closet", "Testerson Master_101426"),
     # A typed date, in each form it is read in.
     ("Testerson 10/14/26", "Testerson_101426"),
     ("Testerson 10-14-26", "Testerson_101426"),
@@ -1020,11 +1225,26 @@ def test_a_remake_row_of_an_installed_job_is_offered_with_that_job_first(text):
     ("Testerson -2", "-2"),
     ("Testerson rev 2", "rev2"),
     ("Testerson_101426 closet redo", "redo"),
+    # A run typed before a date that "_Gar" or "-N" follows is never dropped (finding M3).
+    ("Testerson re-make 101426 gar", "remake+gar"),
+    ("Testerson -2 101426 Gar", "-2+gar"),
+    ("Testerson II 101426 Gar", "-2+gar"),
+    ("Testerson redo 101426 Gar", "redo+gar"),
+    ("Testerson warranty 101426 gar", "warranty+gar"),
+    ("Testerson go back 101426_Gar", "gb+gar"),
+    ("Testerson re-make 10/14/26 gar", "remake+gar"),
 ])
 def test_surname_with_a_run_asks_whether_it_is_a_run_of_the_parent(text, variant):
     r = match_fab_row(_row(text), OPPS, NG, FRESH)
     got = (r.status, r.job, r.reason, [o.studio_id for o in r.candidates], r.normalized.variant)
     assert got == ("ambiguous", None, "variant_of_parent", ["101"], variant)
+
+
+def test_a_run_typed_before_the_date_is_kept_when_a_sale_of_that_date_carries_another_run():
+    opps = [Opportunity("Testerson_101426-2", "111", "Pat Example", "Ready to Order")]
+    r = match_fab_row(_row("Testerson remake 101426-2"), opps, set(), FRESH)
+    got = (r.status, r.job, r.reason, [o.studio_id for o in r.candidates], r.normalized.variant)
+    assert got == ("ambiguous", None, "unconfirmed", ["111"], "remake+-2")
 
 
 @pytest.mark.parametrize("text", [
@@ -1041,6 +1261,8 @@ def test_surname_with_a_run_asks_whether_it_is_a_run_of_the_parent(text, variant
     "Testerson replacement", "Testerson missing parts", "Testerson gob", "Testerson tops",
     "Testerson change order", "Testerson extra", "Testerson additional", "Testerson add",
     "Testerson two", "Testerson IV", "Testerson part two",
+    # A word that is also a surname may be a second family name (finding M1).
+    "Testerson master closet", "Testerson Guest", "Testerson Master",
 ])
 def test_a_row_that_may_name_a_run_is_never_matched_as_a_new_job(text):
     opps = [Opportunity("Testerson_101426", "101", "Pat Example", "Ready to Order")]
@@ -1101,6 +1323,45 @@ def test_surname_rule_takes_the_sold_job_when_no_newer_sale_of_the_designers_may
             Opportunity("Testerson_051526", "202", "Pat Example", "Ready to Install")]
     r = match_fab_row(_row("Testerson"), opps, set(), FRESH)
     assert (r.status, r.job and r.job.studio_id, r.reason) == ("matched", "202", "surname_designer")
+
+
+@pytest.mark.parametrize("stage", ["Propose", "Design", "Incomplete", "Complete", "A new stage"])
+@pytest.mark.parametrize("newer", [
+    "Pat Testerson_101426",            # named with a first name
+    "Testerson Fakeley_101426",        # or with a second surname
+    "TestersonFakeley_101426",
+    "Testerson-Fakeley_101426",
+    "Pat Testerson_051526",            # the same day: a name date can't order the two
+    "Pat Testerson",                   # no date: it can't show it is older
+])
+def test_surname_rule_asks_when_the_designer_has_a_newer_rival_that_may_be_the_sale(newer, stage):
+    # The sale may have been named another way, and Salesforce lags: it may be this row's.
+    opps = [Opportunity("Testerson_051526", "203", "Pat Example", "Ready to Install"),
+            Opportunity(newer, "204", "Pat Example", stage)]
+    r = match_fab_row(_row("Testerson"), opps, set(), FRESH)
+    assert (r.status, r.job, r.reason, [o.studio_id for o in r.candidates]) == (
+        "ambiguous", None, "unconfirmed", ["203", "204"])
+
+
+def test_a_newer_shorter_family_may_be_the_sale_for_a_row_that_types_two_surnames():
+    opps = [Opportunity("Testerson Fakeley_051526", "203", "Pat Example", "Ready to Install"),
+            Opportunity("Testerson_101426", "204", "Pat Example", "Propose")]
+    r = match_fab_row(_row("Testerson Fakeley"), opps, set(), FRESH)
+    assert (r.status, r.job, r.reason) == ("ambiguous", None, "unconfirmed")
+
+
+@pytest.mark.parametrize("text, rival", [
+    ("Testerson", {"stage": "Lost"}),                    # never to be sold
+    ("Testerson", {"stage": "Dead Lead"}),
+    ("Testerson", {"owner": "Quinn Sample"}),            # another designer's
+    ("Testerson", {"name": "Pat Testerson_021526"}),     # older, not newer
+    ("Testerson 5/15/26", {}),                           # another date than the one typed
+])
+def test_a_rival_that_cannot_be_the_designers_newer_sale_leaves_the_match(text, rival):
+    opps = [Opportunity("Testerson_051526", "203", "Pat Example", "Ready to Install"),
+            replace(Opportunity("Pat Testerson_101426", "204", "Pat Example", "Propose"), **rival)]
+    r = match_fab_row(_row(text), opps, set(), FRESH)
+    assert (r.status, r.job and r.job.studio_id, r.reason) == ("matched", "203", "surname_designer")
 
 
 def test_typing_the_date_picks_the_newer_sale_still_proposed():
@@ -1164,6 +1425,26 @@ def test_the_one_opportunity_without_an_ng_job_is_matched_unless_a_newer_one_has
     assert (r.status, r.job and r.job.studio_id) == expected
 
 
+@pytest.mark.parametrize("ng", ["108", b"108", None])
+def test_ng_jobs_that_are_no_list_are_refused(ng):
+    # One ID would be read as its digits, so the job it names would look as if it had none.
+    with pytest.raises(TypeError):
+        match_fab_row(_row("Dummitt"), OPPS, ng, FRESH)
+
+
+@pytest.mark.parametrize("sold", ["Ready to Order", None])
+def test_sold_stages_that_are_no_list_are_refused(sold):
+    with pytest.raises(TypeError):
+        match_fab_row(_row("Testerson"), OPPS, NG, FRESH, sold_stages=sold)
+
+
+def test_ng_jobs_count_whole_when_they_can_be_read_only_once():
+    r = match_fab_row(_row("Dummitt"), OPPS, iter(["108", "Testerson_101426"]), FRESH)
+    assert (r.status, [o.studio_id for o in r.candidates]) == ("ambiguous", ["108"])
+    r = match_fab_row(_row("Testerson"), OPPS, iter(["108", "Testerson_101426"]), FRESH)
+    assert (r.status, [o.studio_id for o in r.candidates]) == ("ambiguous", ["101"])
+
+
 def test_ng_job_known_only_by_its_folder_name_counts():
     r = match_fab_row(_row("Testerson"), OPPS, {"Testerson_101426_Gar"}, FRESH)
     assert (r.status, r.job) == ("ambiguous", None)
@@ -1204,6 +1485,124 @@ def test_folder_of_one_of_two_related_sales_never_pushes_the_match_to_a_third(fo
             Opportunity("Testerson_051526", "203", "Pat Example", "Ready to Order")]
     r = match_fab_row(_row("Testerson"), opps, {folder}, FRESH)
     assert (r.status, r.job) == ("ambiguous", None)
+
+
+MINE = Opportunity("Testerson_101426", "514", "Pat Example", "Ready to Order")
+
+
+@pytest.mark.parametrize("owner", ["", "   ", " - "])
+@pytest.mark.parametrize("other", [
+    Opportunity("Testerson_051526", "515", "", "Ready to Order"),          # another candidate
+    Opportunity("Testerson Fakeley_092826", "515", "", "Ready to Order"),  # rivals that fit
+    Opportunity("Pat Testerson_051526", "515", "", "Ready to Install"),
+    Opportunity("Testerson_121526", "515", "", "Propose"),                 # a newer sale
+    Opportunity("Pat Testerson_121526", "515", "", "Design"),              # named another way
+])
+def test_an_opportunity_with_no_owner_may_be_the_designers_so_the_row_asks(other, owner):
+    opps = [MINE, replace(other, owner=owner)]
+    r = match_fab_row(_row("Testerson"), opps, set(), FRESH)
+    assert (r.status, r.job) == ("ambiguous", None)
+    assert sorted(o.studio_id for o in r.candidates) == ["514", "515"]
+
+
+@pytest.mark.parametrize("other, ng", [
+    (Opportunity("Testerson_051526", "515", "", "Propose"), set()),         # older, and not sold
+    (Opportunity("Testerson_121526", "515", "", "Lost"), set()),            # never to be sold
+    (Opportunity("Pat Testerson_121526", "515", "", "Dead Lead"), set()),
+    (Opportunity("Testerson_051526", "515", "", "Ready to Order"), {"515"}),  # has its NG job
+    (Opportunity("Fakeley_121526", "515", "", "Ready to Order"), set()),    # another family
+])
+def test_an_opportunity_with_no_owner_that_could_not_stop_the_designers_own_leaves_the_match(
+    other, ng
+):
+    r = match_fab_row(_row("Testerson"), [MINE, other], ng, FRESH)
+    assert (r.status, r.job, r.reason) == ("matched", MINE, "surname_designer")
+
+
+@pytest.mark.parametrize("text", ["Testerson", "Testerson closet", "Testerson 10/14/26"])
+@pytest.mark.parametrize("designer", ["PE", ""])
+def test_an_opportunity_with_no_owner_is_never_matched_by_the_surname_rule(text, designer):
+    opps = [replace(MINE, owner="")]
+    r = match_fab_row(_row(text, designer), opps, set(), FRESH)
+    assert (r.status, r.job, r.reason, r.candidates) == ("ambiguous", None, "unconfirmed", tuple(opps))
+
+
+def test_an_exact_name_still_matches_an_opportunity_with_no_owner():
+    opps = [replace(MINE, owner="")]
+    r = match_fab_row(_row("Testerson_101426"), opps, set(), FRESH)
+    assert (r.status, r.job, r.reason) == ("matched", opps[0], "exact_name")
+
+
+@pytest.mark.parametrize("opps", [
+    # The other may be the designer's, and the sale.
+    [MINE, replace(MINE, studio_id="515", owner="", stage="Propose")],
+    # The sold one may be anyone's, so it can't stand for the name.
+    [replace(MINE, owner=""), replace(MINE, studio_id="515", stage="Lost")],
+    [replace(MINE, owner=""), replace(MINE, studio_id="515", owner="Quinn Sample", stage="Propose")],
+])
+def test_several_opportunities_with_the_typed_name_ask_when_one_has_no_owner(opps):
+    r = match_fab_row(_row("Testerson_101426"), opps, set(), FRESH)
+    assert (r.status, r.job, r.reason, r.candidates) == (
+        "ambiguous", None, "several_opportunities", tuple(opps))
+
+
+def test_a_row_of_200_characters_is_still_read():
+    r = match_fab_row(_row("Testerson".ljust(200)), OPPS, NG, FRESH)
+    assert (r.status, r.job and r.job.studio_id, r.reason) == ("matched", "101", "surname_designer")
+
+
+@pytest.mark.parametrize("text", [
+    "Testerson".ljust(201),
+    "Testerson_101426".ljust(201),              # an exact name is not read either
+    "Testerson " * 2000,
+    "Testerson 101426 gar " * 1000,             # dates and run words, the slowest to read
+    "Testerson closet walk-in " * 2400,
+])
+def test_a_row_longer_than_200_characters_asks_at_once_and_is_never_read(text):
+    started = time.perf_counter()
+    r = match_fab_row(_row(text), OPPS, NG, FRESH)
+    assert time.perf_counter() - started < 5      # reading the longest takes far longer
+    assert (r.status, r.job, r.reason, r.candidates) == ("none", None, "row_too_long", ())
+    assert r.normalized.base == ""
+
+
+def test_a_row_too_long_to_read_waits_for_no_list():
+    r = match_fab_row(_row("Testerson".ljust(201)), OPPS, NG, None)
+    assert (r.status, r.reason) == ("none", "row_too_long")
+
+
+def test_a_row_too_long_to_read_still_needs_times_with_a_zone():
+    with pytest.raises(ValueError):
+        match_fab_row(_row("Testerson".ljust(201), first_seen=datetime(2026, 10, 27)), OPPS, NG, FRESH)
+
+
+@pytest.mark.parametrize("text, rooms", [
+    ("", ()),
+    ("Testerson", ()),
+    ("Testerson closet", ("closet",)),
+    ("Testerson closets", ("closet",)),                         # one spelling each
+    ("Testerson Pantries, garages", ("pantry", "garage")),      # in the order typed
+    ("Testerson walk-in closets", ("walkin", "closet")),
+    ("Testerson walk in, reach-in", ("walkin", "reachin")),
+    ("Testerson closet and closets", ("closet",)),              # once each
+    ("Closet", ()),                                             # never the first word
+    ("Closet Fakeley", ()),
+    ("O'Closet garage", ("garage",)),                           # an apostrophe never ends a word
+    ("Testerson Guest", ()),                                    # surnames, not room words
+    ("Testerson Master", ()),
+    ("Testerson_101426 garage", ("garage",)),
+    ("Testerson garage 10/14/26", ("garage",)),
+    ("Testerson_101426_Gar", ()),                               # a branch flag, not a room word
+    ("Testerson remake", ()),
+])
+def test_room_words_are_the_ones_the_row_is_read_to_carry(text, rooms):
+    assert room_words(text) == rooms
+
+
+def test_room_words_of_a_row_too_long_to_read_are_none_and_never_stall():
+    started = time.perf_counter()
+    assert room_words("Testerson closet walk-in " * 2400) == ()
+    assert time.perf_counter() - started < 5
 
 
 def test_sold_stages_can_be_set():
@@ -1395,7 +1794,7 @@ def test_synthetic_names_never_pair_a_real_jobs_date_with_another_of_its_words(
 @pytest.mark.fixtures
 def test_real_ng_jobs_folders_belong_to_at_most_one_archived_job(summaries_dir, ng_jobs_folders):
     _, jobs = _archived_jobs(summaries_dir)
-    results = [match_by_folder(folder, jobs) for folder in ng_jobs_folders]
+    results = [match_by_folder(folder, jobs, opportunity_names=()) for folder in ng_jobs_folders]
     print(f"\n{len(results)} folders vs {len(jobs)} archived jobs")
     print("  #  status     reason               job#")
     print("\n".join(f"{i:>3}  {r.status:<10} {r.reason:<20} {r.job.studio_id if r.job else '-':>4}"

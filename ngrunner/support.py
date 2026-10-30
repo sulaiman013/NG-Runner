@@ -7,11 +7,11 @@ database's schema version and row counts, the launcher's record and the recent l
 tray's "Send support bundle" makes one, and so does NGRunner.exe support-bundle.
 
 What it never holds: secrets (they live in Windows Credential Manager, which it never reads),
-email addresses (the settings show only which roles have one), the board's per-launch token
-(board.json is never read), and any row of the database (counts only). Logs hold job names
-but never addresses (design section 6, "Logs"), and only the end of each recent log is kept,
-so a bundle stays small. Nothing it reads can make it fail: a missing or damaged part is
-described in the bundle instead.
+email addresses (the settings have none, and a setting NG Runner doesn't know shows by name
+only), the board's per-launch token (board.json is never read), and any row of the database
+(counts only). Logs hold job names but never addresses (design section 6, "Logs"), and only the
+end of each recent log is kept, so a bundle stays small. Nothing it reads can make it fail: a
+missing or damaged part is described in the bundle instead.
 """
 from __future__ import annotations
 
@@ -104,9 +104,8 @@ def _settings(paths: AppPaths) -> dict[str, Any]:
         settings = load_settings(paths)
     except SettingsError as exc:
         return {"problem": str(exc)}
-    shown = settings_to_json(settings)
-    shown["emails"] = sorted(dict(settings.emails))  # which roles have one, never the address
-    return shown
+    # Only the names of what was set aside: no one knows what its values hold.
+    return settings_to_json(settings) | {"set_aside": [name for name, _ in settings.set_aside]}
 
 
 def _database(paths: AppPaths) -> dict[str, Any]:

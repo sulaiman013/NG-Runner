@@ -8,7 +8,7 @@ from __future__ import annotations
 import pytest
 
 from ngrunner.messages import Message
-from ngrunner.messages.lint import check, lint, redact
+from ngrunner.messages.lint import JOB_NAME, check, lint, redact
 
 
 def msg(text: str, *, kind: str = "test") -> Message:
@@ -319,6 +319,94 @@ def test_a_problem_says_where_and_why_without_repeating_the_text():
     assert problems == ["line 1: has a path or a web address"]
 
 
+# ----- what Barbara typed, quoted: her text, so it is not held to NG Runner's wording, but it
+# still can't carry an address, a phone number, a path, a hash or a key to anyone
+
+
+def quoting(typed: str) -> list[Message]:
+    """typed as the templates quote a Fab row: in a title, after Fab row, after now reads."""
+    return [
+        msg(f'Which job is Fab row "{typed}"?\nFab row "Dummitt" matches no job in Salesforce.'),
+        msg(f'Filed as Testerson_101426\nFab row "{typed}" (designer PE) is filed.'),
+        msg(f'TES-2 · Testerson_101426 · Row changed: which job?\nFab row "{typed}" now reads'
+            f' "Fakeley", after it was filed.\n1. Keep Testerson_101426'),
+        msg(f'TES-2 · Testerson_101426 · Row changed: which job?\nFab row "Fakeley" now reads'
+            f' "{typed}", after it was filed.\n1. Keep Testerson_101426'),
+    ]
+
+
+@pytest.mark.parametrize("typed", [
+    "Testerson 10/14/26", "Testerson 10-14-2026", "Testerson 2026-10-14", "Testerson 11/03",  # date
+    "Testerson 101426", "Testerson_10142", "Testerson_1014261", "Testerson 84213",  # a number
+    "Testerson_Prj1", "Testerson UniqueID", "Testerson state=open",                 # an attribute
+    "Testerson n/a", "Testerson TBD", "Testerson unknown", "Testerson ??",          # unverified
+    "Testerson None", "Testerson {x}", "Testerson -> Fakeley",                      # program text
+    "Testerson 9:42", "Testerson 2 cm", "Testerson. Hi", "Testerson. Thanks", "all good",  # words
+])
+def test_quoted_row_text_is_not_held_to_ng_runners_wording(typed):
+    for message in quoting(typed):
+        assert lint(message) == [], message.text
+
+
+@pytest.mark.parametrize("typed, code", [
+    ("Testerson barbara@example.com", "email"),
+    ("Testerson (310) 555-0123", "phone"),
+    ("Testerson 310-555-0123", "phone"),
+    (r"Testerson G:\NG Jobs\x", "path"),
+    ("Testerson https://example.com/x", "path"),
+    ("Testerson " + "3f" * 32, "hash"),
+    ("Testerson k3Yv9QzR7mT2wX8pL4nB6cD1fG5hJ0", "key"),
+])
+def test_quoted_row_text_still_carries_no_address_phone_path_hash_or_key(typed, code):
+    for message in quoting(typed):
+        assert code in {p.code for p in check(message)}, message.text
+
+
+@pytest.mark.parametrize("line, code", [
+    ('Fab row "Testerson" installs 11/03.', "date"),         # after the quote: NG Runner's words
+    ('Fab row "Testerson" (designer N/A) is filed.', "verify"),
+    ('The row "Testerson 10/14/26" is filed.', "date"),      # not how a row is quoted
+    ('Fab row "Testerson" says "10/14/26".', "date"),        # another quote is not the row
+    ('Fab row "Testerson 10/14/26 is filed.', "date"),       # never closed
+    ('Fab row "Testerson" 10/14/26" is filed.', "date"),     # closed early, so the rest is read
+])
+def test_only_the_quoted_row_itself_is_let_off(line, code):
+    problems = check(msg(f"Filed as Testerson_101426\n{line}"))
+    assert code in {p.code for p in problems}, [str(p) for p in problems]
+
+
+# ----- job names: the shapes found in the NG Jobs folder, and what must not pass for one
+
+
+@pytest.mark.parametrize("job", [
+    "Testerson_101426", "Testerson_101426_Gar", "Testerson_101426-2", "Fakeley_pantry_030926",
+    "Testerson_101426b", "Testerson_101426rev", "Testerson_101426b2", "Testerson_101426b_Gar",
+    "Testerson 101426", "McTesterson 101426", "O'Testa 101426", "Testerson 101426_Gar",
+    "Testerson101426",
+])
+def test_every_shape_of_job_name_reads_as_one_whole(job):
+    assert JOB_NAME.fullmatch(job) is not None
+    assert lint(msg(f"NG Runner · Fri 10/30\n1. {job}: filed 10/29 3:05 PM.")) == []
+
+
+@pytest.mark.parametrize("line, code", [
+    ("The 101426 job is filed.", "studio_id"),
+    ("Studio 101426 is filed.", "studio_id"),
+    ("Project 101426 is filed.", "studio_id"),
+    ("Job 101426 is filed.", "studio_id"),
+    ("Its Studio ID 101426 is filed.", "studio_id"),
+    ("Testerson 841328 is filed.", "studio_id"),                 # no month 84, so not a date
+    ("Testerson 1014261 is filed.", "studio_id"),                # seven digits
+    ("testerson 101426 is filed.", "studio_id"),                 # no capital: a word and a number
+    ("Wrote Testerson_101426fa9c1e2b4d5a6f7.", "hash"),          # a hash stuck on the date
+    ("Wrote Testerson_1014263fa9c1e2b4d5a6f7.", "hash"),
+    ("Token K3yV9QzR7mT2wX8pL4nB6cD1fG5hJ101426 works.", "key"),  # a key that ends like a date
+])
+def test_a_number_beside_a_word_or_a_hash_on_a_date_does_not_pass_for_a_job_name(line, code):
+    problems = check(msg(f"Filed as Testerson_101426\n{line}"))
+    assert code in {p.code for p in problems}, [str(p) for p in problems]
+
+
 # ----- redact: outside text (a send error, a reason from elsewhere) made safe to log
 
 
@@ -326,6 +414,14 @@ def test_redact_removes_addresses_numbers_web_addresses_and_codes():
     text = ("Invalid recipient barbara@example.com (310) 555-0123 at"
             " https://hooks.example.com/services/T0/B0/k3Yv9QzR7mT2wX8pL4nB6cD1 id " + "ab" * 16)
     assert redact(text) == ("Invalid recipient [address] [phone] at [web address] id [code]")
+
+
+@pytest.mark.parametrize("name", [
+    "Testerson_101426_summary.pdf", "Testerson_101426_NGRunner_log.txt", "Testerson_101426_Gar",
+])
+def test_redact_keeps_a_job_name_however_long_it_runs(name):
+    # A long one looks like a key to the pattern, as it does to the lint before it masks them.
+    assert redact(f"{name} could not be replaced.") == f"{name} could not be replaced."
 
 
 def test_redact_keeps_plain_words_and_caps_the_length():

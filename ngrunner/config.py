@@ -15,7 +15,7 @@ import ntpath
 import os
 import re
 from collections.abc import Mapping
-from dataclasses import asdict, dataclass, fields
+from dataclasses import dataclass, field, fields, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -27,9 +27,12 @@ if TYPE_CHECKING:
 APP_NAME = "NGRunner"
 PHONES = ("pushover", "slack", "none")
 LAYOUTS = ("landscape", "portrait")
+MODES = ("shadow", "live")
 ROLES = ("jim", "barbara", "will", "george", "sulaiman", "backup_contact")
-_EMAIL = re.compile(r"[^@\s]+@[^@\s]+\.[A-Za-z]{2,}")
 _URL = re.compile(r"https://[a-z0-9.-]+(?::\d{1,5})?/?")
+# The public key as backup.new_keypair() prints it. Checked here by its form, as backup.py imports
+# this module and the launcher's build leaves cryptography out; tests/test_config.py ties the two.
+_BACKUP_KEY = re.compile(r"ngrbak-public-1-[0-9a-f]{64}")
 
 
 class SettingsError(ValueError):
@@ -106,20 +109,36 @@ class Settings:
     expected_on_from: str = "06:00"      # hours the PC is expected on, for the watchdog
     expected_on_until: str = "23:00"
     pc_sleeps_at_night: bool = False     # the declared "PC sleeps at night" mode
-    phone: str = "pushover"              # decision 2: pushover, slack or none
-    emails: tuple[tuple[str, str], ...] = ()     # (role, address); roles in ROLES
+    phone: str = "none"                  # P1a has no push channel (docs/decisions.md)
     sold_stages: tuple[str, ...] = ("Ready to Order", "Ready to Install")  # questionnaire 3a
+    mode: str = "shadow"                 # live only by a deliberate switch (integration spec 7)
+    backup_public_key: str = ""          # blank: the nightly backup is a board item, not a crash
+    # What load_settings set aside, as (name, value), sorted. No setting of this version: nothing
+    # reads, compares or prints it, and save_settings puts it back for the version that knows it.
+    set_aside: tuple[tuple[str, Any], ...] = field(default=(), compare=False, repr=False)
 
-    def email(self, role: str) -> str | None:
-        return dict(self.emails).get(role)
+    def __post_init__(self) -> None:
+        _one_of(self.mode, MODES, "mode")  # here, so replace(settings, mode=...) can't skip it
+
+    def set_aside_note(self) -> str:
+        """One line for the supervisor to pass to DEV, naming what load_settings set aside and
+        never its values; "" when it set nothing aside."""
+        if not self.set_aside:
+            return ""
+        names = ", ".join(repr(name) for name, _ in self.set_aside)
+        return f"The settings file has settings this version does not know, kept unused: {names}"
 
 
 _PATHS = ("ng_jobs", "mozaik_shared", "control")
 _WALL_TIMES = ("digest_at", "quiet_from", "quiet_until", "expected_on_from", "expected_on_until")
+_SETTINGS = frozenset(f.name for f in fields(Settings)) - {"set_aside"}
 
 
 def load_settings(paths: AppPaths) -> Settings:
-    """Read and check settings.json. Anything missing, unknown or malformed is refused."""
+    """Read and check settings.json. Anything missing or malformed is refused. A setting this
+    version doesn't know is set aside instead, with Settings.set_aside_note() saying so: a
+    fallback to an older version (launcher.py) must never be refused by the file a newer one
+    left."""
     try:
         raw = json.loads(paths.settings.read_text(encoding="utf-8"))
     except FileNotFoundError as exc:
@@ -128,13 +147,14 @@ def load_settings(paths: AppPaths) -> Settings:
         raise SettingsError("NG Runner's settings file can't be read") from exc
     if not isinstance(raw, dict):
         raise SettingsError("NG Runner's settings file is not a set of named settings")
-    return settings_from(raw)
+    aside = sorted((name, value) for name, value in raw.items() if name not in _SETTINGS)
+    known = {name: value for name, value in raw.items() if name in _SETTINGS}
+    return replace(settings_from(known), set_aside=tuple(aside))
 
 
 def settings_from(raw: Mapping[str, Any]) -> Settings:
     """Settings from plain values (the JSON form), checked field by field."""
-    known = {f.name for f in fields(Settings)}
-    unknown = sorted(set(raw) - known)
+    unknown = sorted(set(raw) - _SETTINGS)
     if unknown:
         raise SettingsError(f"unknown setting {unknown[0]!r}")
     missing = [name for name in _PATHS if not raw.get(name)]
@@ -157,12 +177,14 @@ def _choices(raw: Mapping[str, Any]) -> dict[str, Any]:
         values["report_layout"] = _one_of(raw["report_layout"], LAYOUTS, "report_layout")
     if "phone" in raw:
         values["phone"] = _one_of(raw["phone"], PHONES, "phone")
+    if "mode" in raw:
+        values["mode"] = raw["mode"]  # Settings itself checks this one
     if "pc_sleeps_at_night" in raw:
         if not isinstance(raw["pc_sleeps_at_night"], bool):
             raise SettingsError("pc_sleeps_at_night must be true or false")
         values["pc_sleeps_at_night"] = raw["pc_sleeps_at_night"]
-    if "emails" in raw:
-        values["emails"] = _emails(raw["emails"])
+    if "backup_public_key" in raw:
+        values["backup_public_key"] = _backup_key(raw["backup_public_key"])
     if "sold_stages" in raw:
         stages = raw["sold_stages"]
         if not (isinstance(stages, list) and stages
@@ -173,21 +195,22 @@ def _choices(raw: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def settings_to_json(settings: Settings) -> dict[str, Any]:
-    """The JSON form of settings (what save_settings writes)."""
-    out = asdict(settings)
+    """The JSON form of settings, without what load_settings set aside, so showing this can't
+    repeat those values."""
+    out = {name: getattr(settings, name) for name in _SETTINGS}
     for name in _PATHS:
         out[name] = str(out[name])
-    out["emails"] = dict(settings.emails)
     out["sold_stages"] = list(settings.sold_stages)
     return out
 
 
 def save_settings(paths: AppPaths, settings: Settings) -> None:
-    """Write settings.json in NG Runner's own data folder: temp file, then replace."""
+    """Write settings.json in NG Runner's own data folder: temp file, then replace. What
+    load_settings set aside goes back in, so a fallback to an older version costs nothing."""
     paths.app_data.mkdir(parents=True, exist_ok=True)
     temp = paths.settings.with_name(paths.settings.name + ".tmp")
-    temp.write_text(json.dumps(settings_to_json(settings), indent=1, sort_keys=True),
-                    encoding="utf-8")
+    values = dict(settings.set_aside) | settings_to_json(settings)
+    temp.write_text(json.dumps(values, indent=1, sort_keys=True), encoding="utf-8")
     os.replace(temp, paths.settings)
 
 
@@ -228,14 +251,9 @@ def _one_of(value: Any, allowed: tuple[str, ...], name: str) -> str:
     return value
 
 
-def _emails(value: Any) -> tuple[tuple[str, str], ...]:
-    if not isinstance(value, dict):
-        raise SettingsError("emails must map a role to an address")
-    out = []
-    for role, address in sorted(value.items()):
-        if role not in ROLES:
-            raise SettingsError(f"emails: {role!r} is not a known role")
-        if not isinstance(address, str) or not _EMAIL.fullmatch(address.strip()):
-            raise SettingsError(f"emails: the address for {role} is not an email address")
-        out.append((role, address.strip()))
-    return tuple(out)
+def _backup_key(value: Any) -> str:
+    """The public key, or blank. A refusal never repeats the value: it may be the private key."""
+    text = value.strip() if isinstance(value, str) else None
+    if text is None or (text and not _BACKUP_KEY.fullmatch(text)):
+        raise SettingsError("backup_public_key must be the public key keygen prints, or blank")
+    return text

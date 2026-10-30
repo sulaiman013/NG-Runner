@@ -14,7 +14,7 @@ fetched_at is when NG Runner fetched it from Render.
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
@@ -53,8 +53,10 @@ class OpportunityRecord:
     client: str | None = None
 
     def to_match(self) -> Opportunity:
-        """The Opportunity as the matcher takes it (match_fab_row)."""
-        return Opportunity(self.name, self.studio_id, self.owner, self.stage)
+        """The Opportunity as the matcher takes it (match_fab_row). By keyword: its fields are
+        in another order than this record's."""
+        return Opportunity(name=self.name, studio_id=self.studio_id, owner=self.owner,
+                           stage=self.stage)
 
 
 @dataclass(frozen=True)
@@ -70,13 +72,19 @@ def replace_opportunities(
     *,
     synced_at: datetime | None,
     fetched_at: datetime,
+    clients: Mapping[str, str | None] | None = None,
 ) -> ListState:
     """Replace the whole stored list with these Opportunities, and its state with these times,
     in one transaction; returns the new state. Each needs a Studio project ID and a name (stage
-    and owner may be blank text; client, read when present, may be None). A list that can't
-    be stored whole (a bad value: ValueError; one Studio ID twice: StoreError) leaves the old
-    list and state exactly as they were."""
-    rows = [_row_values(o) for o in opportunities]
+    and owner may be blank text). clients is the job list's client names by Studio project ID
+    (JobList.clients), since match.Opportunity has no field for one: when given it says every
+    client, and an ID it lacks has none; left out, each Opportunity's own client is read, when
+    it has one. A blank client is stored as None. A list that can't be stored whole (a bad value:
+    ValueError; one Studio ID twice: StoreError) leaves the old list and state exactly as they
+    were."""
+    if clients is not None and not isinstance(clients, Mapping):
+        raise ValueError("clients must map each Studio project ID to its client's name")
+    rows = [_row_values(o, clients) for o in opportunities]
     state = (iso_or_none(synced_at, "synced_at"), iso(fetched_at, "fetched_at"), len(rows))
     with session(db, write=True) as conn:
         conn.execute("DELETE FROM opportunities")
@@ -116,13 +124,17 @@ def get_opportunity(db: Db, studio_id: str) -> OpportunityRecord | None:
     return None if row is None else _record(row)
 
 
-def _row_values(o: OpportunityLike) -> tuple[str, str, str, str, str | None]:
+def _row_values(
+    o: OpportunityLike, clients: Mapping[str, str | None] | None
+) -> tuple[str, str, str, str, str | None]:
+    studio_id = key_text(getattr(o, "studio_id", None), "an Opportunity's Studio project ID")
+    client = getattr(o, "client", None) if clients is None else clients.get(studio_id)
     return (
-        key_text(getattr(o, "studio_id", None), "an Opportunity's Studio project ID"),
+        studio_id,
         text_value(getattr(o, "name", None), "an Opportunity's name"),
         text_value(getattr(o, "stage", None), "an Opportunity's stage", empty=True),
         text_value(getattr(o, "owner", None), "an Opportunity's owner", empty=True),
-        optional_text(getattr(o, "client", None), "an Opportunity's client"),
+        optional_text(client, "an Opportunity's client") or None,
     )
 
 
@@ -135,5 +147,6 @@ def _state(conn: sqlite3.Connection) -> ListState | None:
 
 def _record(row: sqlite3.Row) -> OpportunityRecord:
     return OpportunityRecord(
-        row["studio_id"], row["name"], row["stage"], row["owner"], row["client"]
+        studio_id=row["studio_id"], name=row["name"], stage=row["stage"], owner=row["owner"],
+        client=row["client"],
     )
