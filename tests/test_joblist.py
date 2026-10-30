@@ -333,6 +333,22 @@ def test_a_missing_client_or_date_is_kept_as_unknown():
     assert len(jobs.opportunities) == 2
 
 
+@pytest.mark.parametrize("account, person", [
+    ("Terry Testerson - 12 Main St, Fakeville 90000", "Terry Testerson"),
+    ("Terry Testerson 12 Main St", "Terry Testerson"),
+    ("Testerson,12 Main St", "Testerson"),
+    ("Testerson, Terry, 12 Main St", "Testerson, Terry"),
+    ("Mary-Jo Testerson-Fakeley - 3B Oak", "Mary-Jo Testerson-Fakeley"),
+    ("12 Main St", ""),
+    ("Terry Testerson", "Terry Testerson"),
+], ids=["a hyphen, then an address", "the address right after", "a comma with no space",
+        "a comma inside the name", "hyphens inside names stay", "nothing but an address",
+        "no address"])
+def test_the_client_never_holds_an_address(account, person):
+    jobs = client(FakeRender(listing([TESTERSON | {"client": account}]))).export()
+    assert dict(jobs.clients) == {"100001": person}
+
+
 # ----- the time the list was read
 
 

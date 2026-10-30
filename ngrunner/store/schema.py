@@ -226,7 +226,19 @@ _V2 = (
     "ALTER TABLE renders ADD COLUMN pypdf TEXT",
 )
 
-MIGRATIONS: tuple[tuple[str, ...], ...] = (_V1, _V2)
+# Version 3: the write journal (integration spec section 3): a row before a commit's first rename,
+# so a crash before its hashes are recorded can be settled at the next start.
+_V3 = (
+    """CREATE TABLE IF NOT EXISTS pending_writes (
+        id     INTEGER PRIMARY KEY,
+        at     TEXT NOT NULL,
+        paths  TEXT NOT NULL,
+        hashes TEXT NOT NULL,
+        state  TEXT NOT NULL
+    ) STRICT""",
+)
+
+MIGRATIONS: tuple[tuple[str, ...], ...] = (_V1, _V2, _V3)
 LATEST = len(MIGRATIONS)
 
 

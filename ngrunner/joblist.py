@@ -104,7 +104,9 @@ class JobList:
     fetched_at: when NG Runner fetched it, by this PC's clock.
     opportunities: every Opportunity in the list, in Render's order; owner is its designer.
     clients: each Opportunity's client name by Studio project ID ("" when Render has none), for
-        the report link (fetch's FetchTarget.client) and the store's opportunities table.
+        the report link (fetch's FetchTarget.client) and the store's opportunities table. Cut at
+        the first word holding a digit (_person_only): an account name can carry a street
+        address, which must never reach the store or a backup.
     clock_offset: how far Render's clock read ahead of this PC's (negative: behind), measured
         from the reply's Date header; None when there was none, or it was not checked.
     """
@@ -172,7 +174,7 @@ class RenderClient:
         offset = self._check_clocks(synced_at, server_date, fetched_at)
         opportunities = tuple(Opportunity(name=j["name"], studio_id=j["studio_id"],
                                           owner=j["designer"], stage=j["stage"]) for j in jobs)
-        clients = MappingProxyType({j["studio_id"]: j["client"] or "" for j in jobs})
+        clients = MappingProxyType({j["studio_id"]: _person_only(j["client"] or "") for j in jobs})
         return JobList(synced_at, fetched_at, opportunities, clients, offset)
 
     def request_push(self) -> bool:
@@ -385,6 +387,15 @@ def _synced_at(value: Any, *, has_jobs: bool) -> datetime | None:
     if not has_jobs:
         raise _bad("is empty")
     return utc(when)
+
+
+def _person_only(client: str) -> str:
+    """The client's name with any address left off: everything before the first word holding a
+    digit, words split on white space and commas as intake.fetch splits them, and a hyphen or a
+    comma left at the end taken off ("Terry Testerson - 12 Main St" is "Terry Testerson")."""
+    first = next((m.start() for m in re.finditer(r"[^\s,]+", client)
+                  if any(c.isdigit() for c in m[0])), len(client))
+    return client[:first].rstrip(" \t\r\n,-")
 
 
 # ----- clocks

@@ -33,19 +33,23 @@ def test_a_job_with_no_garage_design_is_a_closet_cabinets_and_storage_included()
     assert branch.reason == "None of the 3 designs on page 1 is a garage design."
 
 
-def test_a_job_with_garage_and_other_designs_is_unclear():
-    # An archived job like this one (closets and a garage) was filed as a closet job: only Jim
-    # can say, so it is asked (the closet/garage card), and only this job waits.
-    branch = branch_of([CLOSET, ("Testerson - Office", "Office"), ("Testerson - Garage Cabinets", "Garage")])
-    assert branch.kind == "unclear"
-    assert branch.reason == "Page 1 lists 1 garage design and 2 other designs."
+def test_a_mixed_summary_is_one_closet_job_with_no_card():
+    # Jim's BUILD.md Step 0: a mixed summary is one job; never split it, never add _Gar.
+    branch = branch_of([CLOSET, ("Testerson - Office", "Office"),
+                        ("Testerson - Garage Cabinets", "Garage")])
+    assert branch.kind == "closet"
+    assert branch.reason == ("Page 1 lists 1 garage design and 2 other designs: a mixed summary is"
+                             " one job.")
 
 
-def test_a_single_design_is_named_in_the_reason():
-    assert branch_of([GARAGE]).reason == ('The only design on page 1, "Testerson - Garage",'
-                                          " is a garage design.")
-    assert branch_of([CLOSET]).reason == ('The only design on page 1, "Testerson - Primary Closet",'
-                                          " is not a garage design.")
+@pytest.mark.parametrize("designs", [[GARAGE], [CLOSET], [CLOSET, GARAGE], [("Testerson", "")]],
+                         ids=["garage", "closet", "mixed", "blank"])
+@pytest.mark.parametrize("row", [None, "Testerson garage", "Testerson_101426_Gar"],
+                         ids=["no row", "a garage row", "a _Gar row"])
+def test_a_reason_never_quotes_a_design_name(designs, row):
+    # The reason reaches the card, and Jim's phone gets job names and dates only (decision 10).
+    reason = branch_of(designs, row).reason
+    assert "Testerson" not in reason and "Primary" not in reason
 
 
 def test_a_job_whose_page_1_lists_no_designs_is_unclear():
@@ -63,8 +67,8 @@ def test_a_job_whose_page_1_lists_no_designs_is_unclear():
     ("TESTERSON GARAGES", "All"),
     ("Testerson - Garáge2", "Closet"),
     ("Testerson_Garage_Shelves", ""),
-], ids=["the category alone", "the name alone", "any case, and the plural", "accents and a number glued on",
-        "underscores between words"])
+], ids=["the category alone", "the name alone", "any case, and the plural",
+        "accents and a number glued on", "underscores between words"])
 def test_a_garage_word_in_the_name_or_the_category_makes_a_garage_design(design):
     assert branch_of([design]).kind == "garage"
 
@@ -73,15 +77,29 @@ def test_a_garage_word_in_the_name_or_the_category_makes_a_garage_design(design)
     ("Gar - Primary Closet", "His and Her Master"),
     ("Testerson - Garagewood Pantry", "Pantry"),
     ("Edgarson - Walk-In", "Closet"),
-], ids=["Gar, a surname, though it is the pipeline's short form", "a garage word inside another word",
-        "gar inside a name"])
+], ids=["Gar, a surname, though it is the pipeline's short form",
+        "a garage word inside another word", "gar inside a name"])
 def test_only_a_whole_garage_word_makes_a_garage_design(design):
     # Design names usually start with the client's surname, so the pipeline's "_Gar" short form is
     # no design word: a client named Gar would make every design a garage.
     assert branch_of([design]).kind == "closet"
 
 
-# ----- the Fab row's room words (GLOSSARY: Room word)
+# ----- a design that can't be classified
+
+
+@pytest.mark.parametrize("category", ["", "   "], ids=["empty", "spaces"])
+def test_a_blank_category_with_no_garage_word_in_the_name_is_unclear(category):
+    branch = branch_of([CLOSET, ("Testerson - Racks", category)])
+    assert branch.kind == "unclear"
+    assert branch.reason == "Page 1 lists 1 design with no category and no garage word in the name."
+
+
+def test_a_blank_category_with_a_garage_word_in_the_name_is_classified():
+    assert branch_of([("Testerson - Garage Racks", "")]).kind == "garage"
+
+
+# ----- the Fab row, or the Opportunity Name: what it says about the branch
 
 
 @pytest.mark.parametrize("row, designs, kind", [
@@ -92,27 +110,33 @@ def test_only_a_whole_garage_word_makes_a_garage_design(design):
     ("Testerson", [CLOSET], "closet"),
     ("", [GARAGE], "garage"),
     ("Testerson garage storage", [GARAGE], "garage"),
-    ("Master", [GARAGE], "garage"),
+    ("Closet", [GARAGE], "garage"),
+    ("Testerson closet", [GARAGE], "garage"),
+    ("Testerson Pantry", [GARAGE], "garage"),
+    ("Testerson cabinets", [GARAGE], "garage"),
+    ("Testerson garage", [CLOSET, GARAGE], "closet"),
+    ("Testerson_101426_Gar", [CLOSET, GARAGE], "closet"),
+    ("Garage", [CLOSET], "closet"),
+    ("Gar", [CLOSET], "closet"),
 ], ids=["garage, and garage designs", "closet, and closet designs", "walk-in, and closet designs",
         "no room word: garage designs", "no room word: closet designs", "an empty row",
-        "a garage word says garage, whatever else the row says", "a surname that is a room word"])
-def test_a_row_that_agrees_with_the_designs_or_says_nothing_leaves_them_to_decide(row, designs, kind):
+        "a garage word says garage, whatever else the row says", "a surname that is a room word",
+        "closet on an all-garage job", "pantry on an all-garage job",
+        "cabinets on an all-garage job", "garage on a mixed job", "_Gar on a mixed job",
+        "Garage as the surname", "Gar as the surname"])
+def test_only_a_garage_word_with_no_garage_design_stops_the_designs_deciding(row, designs, kind):
     assert branch_of(designs, row).kind == kind
 
 
-@pytest.mark.parametrize("row, designs, word", [
-    ("Testerson garage", [CLOSET], "garage"),
-    ("Testerson_101426_Gar", [CLOSET], "gar"),
-    ("Testerson closet", [GARAGE], "closet"),
-    ("Testerson Pantry", [GARAGE], "pantry"),
-    ("Testerson cabinets", [GARAGE], "cabinets"),
-], ids=["garage, and no garage design", "the pipeline's _Gar, and no garage design",
-        "closet, and only garage designs", "pantry, and only garage designs",
-        "a room word that is not a garage word is the closet side, so it is asked"])
-def test_a_row_whose_room_words_disagree_with_the_designs_is_unclear(row, designs, word):
-    branch = branch_of(designs, row)
+@pytest.mark.parametrize("row", ["Testerson garage", "Testerson garages", "Testerson_101426_Gar",
+                                 "Testerson Gar", "Testerson 10/14/26 gar"],
+                         ids=["garage", "the plural", "the pipeline's _Gar", "Gar as a word",
+                              "gar after a typed date"])
+def test_a_row_that_says_garage_with_no_garage_design_is_unclear(row):
+    branch = branch_of([CLOSET], row)
     assert branch.kind == "unclear"
-    assert f'The Fab row says "{word}", but ' in branch.reason
+    assert branch.reason == ("The Fab row or job name says garage, but no design on page 1 is a"
+                             " garage design.")
 
 
 # ----- what it reads: check_summary's facts
@@ -121,9 +145,10 @@ def test_a_row_whose_room_words_disagree_with_the_designs_is_unclear(row, design
 def test_it_reads_check_summarys_design_list_or_the_check_itself():
     mixed = check_summary(summary_pdf(designs=(CLOSET, GARAGE)))
     assert mixed.ok
-    assert branch_of(mixed.details["designs"]).kind == "unclear"
-    assert branch_of(mixed).kind == "unclear"
-    assert branch_of(check_summary(summary_pdf(designs=(GARAGE,))), "Testerson garage").kind == "garage"
+    assert branch_of(mixed.details["designs"]).kind == "closet"
+    assert branch_of(mixed).kind == "closet"
+    garage = check_summary(summary_pdf(designs=(GARAGE,)))
+    assert branch_of(garage, "Testerson garage").kind == "garage"
 
 
 def test_a_check_that_did_not_pass_is_unclear():

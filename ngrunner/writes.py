@@ -23,14 +23,21 @@ write rule at once. A commit guarantees:
 - When it writes. NG Runner's data folder and its record of its own files are checked
   first. The Mozaik interlock is asked next, when the write is planned, and again once the
   temp files are written. Every folder on the way is pinned by identity when planned and
-  checked again before staging, after staging, after that last interlock call, and before
-  and after each rename. Any change refuses the commit, or rolls it back.
+  checked again before staging, as each temp file is made, after staging, after that last
+  interlock call, and before and after each rename. Any change refuses the commit, or rolls
+  it back.
 - All or nothing. Replaced files are backed up first, to app_data\backup\<UTC time>\. Temp
   files (<name>.<random>.ngr-tmp) are written next to their targets, then all renamed in,
   then all read back. Each backup and temp file is created exclusively, never through a
   link at its name. A new file goes in with a rename that fails if a file appeared
   meanwhile; an existing one only while it still holds what was checked. A failure puts
   back what was already renamed in; so does Ctrl+C or an exit, which then goes on.
+- What it remembers. A commit ends by recording the hash of each file it wrote: the only
+  files it may overwrite later. The record is a JSON file in app_data or, given registry=, the
+  store's owned table with its journal (store.write_journal): a row before the first rename,
+  settled at the next start if the commit never ended, so a crash never strands a file. In the
+  store only NG Jobs and control\shadow paths get a row: the rest of the control folder is
+  write-once, and about 300 commits a day would otherwise add rows for ever.
 - No delete. The only things ever removed are this commit's own temp files and the empty
   folders it made (each checked by identity first) and, in a rollback, a file it renamed in
   moments before, while that is the very file and it still holds its bytes. Anything else
@@ -47,6 +54,7 @@ from __future__ import annotations
 import _winapi
 import hashlib
 import json
+import logging
 import msvcrt
 import ntpath
 import os
@@ -54,13 +62,19 @@ import re
 import secrets
 import stat
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from pathlib import Path
-from typing import BinaryIO
+from typing import BinaryIO, Protocol
 
+from ngrunner.clock import Clock, SystemClock, utc
+from ngrunner.store.db import Store, StoreError
+from ngrunner.store.write_journal import COMMIT_LOCK, StoreRegistry
+from ngrunner.store.write_record import record_commit
+
+_LOG = logging.getLogger(__name__)
 _TMP_SUFFIX = ".ngr-tmp"
+_MAX_NAME = 238  # NTFS allows 255 characters, and a temp name adds 17 to the name it is next to
 _ROOT_NAMES = ("ng_jobs", "mozaik_shared", "control", "app_data")
 _LABELS = {
     "ng_jobs": "NG Jobs",
@@ -80,7 +94,6 @@ _CREATE_NEW = 1  # fail if anything at all is at the name
 _FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000  # a link at the name is opened as itself
 _FILE_ATTRIBUTE_NORMAL = 0x80
 _SHA256 = re.compile(r"[0-9a-fA-F]{64}")
-_COMMIT_LOCK = threading.Lock()
 _IN_COMMIT = threading.local()  # .active while this thread runs a commit and its callbacks
 
 # Refused in every phase, wherever they appear below a root (compared case-folded).
@@ -92,6 +105,7 @@ _MOZAIK_SUFFIXES = (".tap", ".lck", ".uns")
 
 # P1a: NG Runner's own files in a job folder, its settled-list folder, and the control folder.
 _SETTLED_FOLDER = "_NG Runner"
+_SHADOW_FOLDER = "shadow"  # control\shadow: what filing would have written, in shadow mode
 _LEASE_NAME = "_NG Runner is handling this job.txt"
 _JOB_FILE_SUFFIXES = ("_summary.pdf", "_NGRunner.json", "_NGRunner_log.txt")
 _IC_CONVERSION_SUFFIXES = ("_ic_conversion.json", "_ic_conversion.xlsx")  # allowed from P3
@@ -137,6 +151,26 @@ class CommitResult:
     written: tuple[Path, ...] = ()
     backups: tuple[Path, ...] = ()
     reason: str | None = None
+
+
+class Registry(Protocol):
+    """Where a commit records what it wrote, with a journal for crashes: store.StoreRegistry."""
+
+    def owned(self, path: Path) -> str | None:
+        """The sha256 NG Runner last wrote at path, or None."""
+        ...
+
+    def begin(self, planned: Mapping[Path, str]) -> int:
+        """Before the first rename: note {path: new sha256}. Returns a journal id."""
+        ...
+
+    def record(self, journal_id: int, written: Mapping[Path, str]) -> None:
+        """After the read-back: record {path: sha256} and close the row, all at once."""
+        ...
+
+    def abort(self, journal_id: int) -> None:
+        """The commit ended with nothing changed: close the row."""
+        ...
 
 
 # ----- private types
@@ -198,18 +232,25 @@ def commit_write(
     interlock: Callable[[list[Path]], str | None],
     phase: str = "P1a",
     owned: Callable[[Path], str | None] | None = None,
+    registry: Registry | None = None,
+    clock: Clock | None = None,
 ) -> CommitResult:
     """Write every file or none. Every problem comes back as ok=False with a reason in plain
-    words; only Ctrl+C or an exit (KeyboardInterrupt, SystemExit) goes on through, and only
-    once the files are back as they were.
+    words; only Ctrl+C, an exit or any other BaseException goes on through, once the files are
+    back as they were. One that comes once the record is being written leaves them as written:
+    the record holds them, or the start-up settle adopts them (registry=). One window remains:
+    a stop in the microseconds just after CreateFile returns leaves an empty temp file, which
+    the board reports (AGENTS.md: Before filing goes live, item 7).
 
     interlock (required, so forgetting it fails closed): interlock(paths) returns None when
     writing is safe, else why not. It is asked when the write is planned and again once the
     temp files are written, just before the renames. owned(path) returns the sha256 NG
-    Runner last wrote at path (default: its registry in app_data); only such files are
-    overwritten. A callback that starts a commit of its own is refused. A commit from
-    another thread waits for this one to finish, so a callback must never wait for another
-    thread's commit either (it would wait forever).
+    Runner last wrote at path (default: the record's own lookup); only such files are
+    overwritten. registry is where hashes are recorded (store.StoreRegistry; default: the JSON
+    record in app_data). clock names the backup folder (default: the registry's, else the real
+    one). A callback that starts a commit of its own is refused. A commit from another thread
+    waits for this one to finish, so a callback must never wait for another thread's commit
+    either (it would wait forever).
     """
     if getattr(_IN_COMMIT, "active", False):  # a callback of this thread's own commit
         return _refused(
@@ -218,13 +259,38 @@ def commit_write(
         )
     _IN_COMMIT.active = True
     try:
-        with _COMMIT_LOCK:  # one commit at a time in this process; other threads wait
+        with COMMIT_LOCK:  # one commit at a time in this process; other threads wait
             try:
-                return _commit(list(writes), roots, phase, interlock, owned)
+                time_from = clock or getattr(registry, "clock", None) or SystemClock()
+                return _commit(list(writes), roots, phase, interlock, owned, registry, time_from)
             except Exception as exc:  # noqa: BLE001 - last resort: no error escapes the chokepoint
                 return _refused(f"Unexpected problem ({type(exc).__name__}); nothing was written.")
     finally:
         _IN_COMMIT.active = False
+
+
+def commit_recorded(
+    writes: list[FileWrite],
+    *,
+    store: Store,
+    clock: Clock,
+    roots: Roots,
+    interlock: Callable[[list[Path]], str | None],
+    phase: str = "P1a",
+) -> CommitResult:
+    """commit_write with the store's registry, then the commit's row in the writes table, so no
+    caller forgets either half (Ctx.commit, the messenger, the supervisor). A row that can't be
+    saved never changes what the commit did: its result stands, and the log says so."""
+    writes = list(writes)
+    result = commit_write(
+        writes, roots=roots, interlock=interlock, phase=phase,
+        registry=StoreRegistry(store, clock), clock=clock,
+    )
+    try:
+        record_commit(store, writes, result, at=clock.now())
+    except (StoreError, ValueError) as exc:  # a bad write is refused above; a busy store retries
+        _LOG.warning("A commit's row could not be saved: %s", exc)
+    return result
 
 
 def _commit(
@@ -233,6 +299,8 @@ def _commit(
     phase: str,
     interlock: Callable[[list[Path]], str | None],
     owned: Callable[[Path], str | None] | None,
+    registry: Registry | None,
+    clock: Clock,
 ) -> CommitResult:
     phase_rules = _PHASE_RULES.get(phase)
     if phase_rules is None:
@@ -246,10 +314,10 @@ def _commit(
     if isinstance(plan, str):
         return _refused(plan)
     app = found["app_data"]
-    registry = _Registry(app)
-    owned = owned or registry.owned
+    ledger = _new_ledger(plan, app, registry)
+    owned = owned or ledger.book.owned
     reason = (
-        _data_folder_problem(app, registry)
+        _data_folder_problem(app, ledger)
         or _duplicate(plan)
         or _ask(interlock, plan)
         or _first_problem(plan, owned)
@@ -258,7 +326,11 @@ def _commit(
         return _refused(reason)
     created: list[_Pin] = []  # folders this commit made, outermost first
     try:
-        reason = _stage_and_check_again(plan, created, interlock, owned) or _back_up(plan, app)
+        reason = (
+            _stage_and_check_again(plan, created, interlock, owned)
+            or _back_up(plan, app, clock)
+            or _begin(ledger)
+        )
     except Exception as exc:  # noqa: BLE001 - nothing is renamed yet: clean up, then refuse
         reason = f"Unexpected problem ({type(exc).__name__}); nothing was written."
     except BaseException:  # Ctrl+C or an exit: the process is stopping, so clean up first
@@ -271,15 +343,53 @@ def _commit(
     try:
         _rename_all(plan)
         _read_back_all(plan)
-        _record(registry, plan)
+        _record(ledger)
     except _Failed as failed:
-        return _roll_back(plan, created, str(failed), backups)
+        return _failed(plan, created, ledger, str(failed), backups)
     except Exception as exc:  # noqa: BLE001 - after the first rename, any failure must roll back
-        return _roll_back(plan, created, f"Unexpected problem ({type(exc).__name__})", backups)
-    except BaseException:  # Ctrl+C or an exit: put the files back as they were, then stop
-        _roll_back(plan, created, "NG Runner was stopped", backups)
+        failure = f"Unexpected problem ({type(exc).__name__})"
+        return _failed(plan, created, ledger, failure, backups)
+    except BaseException:  # Ctrl+C or an exit: leave the record and the disk agreeing, then stop
+        if not (ledger.recording and (ledger.given or _already_recorded(ledger))):
+            _give_up(plan, created, ledger, "NG Runner was stopped", backups)
         raise
+    return _done(plan, backups)
+
+
+def _done(plan: list[_Target], backups: tuple[Path, ...]) -> CommitResult:
     return CommitResult(ok=True, written=tuple(t.path for t in plan), backups=backups)
+
+
+def _failed(
+    plan: list[_Target],
+    created: list[_Pin],
+    ledger: _Ledger,
+    failure: str,
+    backups: tuple[Path, ...],
+) -> CommitResult:
+    """A step after staging failed. If the record already holds every new hash, the commit is
+    complete whatever failed after that; otherwise it is rolled back."""
+    if _already_recorded(ledger):
+        return _done(plan, backups)
+    return _give_up(plan, created, ledger, failure, backups)
+
+
+def _give_up(
+    plan: list[_Target],
+    created: list[_Pin],
+    ledger: _Ledger,
+    failure: str,
+    backups: tuple[Path, ...],
+) -> CommitResult:
+    """Roll back, and close the journal row unless a file had to stay changed: then the row
+    stays pending, and the next settle adopts that file."""
+    result = _roll_back(plan, created, failure, backups)
+    if ledger.journal is not None and not result.written:
+        try:
+            ledger.book.abort(ledger.journal)
+        except Exception:  # noqa: BLE001 - the row stays pending, and the next settle closes it
+            pass
+    return result
 
 
 def _refused(reason: str) -> CommitResult:
@@ -308,6 +418,11 @@ def _check_inputs(writes: list[FileWrite]) -> str | None:
         name = Path(w.path).name
         if not isinstance(w.content, bytes | bytearray):
             return f"{name} has no content to write; NG Runner never deletes files."
+        if len(name) > _MAX_NAME:
+            return (
+                f"{name[:40]}... was not written: its name has {len(name)} characters, and"
+                f" NG Runner can only write names of up to {_MAX_NAME}."
+            )
         if w.expected_hash is not None and not _SHA256.fullmatch(str(w.expected_hash)):
             return f"{name}: the expected hash must be a sha256 (64 hex characters) or None."
     return None
@@ -364,7 +479,7 @@ def _all_in_place(plan: list[_Target]) -> str | None:
 
 
 def _why(exc: BaseException) -> str:
-    return getattr(exc, "strerror", None) or str(exc) or type(exc).__name__
+    return (getattr(exc, "strerror", None) or str(exc) or type(exc).__name__).rstrip(".")
 
 
 # ----- identities: what a folder or file is, whatever its path is spelled like
@@ -417,6 +532,7 @@ def _moved_folder(pins: list[_Pin]) -> str | None:
 
 def _load_roots(roots: Roots) -> dict[str, _Root] | str:
     found: dict[str, _Root] = {}
+    spelled: dict[str, Path] = {}
     for name in _ROOT_NAMES:
         raw = str(Path(getattr(roots, name)))
         if not _is_full_path(raw):
@@ -428,8 +544,8 @@ def _load_roots(roots: Roots) -> dict[str, _Root] | str:
         if isinstance(root, str):
             return root
         found[name] = root
-    reason = _overlap(found)
-    return reason if reason else found
+        spelled[name] = Path(_strip_long_prefix(raw))
+    return _overlap(found) or _spelled_through_another(spelled, found) or found
 
 
 def _load_root(name: str, path: Path) -> _Root | str:
@@ -475,6 +591,26 @@ def _overlap(roots: dict[str, _Root]) -> str | None:
                     f"{_LABELS[a]} and {_LABELS[b]} overlap, so NG Runner can't tell which"
                     " rules apply. Check its folder settings."
                 )
+    return None
+
+
+def _spelled_through_another(spelled: dict[str, Path], roots: dict[str, _Root]) -> str | None:
+    """A root set through a link inside another root would load, and then every target spelled
+    from it would be refused as going through a link: say so once, about the setting. A spelling
+    with no link in it needs no look: _overlap has judged that very path."""
+    for name, path in spelled.items():
+        if _folded(path) == _folded(roots[name].path):
+            continue
+        for folder in path.parents:
+            here = _identity_at(folder)
+            for other in roots.values():
+                if other.name != name and (
+                    _folded(folder) == _folded(other.path) or (here and here == other.identity)
+                ):
+                    return (
+                        f"The setting for {_LABELS[name]} goes through {_LABELS[other.name]},"
+                        " so nothing was written. Check NG Runner's folder settings."
+                    )
     return None
 
 
@@ -749,7 +885,7 @@ def _stage(plan: list[_Target], created: list[_Pin]) -> str | None:
         try:
             for folder in t.missing:
                 t.pins.append(_make_folder(folder, created))
-            t.tmp = _write_temp(t.path, t.write.content)
+            t.tmp = _write_temp(t.path, t.write.content, t.pins)
         except OSError as exc:
             return f"{t.path.name} could not be prepared ({_why(exc)}), so nothing was written."
     return None
@@ -757,16 +893,27 @@ def _stage(plan: list[_Target], created: list[_Pin]) -> str | None:
 
 def _make_folder(folder: Path, created: list[_Pin]) -> _Pin:
     """Make one folder (never through exist_ok) and pin it. One that appeared since planning,
-    or that this commit made for another file, is used only if it is a real folder too."""
+    or that this commit made for another file, is used only if it is a real folder too. A stop
+    just after mkdir returns still leaves it noted, so the clean-up removes it again."""
+    made = not os.path.lexists(folder)  # until mkdir says otherwise
     try:
-        os.mkdir(folder)
-        made = True
-    except FileExistsError:
-        made = False
-    pin = _pin_folder(folder)
-    if made:
-        created.append(pin)
-    return pin
+        try:
+            os.mkdir(folder)
+        except OSError as exc:
+            made = False
+            if not isinstance(exc, FileExistsError):
+                raise
+        return _pin_folder(folder)
+    finally:
+        if made:
+            _note_made(folder, created)
+
+
+def _note_made(folder: Path, created: list[_Pin]) -> None:
+    try:
+        created.append(_pin_folder(folder))
+    except OSError:
+        pass  # stopped before mkdir (nothing there), or not a real folder: not this commit's
 
 
 def _pin_folder(folder: Path) -> _Pin:
@@ -782,40 +929,64 @@ def _pin_folder(folder: Path) -> _Pin:
     return _Pin(folder, identity)
 
 
-def _write_temp(next_to: Path, content: bytes) -> _Temp:
+def _write_temp(next_to: Path, content: bytes, pins: list[_Pin] | None = None) -> _Temp:
     """Write content to a new temp file next to next_to, under a name no one else uses
     (<name>.<random>.ngr-tmp, created exclusively, so nothing already there is ever opened,
     followed or removed). If the write fails, that file is removed again."""
     for _ in range(3):  # a taken name is someone's leftover: pick another, never touch it
         path = next_to.with_name(f"{next_to.name}.{secrets.token_hex(4)}{_TMP_SUFFIX}")
         try:
-            return _write_new(path, content)
+            return _write_new(path, content, pins)
         except FileExistsError:
             continue
+        except PermissionError:  # what a folder, junction or folder link at the name gives
+            if not os.path.lexists(path):
+                raise
     raise _NotSafe(f"no free temp name next to {next_to.name}")
 
 
-def _write_new(path: Path, content: bytes) -> _Temp:
+def _write_new(path: Path, content: bytes, pins: list[_Pin] | None = None) -> _Temp:
     """Write content to a new file at path and flush it to disk. Its name must show the very
-    file just made (a plain file with the ID of the open one) before anything is written
-    into it. If it doesn't, or the write fails, the file is removed again while it is
-    provably that file, and otherwise left alone."""
+    file just made (a plain file with the ID of the open one), and each of pins must still be
+    the folder it was, before anything is written into it. If not, or if the write fails, the
+    file is removed again while it is provably that file, and otherwise left alone. A stop in
+    the microseconds just after CreateFile returns, before this block, leaves it empty."""
     with _create_new(path) as f:
-        identity = _identity(os.fstat(f.fileno()))
-        if identity is None:
-            raise _NotSafe(f"{path.name}'s drive gives files no ID")
-        new = _Temp(path, identity)
+        new: _Temp | None = None
         try:
+            identity = _identity(os.fstat(f.fileno()))
+            if identity is None:
+                raise _NotSafe(f"{path.name}'s drive gives files no ID")
+            new = _Temp(path, identity)
             if not _is_own_file(new):
                 raise _NotSafe(f"NG Runner could not confirm that {path.name} is the file it made")
+            moved = _moved_folder(pins or [])
+            if moved:
+                raise _NotSafe(moved)
             f.write(content)
             f.flush()
             os.fsync(f.fileno())
         except BaseException:  # a failed write, or Ctrl+C: the caller never learns of this file
-            f.close()
-            _remove_own_file(new)
+            _discard(f, path, new)
             raise
     return new
+
+
+def _discard(f: BinaryIO, path: Path, new: _Temp | None) -> None:
+    """Close and remove a file _write_new made. A failure before its identity was read: read it
+    now, from the open file, which is still the proof of what it is."""
+    if new is None:
+        try:
+            identity = _identity(os.fstat(f.fileno()))
+        except OSError:
+            identity = None
+        new = None if identity is None else _Temp(path, identity)
+    try:
+        f.close()
+    except OSError:
+        pass  # what it failed to flush no longer matters: the file is going
+    if new is not None:
+        _remove_own_file(new)
 
 
 def _create_new(path: Path) -> BinaryIO:
@@ -892,7 +1063,12 @@ class _Failed(Exception):
 def _rename_all(plan: list[_Target]) -> None:
     """Rename each temp file into place, checking its folders just before and just after.
     A new file goes in with os.rename, which fails if a file appeared there meanwhile; an
-    existing one is replaced only while it still holds what was checked."""
+    existing one is replaced only while it still holds what was checked. A temp file that no
+    longer holds what was staged refuses the commit before any rename."""
+    for t in plan:
+        problem = _temp_changed(t)
+        if problem:
+            raise _Failed(problem)
     for t in plan:
         problem = _moved_folder(t.pins) or _temp_changed(t) or _changed_since_checked(t)
         if problem:
@@ -910,9 +1086,14 @@ def _rename_all(plan: list[_Target]) -> None:
 
 
 def _temp_changed(t: _Target) -> str | None:
-    if t.tmp is None or not _is_own_file(t.tmp):
-        return f"the temp file for {t.path.name} was changed by something else"
-    return None
+    """The temp file must still be the very file this commit made, holding what it wrote: the
+    last safety check can take minutes, and a rename would pass on anything put in it."""
+    try:
+        same = t.tmp is not None and _is_own_file(t.tmp)
+        same = same and _sha_file(t.tmp.path) == _sha(t.write.content)
+    except OSError:
+        same = False
+    return None if same else f"the temp file for {t.path.name} was changed by something else"
 
 
 def _changed_since_checked(t: _Target) -> str | None:
@@ -936,11 +1117,70 @@ def _read_back_all(plan: list[_Target]) -> None:
             raise _Failed(f"{t.path.name} did not read back as written")
 
 
-def _record(registry: _Registry, plan: list[_Target]) -> None:
+@dataclass
+class _Ledger:
+    """One commit's record keeping. book: the record (the caller's registry when given, else
+    the JSON one). hashes: the new sha256 of each path that gets a record."""
+
+    book: Registry | _Registry
+    given: bool
+    hashes: dict[Path, str]
+    journal: int | None = None  # its journal row, once begun
+    recording: bool = False  # the record step has started
+
+
+def _new_ledger(plan: list[_Target], app: _Root, registry: Registry | None) -> _Ledger:
+    given = registry is not None
+    return _Ledger(
+        book=registry if given else _Registry(app),
+        given=given,
+        hashes={t.path: _sha(t.write.content) for t in plan if not given or _keeps_a_row(t)},
+    )
+
+
+def _keeps_a_row(t: _Target) -> bool:
+    """In the store, NG Jobs and control\\shadow paths: all else in the control folder is
+    write-once, so an owned row for it would never be read."""
+    if t.where == "control":
+        return len(t.rel) > 1 and t.rel[0].casefold() == _SHADOW_FOLDER
+    return t.where == "ng_jobs"
+
+
+def _begin(ledger: _Ledger) -> str | None:
+    """The journal row, before the first rename. Write-once files need none."""
+    if not (ledger.given and ledger.hashes):
+        return None
     try:
-        registry.record({t.path: _sha(t.write.content) for t in plan})
-    except (OSError, ValueError) as exc:
+        ledger.journal = ledger.book.begin(ledger.hashes)
+    except (StoreError, OSError, ValueError) as exc:
+        return (
+            f"NG Runner could not note what it was about to write ({_why(exc)}),"
+            " so nothing was written."
+        )
+    return None
+
+
+def _record(ledger: _Ledger) -> None:
+    if not ledger.hashes:
+        return
+    ledger.recording = True
+    try:
+        if ledger.given:
+            ledger.book.record(ledger.journal, ledger.hashes)
+        else:
+            ledger.book.record(ledger.hashes)
+    except (StoreError, OSError, ValueError) as exc:
         raise _Failed(f"NG Runner could not record what it wrote ({_why(exc)})") from exc
+
+
+def _already_recorded(ledger: _Ledger) -> bool:
+    """The record step started, and the record now holds every new hash."""
+    if not ledger.recording:
+        return False
+    try:
+        return all(ledger.book.owned(p) == digest for p, digest in ledger.hashes.items())
+    except Exception:  # noqa: BLE001 - a record that can't be read can't be said to hold them
+        return False
 
 
 # ----- rollback
@@ -978,9 +1218,16 @@ def _undo(t: _Target) -> tuple[str | None, bool]:
         holds_ours = _sha_file(t.path) == _sha(t.write.content)
     except FileNotFoundError:
         return f"{t.path.name} was moved or removed after NG Runner wrote it.", False
+    put_there = _is_own_file(_Temp(t.path, t.tmp.identity))
+    if not holds_ours and put_there:
+        return (
+            f"{t.path.name} was left in place: NG Runner's rename put it there, but it no longer"
+            " holds what NG Runner wrote, so it was left as found.",
+            False,
+        )
     if not holds_ours:
         return f"{t.path.name} was left as found: it no longer holds what NG Runner wrote.", False
-    if not _is_own_file(_Temp(t.path, t.tmp.identity)):
+    if not put_there:
         return (
             f"{t.path.name} was left in place: it holds what NG Runner wrote, but NG Runner"
             " could not confirm it is the very file it put there.",
@@ -1042,7 +1289,7 @@ class _Registry:
             data = json.loads(self._file.read_text(encoding="utf-8"))
         except FileNotFoundError:
             return {}
-        except ValueError:  # not UTF-8, or not JSON
+        except (ValueError, RecursionError):  # not UTF-8, not JSON, or nested past all reason
             data = None
         if not isinstance(data, dict) or not all(isinstance(v, str) for v in data.values()):
             raise ValueError("NG Runner's record of its own files is damaged")
@@ -1053,15 +1300,18 @@ def _key(path: Path) -> str:
     return str(path).casefold()
 
 
-def _data_folder_problem(app: _Root, registry: _Registry) -> str | None:
+def _data_folder_problem(app: _Root, ledger: _Ledger) -> str | None:
     """Checked before the interlock is first asked and anything is written, so a bad data
-    folder or a damaged record of NG Runner's own files never forces a rollback."""
+    folder or a damaged record of NG Runner's own files never forces a rollback. With a registry
+    given, the JSON record plays no part."""
     if app.identity is None:
         return (
             "NG Runner's data folder is not there, so it could not record what it writes;"
             " nothing was written."
         )
-    problem = registry.problem() or _data_entry_problem(app, _BACKUP_FOLDER, folder=True)
+    problem = (
+        None if ledger.given else ledger.book.problem()
+    ) or _data_entry_problem(app, _BACKUP_FOLDER, folder=True)
     return f"{problem}, so nothing was written." if problem else None
 
 
@@ -1086,15 +1336,15 @@ def _data_entry_problem(app: _Root, name: str, folder: bool) -> str | None:
     return None
 
 
-def _back_up(plan: list[_Target], app: _Root) -> str | None:
+def _back_up(plan: list[_Target], app: _Root, clock: Clock) -> str | None:
     try:
-        _back_up_all(plan, app)
+        _back_up_all(plan, app, clock)
     except OSError as exc:
         return f"A backup could not be made ({_why(exc)}), so nothing was written."
     return None
 
 
-def _back_up_all(plan: list[_Target], app: _Root) -> None:
+def _back_up_all(plan: list[_Target], app: _Root, clock: Clock) -> None:
     r"""Copy every file the commit replaces into one new folder, backup\<UTC time>\<root>\...
     Each folder on the way is made or checked like a target's: inside app_data, no links."""
     replaced = [t for t in plan if t.old is not None]
@@ -1103,7 +1353,7 @@ def _back_up_all(plan: list[_Target], app: _Root) -> None:
     problem = _data_entry_problem(app, _BACKUP_FOLDER, folder=True)
     if problem:
         raise _NotSafe(problem)
-    folder = _new_backup_folder(_make_folder(app.path / _BACKUP_FOLDER, []).path)
+    folder = _new_backup_folder(_make_folder(app.path / _BACKUP_FOLDER, []).path, clock)
     for t in replaced:
         here = folder
         for name in (t.where, *t.rel[:-1]):
@@ -1112,8 +1362,8 @@ def _back_up_all(plan: list[_Target], app: _Root) -> None:
         _write_new(t.backup, t.old)
 
 
-def _new_backup_folder(base: Path) -> Path:
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+def _new_backup_folder(base: Path, clock: Clock) -> Path:
+    stamp = utc(clock.now()).strftime("%Y%m%dT%H%M%S%fZ")
     n = 1
     while True:  # the clock can repeat (it may be set back); never reuse a folder
         folder = base / (stamp if n == 1 else f"{stamp}-{n}")

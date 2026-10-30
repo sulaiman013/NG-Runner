@@ -116,9 +116,12 @@ def test_the_p1a_module_list_covers_every_slice():
                  "ngrunner.fab", "ngrunner.messages.lint", "ngrunner.messages.templates", "ngrunner.cards",
                  "ngrunner.digest", "ngrunner.heartbeat", "ngrunner.board", "ngrunner.tray",
                  "ngrunner.toasts", "ngrunner.launcher", "ngrunner.single", "ngrunner.backup",
-                 "ngrunner.support", "ngrunner.selftest"):
+                 "ngrunner.support", "ngrunner.selftest", "ngrunner.intake.pipeline",
+                 "ngrunner.interlock", "ngrunner.jobmodel", "ngrunner.messenger",
+                 "ngrunner.supervisor", "ngrunner.canary"):
         assert name in listed
-    assert {"flask", "waitress", "pystray", "windows_toasts", "cryptography", "pypdf"} <= listed
+    assert {"flask", "waitress", "pystray", "windows_toasts", "cryptography", "pypdf",
+            "pythoncom", "win32com", "win32cred"} <= listed
 
 
 # ----- the migration, on a copy only
@@ -395,9 +398,3 @@ def test_the_version_command_prints_the_build_version(paths):
     assert out.getvalue() == f"NG Runner {launcher.app_version()}\n"
 
 
-@pytest.mark.parametrize("argv", [["run"], ["run", "--attempt", "a" * 32, "--open-board"],
-                                  ["install-shortcut", "--target", "C:\\x.exe"], ["release-all"], []])
-def test_commands_wave_2_fills_say_so_and_exit_3(paths, argv):
-    out = io.StringIO()
-    assert cli.main(argv, out=out, environ={"NGR_APP_DATA": str(paths.app_data)}) == 3
-    assert "not built yet" in out.getvalue()

@@ -112,6 +112,9 @@ class Fetched:
     status  that answer's HTTP status; None when Studio gave none (timeout, network).
     check   when ok, check_summary's verdict on data. check.ok False is an early render: fetch
             it again later. Even check.ok True is not enough to file (agree()).
+    found_name  on wrong_job, the name page 1 of the report carries, as printed, so the pipeline
+            can tell a renamed job from a real mismatch; else None. Compare it by slug, as the
+            refusal itself does.
     """
 
     ok: bool
@@ -121,6 +124,7 @@ class Fetched:
     reason: str
     status: int | None
     check: SummaryCheck | None = field(default=None, repr=False)
+    found_name: str | None = None
 
 
 # ----- the addresses
@@ -213,7 +217,7 @@ class Http(Protocol):
     def get(self, url: str, **kwargs: Any) -> requests.Response: ...
 
 
-def fetch_render(target: FetchTarget, *, http: Http | None = None, timeout_s: float = 60,
+def fetch_render(target: FetchTarget, *, http: Http | None = None, timeout_s: float = 240,
                  max_bytes: int = 50_000_000, base_url: str = STUDIO_URL) -> Fetched:
     """
     Fetch the job's IC summary from Studio and say whether it is this job's whole PDF.
@@ -228,7 +232,8 @@ def fetch_render(target: FetchTarget, *, http: Http | None = None, timeout_s: fl
     http       a requests.Session or anything with its get(); None makes one and closes it after.
     timeout_s  bounds each address: connecting, waiting while Studio renders, each wait for more
                bytes, and the download as a whole, which is stopped at its next read (8 KB) once
-               the time is up. Assembly Reports gives Studio 240 s to render a report.
+               the time is up. Real fetches took 7 to 95 s, and a timeout ends the search at
+               once, so this is Assembly Reports' 240 s and no less.
     max_bytes  a larger file is too_big, and is not read at all when its Content-Length says so.
     base_url   Studio's address (Settings.studio_url); tests point it at a fake Studio.
 
@@ -371,14 +376,16 @@ def _reason(why: str, target: FetchTarget, **facts: object) -> str:
 def _refused(target: FetchTarget, code: FetchCode, url: str | None, status: int | None, *,
              why: str | None = None, **facts: object) -> Fetched:
     """A failure: no bytes and no check, so nothing about it can be filed."""
-    return Fetched(False, url, None, code, _reason(why or code, target, **facts), status)
+    found = facts.get("found")
+    return Fetched(False, url, None, code, _reason(why or code, target, **facts), status,
+                   found_name=found if isinstance(found, str) else None)
 
 
 # ----- two fetches must agree (design 3.5; AGENTS.md, Before filing goes live, items 1 and 2)
 
 MIN_GAP = timedelta(minutes=10)
-AgreementCode = Literal["agree", "differ", "first_incomplete", "second_incomplete", "layouts_differ",
-                        "too_soon"]
+AgreementCode = Literal["agree", "differ", "first_incomplete", "second_incomplete", "same_bytes",
+                        "layouts_differ", "too_soon"]
 
 
 @dataclass(frozen=True)
@@ -426,6 +433,9 @@ def agree(first: Render, second: Render, *, min_gap: timedelta = MIN_GAP) -> Agr
     The first rule that fails decides the code, in this order:
       first_incomplete   the first fails check_summary (an early render), so it is no basis;
       second_incomplete  the second fails check_summary: fetch again later;
+      same_bytes         the two are one file byte for byte: something served one render twice
+                         (a cache, say). Studio renders afresh, so all 6 real pairs measured
+                         differ, and identical bytes prove nothing about a stable render;
       layouts_differ     they were fetched in different layouts, or Studio sent pages in another
                          layout than the one asked for: a job has one layout, so that its
                          fingerprints can be compared;
@@ -446,6 +456,9 @@ def agree(first: Render, second: Render, *, min_gap: timedelta = MIN_GAP) -> Agr
     two = _load(second.source)
     if not (second_check := check_summary(two)).ok:
         return Agreement(False, "second_incomplete", _incomplete("second", second_check))
+    if one == two:
+        return Agreement(False, "same_bytes", "The two fetches are one file byte for byte, so"
+                                              " something served one render twice.")
     if (why := _layout_problem(first, first_check, second, second_check)) is not None:
         return Agreement(False, "layouts_differ", why)
     fingerprint = content_fingerprint(one)

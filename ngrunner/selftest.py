@@ -45,10 +45,11 @@ P1A_MODULES: tuple[str, ...] = (
     "ngrunner.messages.pushover", "ngrunner.cards", "ngrunner.digest", "ngrunner.heartbeat",
     "ngrunner.board", "ngrunner.tray", "ngrunner.toasts",
     "ngrunner.launcher", "ngrunner.single", "ngrunner.backup", "ngrunner.support",
-    "ngrunner.selftest",
+    "ngrunner.selftest", "ngrunner.intake.pipeline", "ngrunner.interlock", "ngrunner.jobmodel",
+    "ngrunner.messenger", "ngrunner.supervisor", "ngrunner.canary",
     "flask", "waitress", "requests", "pystray", "PIL", "psutil", "win32api", "pywintypes",
-    "windows_toasts", "cryptography", "cryptography.hazmat.primitives.ciphers.aead", "pypdf",
-    "tzdata", "sqlite3",
+    "pythoncom", "win32com", "win32cred", "windows_toasts", "cryptography",
+    "cryptography.hazmat.primitives.ciphers.aead", "pypdf", "tzdata", "sqlite3",
 )
 
 SANDBOX_CONTENT = b"NG Runner self-test: safe to delete\n"
@@ -329,6 +330,7 @@ def message_samples() -> list[object]:
         t.fetch_failed_card(job, since=at, reason="Studio did not answer within 60 seconds"),
         t.ic_changed_card(job, filed_at=at, filed_pages=19, new_at=at, new_pages=20),
         t.row_changed_card(job, was="Testerson", now_reads=row, candidates=candidates),
+        t.remake_card(job, row="Testerson"),
     )]
     echoes = [t.echo(parse_command(typed, cards)) for typed in (
         f"{cards[2].id} 2", "pause", "resume", f"add job {job}", "add job 84213")]

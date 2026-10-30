@@ -28,6 +28,9 @@ Table groups, one module each:
     cards          cards, card_numbers: Jim's questions; IDs (TES-2) are never reused
     events         events, dev: the history log and the DEV lane
     write_record   writes, owned: one row per commit_write, and NG Runner's own files
+    write_journal  pending_writes: a commit's row before its first rename, the registry
+                   commit_write takes, and the start-up settle
+    pruning        nightly: old writes rows, closed journal rows, old renders and their files
     outbox         outbox: messages, from queued to receipted
     sequences      seqs, seen_ids: outgoing sequences and the replay guard for incoming ones
     state          state: NG Runner's own small facts (paused, installed_at...)
@@ -66,6 +69,7 @@ from ngrunner.store.pending import (
     PENDING_STATES, PendingRecord, add_pending, due_pending, finish_pending, get_pending,
     list_pending, past_deadline_pending, retry_pending,
 )
+from ngrunner.store.pruning import PrunedRenders, prune_renders, prune_write_records
 from ngrunner.store.renders import (
     RenderRecord, add_render, get_render, governing_render, list_renders, render_fingerprint,
     set_governing,
@@ -78,6 +82,10 @@ from ngrunner.store.sequences import (
 )
 from ngrunner.store.state import (
     clear_state, get_state, get_state_time, set_state, set_state_time,
+)
+from ngrunner.store.write_journal import (
+    JOURNAL_STATES, PendingWrite, Settled, StoreRegistry, list_pending_writes,
+    settle_pending_writes,
 )
 from ngrunner.store.write_record import (
     CommitResultLike, FileWriteLike, WriteRecord, list_write_records, owned_sha, path_key,
@@ -126,6 +134,11 @@ __all__ = [
     # writes, owned
     "CommitResultLike", "FileWriteLike", "WriteRecord", "list_write_records", "owned_sha",
     "path_key", "record_commit", "record_owned",
+    # pending_writes
+    "JOURNAL_STATES", "PendingWrite", "Settled", "StoreRegistry", "list_pending_writes",
+    "settle_pending_writes",
+    # pruning
+    "PrunedRenders", "prune_renders", "prune_write_records",
     # outbox
     "CHANNELS", "OUTBOX_STATES", "OutboxRecord", "add_outbox", "get_outbox", "list_outbox",
     "mark_outbox_fallback", "mark_outbox_written", "outbox_without_receipt", "record_receipt",

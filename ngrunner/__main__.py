@@ -5,10 +5,9 @@ Why it is this thin: every command is a call into a module with its own tests; t
 reads the arguments, prints the outcome in plain words and returns the exit code the
 installer and the launcher rely on:
 
-    0  done (for --self-test: every check passed)
+    0  done (for --self-test and canary: every check passed)
     1  it ran and found a problem; the printed lines say what
-    2  the command line was wrong, or NG Runner has no data folder
-    3  that command is not built yet (wave 2 fills run, install-shortcut and release-all)
+    2  the command line was wrong, or NG Runner has no data folder; canary: a folder it refuses
 
 Commands:
     --version                          the build's version
@@ -16,7 +15,10 @@ Commands:
                                        lets the launcher start this version
     run [--attempt ID] [--open-board]  NG Runner itself, the default (the launcher starts it)
     install-shortcut --target EXE      the Start Menu item, carrying NG Runner's AUMID
-    release-all                        hand every job back to Jim's chat (uninstall)
+    release-all                        hand every job back to Jim's chat (uninstall); P1a has no
+                                       leases, so there is nothing to hand back yet
+    canary --folder PATH               prove a drive does what commit_write relies on
+    setup                              settings.json and the two keys, asked for in plain words
     restore BACKUP [--install]         the restore drill; --install then puts the database in
                                        place on a new PC
     support-bundle                     a support bundle in the data folder, for Sulaiman
@@ -29,17 +31,24 @@ from __future__ import annotations
 
 import argparse
 import getpass
+import itertools
 import os
 import sys
 from collections.abc import Callable, Mapping
+from dataclasses import replace
 from pathlib import Path
-from typing import NoReturn, TextIO
+from typing import TYPE_CHECKING, Any, NoReturn, TextIO
 
-from ngrunner.clock import Clock, SystemClock
-from ngrunner.config import AppPaths, SettingsError, app_paths
+from ngrunner.clock import Clock, SystemClock, parse_wall
+from ngrunner.config import (
+    AppPaths, Settings, SettingsError, app_paths, load_settings, save_settings, settings_from,
+    settings_to_json,
+)
 
-NOT_BUILT = 3
-_WAVE_2 = ("run", "install-shortcut", "release-all")
+if TYPE_CHECKING:
+    from ngrunner.secrets import Secrets
+
+SHORTCUT = "NG Runner.lnk"
 
 
 class _UsageError(Exception):
@@ -60,8 +69,13 @@ def main(
     clock: Clock | None = None,
     read_secret: Callable[[str], str] = getpass.getpass,
     running: Callable[[], bool] | None = None,
+    supervise: Callable[..., int] | None = None,
+    read_line: Callable[[str], str] = input,
+    secrets: Secrets | None = None,
+    start_menu: Path | None = None,
 ) -> int:
     say = _Say(out if out is not None else sys.stdout)
+    environ = os.environ if environ is None else environ
     try:
         args = _parser().parse_args(sys.argv[1:] if argv is None else argv)
         _check(args)
@@ -78,17 +92,26 @@ def main(
         return 0
     if args.command == "keygen":
         return _keygen(say)
+    if args.command == "release-all":
+        say("There is nothing to release: P1a puts no leases on any job, so Jim's chat is free to"
+            " work them all.")
+        return 0
+    if args.command == "install-shortcut":
+        return _install_shortcut(Path(args.target), start_menu, say)
+    if args.command == "canary":
+        return _canary(Path(args.folder), environ, say)
     try:
-        paths = app_paths(os.environ if environ is None else environ)
+        paths = app_paths(environ)
     except SettingsError as exc:
         say(f"{exc}.")
         return 2
     if args.self_test:
         return _self_test(paths, args.record, self_test, clock, say)
     command = args.command or "run"
-    if command in _WAVE_2:
-        say(f"'{command}' is not built yet: wave 2 of P1a fills it.")
-        return NOT_BUILT
+    if command == "run":
+        return _run(paths, args, supervise, say)
+    if command == "setup":
+        return _setup(paths, read_line, read_secret, secrets, say)
     if command == "restore":
         return _restore(Path(args.backup), args.install, paths, read_secret, running, say)
     return _support_bundle(paths, clock, say)
@@ -107,6 +130,10 @@ def _parser() -> _Parser:
     shortcut = commands.add_parser("install-shortcut", help="the Start Menu item with the AUMID")
     shortcut.add_argument("--target", required=True, help="the launcher exe it starts")
     commands.add_parser("release-all", help="release every lease to Jim's chat")
+    canary = commands.add_parser("canary", help="prove a drive does what commit_write relies on")
+    canary.add_argument("--folder", required=True,
+                        help="a test folder of your own, as a full path; never in NG Jobs")
+    commands.add_parser("setup", help="settings.json and the keys, asked for in plain words")
     restore = commands.add_parser("restore", help="the restore drill (and a restore onto a new PC)")
     restore.add_argument("backup", help="a <YYYYMMDD>.ngrbak file from the control folder")
     restore.add_argument("--install", action="store_true",
@@ -132,12 +159,82 @@ class _Say:
         self._out = out
 
     def __call__(self, line: str) -> None:
+        self.write(line + "\n")
+
+    def write(self, text: str) -> None:
         if self._out is not None:
-            self._out.write(line + "\n")
+            self._out.write(text)
             self._out.flush()
 
 
 # ----- commands
+
+
+def _run(paths: AppPaths, args: argparse.Namespace, supervise: Callable[..., int] | None,
+         say: _Say) -> int:
+    """NG Runner itself. Exit 0 with the mutex held by another start means "already running" to
+    the launcher (single.py); anything else that isn't a clean stop counts as a failed start."""
+    if supervise is None:
+        try:
+            from ngrunner.supervisor import run as supervise
+        except Exception as exc:  # noqa: BLE001 - a start that can't load is a failed start
+            say(f"NG Runner could not load ({type(exc).__name__}: {exc}).")
+            return 1
+    return supervise(paths, attempt=getattr(args, "attempt", None),
+                     open_board=getattr(args, "open_board", False))
+
+
+def _install_shortcut(target: Path, start_menu: Path | None, say: _Say) -> int:
+    """The Start Menu item: without the AUMID on it, Windows drops NG Runner's toasts. The
+    installer reads only the exit code, and shows these lines."""
+    if not (target.is_absolute() and target.is_file()):
+        say(f"There is no program at {target}, so the Start Menu item was not made.")
+        return 1
+    try:
+        from ngrunner.toasts import AUMID
+
+        folder = _programs_folder() if start_menu is None else start_menu
+        folder.mkdir(parents=True, exist_ok=True)
+        _make_shortcut(folder / SHORTCUT, target, AUMID)
+    except Exception as exc:  # noqa: BLE001 - COM raises its own errors; each is this one failure
+        say(f"The Start Menu item could not be made ({type(exc).__name__}: {exc}).")
+        return 1
+    say(f"Start Menu item made: {folder / SHORTCUT}")
+    return 0
+
+
+def _programs_folder() -> Path:
+    from win32com.shell import shell, shellcon
+
+    return Path(shell.SHGetFolderPath(0, shellcon.CSIDL_PROGRAMS, None, 0))
+
+
+def _make_shortcut(path: Path, target: Path, aumid: str) -> None:
+    import pythoncom
+    from win32com.propsys import propsys, pscon
+    from win32com.shell import shell
+
+    link = pythoncom.CoCreateInstance(shell.CLSID_ShellLink, None, pythoncom.CLSCTX_INPROC_SERVER,
+                                      shell.IID_IShellLink)
+    link.SetPath(str(target))
+    link.SetWorkingDirectory(str(target.parent))
+    link.SetDescription("NG Runner")
+    properties = link.QueryInterface(propsys.IID_IPropertyStore)
+    properties.SetValue(pscon.PKEY_AppUserModel_ID,
+                        propsys.PROPVARIANTType(aumid, pythoncom.VT_LPWSTR))
+    properties.Commit()
+    link.QueryInterface(pythoncom.IID_IPersistFile).Save(str(path), True)
+
+
+def _canary(folder: Path, environ: Mapping[str, str], say: _Say) -> int:
+    from ngrunner.canary import run_canary
+
+    try:
+        settings = load_settings(app_paths(environ))
+        refuse = (settings.ng_jobs, settings.mozaik_shared)
+    except SettingsError:  # it runs before settings exist, so it also goes by the folders' names
+        refuse = ()
+    return run_canary(folder, out=say, refuse=refuse)
 
 
 def _self_test(paths: AppPaths, record: bool, self_test: Callable[[AppPaths], list[str]] | None,
@@ -254,6 +351,190 @@ def _support_bundle(paths: AppPaths, clock: Clock, say: _Say) -> int:
         return 0
     say("No free name for the support bundle; remove old ones from the support folder.")
     return 1
+
+
+# ----- setup: settings.json and the keys, asked for in plain words
+
+
+def _setup(paths: AppPaths, read_line: Callable[[str], str], read_secret: Callable[[str], str],
+           secrets: Secrets | None, say: _Say) -> int:
+    """Test window 2's step 4. Nothing is saved until every answer is in and checked. It shows
+    no secret, and never repeats what was typed: a key pasted at the wrong prompt stays unprinted
+    beyond what the console itself echoed."""
+    from ngrunner.secrets import CredentialSecrets, SecretsError
+
+    secrets = CredentialSecrets() if secrets is None else secrets
+    before = _settings_there(paths, say)
+    say("NG Runner's setup. Press Enter to keep what is in [brackets].")
+    try:
+        answers = _ask_settings(before, read_line, read_secret, say)
+        keys = {name: _ask_key(name, secrets, read_secret, say) for name in _KEYS}
+    except (EOFError, KeyboardInterrupt):
+        say("Setup stopped. Nothing was saved.")
+        return 1
+    except SecretsError as exc:
+        say(f"{exc}. Nothing was saved.")
+        return 1
+    problem = _overlap(answers, paths)
+    if problem:
+        say(f"{problem} Nothing was saved.")
+        return 1
+    raw = {} if before is None else settings_to_json(before)
+    try:
+        settings = settings_from({**raw, **answers})
+    except SettingsError as exc:
+        say(f"{exc}. Nothing was saved.")
+        return 1
+    if before is not None:
+        settings = replace(settings, set_aside=before.set_aside)
+    try:
+        for name, value in keys.items():
+            if value is not None:
+                secrets.put(name, value)
+        save_settings(paths, settings)
+    except (SecretsError, OSError) as exc:
+        say(f"Setup could not finish ({exc}). Run it again.")
+        return 1
+    _say_saved(settings, say)
+    return 0
+
+
+def _settings_there(paths: AppPaths, say: _Say) -> Settings | None:
+    if not paths.settings.exists():
+        return None
+    try:
+        return load_settings(paths)
+    except SettingsError as exc:
+        say(f"The settings already there can't be used ({exc}), so setup starts afresh.")
+        return None
+
+
+def _ask_settings(before: Settings | None, read_line: Callable[[str], str],
+                  read_secret: Callable[[str], str], say: _Say) -> dict[str, Any]:
+    answers: dict[str, Any] = {}
+    for name, label, called in (("ng_jobs", "NG Jobs", "NG Jobs"),
+                                ("mozaik_shared", "Mozaik Shared", "Mozaik Shared"),
+                                ("control", "control", None)):
+        current = None if before is None else str(getattr(before, name))
+        answers[name] = _ask_folder(label, called, current, read_line, say)
+    stays_on = True if before is None else not before.pc_sleeps_at_night
+    answers["pc_sleeps_at_night"] = not _ask_yes_no("Does this PC stay on overnight?", stays_on,
+                                                    read_line, say)
+    for name, label in (("expected_on_from", "The PC is expected on from"),
+                        ("expected_on_until", "The PC is expected on until")):
+        current = getattr(Settings, name) if before is None else getattr(before, name)
+        answers[name] = _ask_time(label, current, read_line, say)
+    answers["backup_public_key"] = _ask_backup_key(before, read_secret, say)
+    return answers
+
+
+def _ask_folder(label: str, called: str | None, current: str | None,
+                read_line: Callable[[str], str], say: _Say) -> str:
+    """A folder that is there. A name that isn't what the folder is normally called is asked
+    about, since a wrong folder here would file a summary where Jim doesn't look."""
+    hint = f" [{current}]" if current else ""
+    while True:
+        text = read_line(f"The {label} folder, as a full path{hint}: ").strip().strip('"')
+        text = text or current or ""
+        if not Path(text).is_absolute():
+            say("That needs to be a full path, starting with its drive letter.")
+        elif not os.path.isdir(text):
+            say("There is no folder there. Check the path and try again.")
+        elif (called is None or Path(text).name.casefold() == called.casefold()
+              or _ask_yes_no(f"That folder is not called {called}. Use it anyway?", False,
+                             read_line, say)):
+            return text
+
+
+def _ask_yes_no(question: str, default: bool, read_line: Callable[[str], str], say: _Say) -> bool:
+    while True:
+        text = read_line(f"{question} (y/n) [{'y' if default else 'n'}]: ").strip().casefold()
+        if not text:
+            return default
+        if text in ("y", "yes"):
+            return True
+        if text in ("n", "no"):
+            return False
+        say("Please answer y or n.")
+
+
+def _ask_time(label: str, current: str, read_line: Callable[[str], str], say: _Say) -> str:
+    while True:
+        text = read_line(f"{label}, on a 24-hour clock [{current}]: ").strip() or current
+        try:
+            parse_wall(text)
+        except ValueError:
+            say("That needs to be a time like 06:30.")
+        else:
+            return text
+
+
+def _ask_backup_key(before: Settings | None, read_secret: Callable[[str], str], say: _Say) -> str:
+    """Hidden though it is public: the private key printed beside it is an easy slip to paste."""
+    current = "" if before is None else before.backup_public_key
+    hint = "Enter keeps the one saved" if current else "Enter to leave it for later"
+    while True:
+        text = read_secret(f"The backup public key, the line keygen printed ({hint}): ").strip()
+        text = text or current
+        try:
+            settings_from({"ng_jobs": "C:\\x", "mozaik_shared": "C:\\y", "control": "C:\\z",
+                           "backup_public_key": text})
+        except SettingsError as exc:
+            say(f"{exc}.")
+        else:
+            return text
+
+
+_KEYS = {
+    "signing_key": "The control folder's signing key, as in the Apps Script's Script Properties",
+    "export_key": "The Render job-list export key",
+}
+
+
+def _ask_key(name: str, secrets: Secrets, read_secret: Callable[[str], str],
+             say: _Say) -> str | None:
+    """The new value, or None to keep the one saved. Input is hidden, and nothing repeats it."""
+    from ngrunner.signing import EnvelopeError, key_from_text
+
+    saved = secrets.get(name)
+    hint = "it won't show; Enter keeps the one saved" if saved else "it won't show"
+    while True:
+        text = read_secret(f"{_KEYS[name]} ({hint}): ").strip()
+        if not text:
+            if saved:
+                return None
+            say("NG Runner can't work without this key. Press Ctrl+C to stop for now.")
+        elif name != "signing_key":
+            return text
+        else:
+            try:
+                key_from_text(text)
+                return text
+            except EnvelopeError:
+                say("That isn't the signing key: it is 64 characters, 0-9 and a-f.")
+
+
+def _overlap(answers: Mapping[str, Any], paths: AppPaths) -> str | None:
+    folders = {name: Path(os.path.realpath(answers[name]))
+               for name in ("ng_jobs", "mozaik_shared", "control")}
+    folders["NG Runner's data"] = Path(os.path.realpath(paths.app_data))
+    for (a, here), (b, there) in itertools.combinations(folders.items(), 2):
+        if here == there or here in there.parents or there in here.parents:
+            return f"The {a} and {b} folders overlap, and they must be separate."
+    return None
+
+
+def _say_saved(settings: Settings, say: _Say) -> None:
+    say("Saved. The folders are there, and the keys are in Windows Credential Manager.")
+    say(f"NG Jobs: {settings.ng_jobs}")
+    say(f"Mozaik Shared: {settings.mozaik_shared}")
+    say(f"Control folder: {settings.control}")
+    say(f"Hours the PC is expected on: {settings.expected_on_from} to {settings.expected_on_until},"
+        f" and {'off' if settings.pc_sleeps_at_night else 'on'} overnight.")
+    if not settings.backup_public_key:
+        say("No backup key yet: the board will say the nightly backup is waiting for one.")
+    say(f"Mode: {settings.mode}.")
+    say("Quit NG Runner from the tray and start it from the Start Menu, so it reads them.")
 
 
 def _keygen(say: _Say) -> int:

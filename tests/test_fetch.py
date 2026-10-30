@@ -8,6 +8,7 @@ Studio IDs are made up too.
 """
 from __future__ import annotations
 
+import inspect
 import re
 import socket
 import time
@@ -461,7 +462,39 @@ def test_fetches_whose_pages_are_not_in_the_layout_asked_for_are_never_compared(
 @pytest.mark.parametrize("minutes", [9.9, 0, -10],
                          ids=["9.9 minutes apart", "one fetch twice", "the second before the first"])
 def test_fetches_less_than_ten_minutes_apart_are_too_soon_though_they_hold_the_same(minutes):
-    disagree(agree(render(0), render(minutes)), "too_soon")
+    # The same text in other bytes, as Studio renders it afresh: identical bytes are same_bytes.
+    second = render(minutes, created="D:20261014150000+00'00'")
+    disagree(agree(render(0), second), "too_soon")
+
+
+def test_one_file_served_twice_is_same_bytes_however_far_apart():
+    # All 6 real pairs differ in bytes, so identical bytes prove nothing about a stable render.
+    pdf = summary_pdf()
+    later = T0 + timedelta(minutes=10)
+    disagree(agree(Render(pdf, T0, "landscape"), Render(pdf, later, "landscape")), "same_bytes")
+
+
+def test_same_bytes_comes_after_the_incomplete_codes_and_before_layouts_differ():
+    early = summary_pdf(designs=TWO_DESIGNS, finished=1)
+    later = T0 + timedelta(minutes=10)
+    first = Render(early, T0, "landscape")
+    assert agree(first, Render(early, later, "landscape")).code == "first_incomplete"
+    pdf = summary_pdf()
+    assert agree(Render(pdf, T0, "landscape"), Render(pdf, later, "portrait")).code == "same_bytes"
+
+
+def test_a_fetch_waits_four_minutes_by_default_as_real_renders_take_up_to_95_seconds():
+    assert inspect.signature(fetch_render).parameters["timeout_s"].default == 240
+
+
+def test_a_wrong_job_carries_the_name_page_1_prints_and_no_other_refusal_does(studio, http):
+    studio.serve(LANDSCAPE_PATH, summary_pdf(project_name="Fakeley 101426"))
+    fetched = fetch(studio, http)
+    assert (fetched.code, fetched.found_name) == ("wrong_job", "Fakeley 101426")
+    studio.serve(LANDSCAPE_PATH, b"<html>no</html>")
+    assert fetch(studio, http).found_name is None
+    studio.serve(LANDSCAPE_PATH, summary_pdf())
+    assert fetch(studio, http).found_name is None
 
 
 def test_ten_minutes_apart_is_enough_and_the_gap_can_be_longer():

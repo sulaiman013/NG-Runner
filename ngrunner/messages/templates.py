@@ -223,6 +223,22 @@ def row_changed_card(job: str, *, was: str, now_reads: str,
     )
 
 
+# The remake card's choices, in order: the first says it is a remake. It is a "row changed" card
+# with these choices, which is how the pipeline tells it from the other.
+REMAKE_CHOICES = ("A remake", "The same job")
+
+
+def remake_card(job: str, *, row: str) -> CardSpec:
+    """Jim's "Is this a remake of <Job>?": only the install date or designer changed on a filed
+    row whose old install date has passed, so it may be a remake, which must not be absorbed as an
+    edit. Nothing is filed until Jim says which it is."""
+    return CardSpec(
+        "row_changed", job=job, row=row, choices=REMAKE_CHOICES,
+        text=f"Is this a remake of {job}? {_fab_row(row)} has a new install date or designer, and"
+             " its old install date has passed; nothing is filed until you choose.",
+    )
+
+
 def card_message(card: Card) -> Message:
     """A card as a message for Jim's phone or email: its ID, job and question, the one-line
     text, then the choices numbered, so "TES-2 2" or "TES-2 3rd" answers it at the PC."""
