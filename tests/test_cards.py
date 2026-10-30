@@ -8,8 +8,8 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from ngrunner.cards import (
-    CardSpec, Command, Rejection, age_days, answered, card_from_record, card_prefix, new_card,
-    parse_command, reminder_due,
+    CARD_KINDS, CardSpec, Command, Rejection, age_days, answered, card_from_record, card_prefix,
+    new_card, parse_command, reminder_due,
 )
 
 WHEN = datetime(2026, 10, 30, 22, 5, tzinfo=timezone.utc)   # Fri 10/30 3:05 PM Pacific
@@ -380,3 +380,18 @@ def test_choice_ids_go_through_the_real_store_and_come_back(tmp_path):
     record = add_card(store, prefix=garage.prefix, kind=garage.kind, text=garage.text,
                       choices=garage.choices, created_at=WHEN, choice_ids=garage.choice_ids)
     assert card_from_record(record, job=garage.job).choice_ids == (None, None)
+
+
+def test_the_remake_and_design_cards_are_kinds_of_their_own():
+    assert {"remake", "design_mismatch"} <= set(CARD_KINDS)
+
+
+@pytest.mark.parametrize("typed, choice", [
+    ("TES-1 1", "Fetch it again"), ("TES-1 2", "File it as it is"),
+    ("tes-1 file it as it is", "File it as it is"),
+])
+def test_a_design_card_is_answered_by_number_or_label(typed, choice):
+    card = new_card(spec("design_mismatch", choices=("Fetch it again", "File it as it is")),
+                    created_at=WHEN, allocate=counter())
+    parsed = parse_command(typed, [card])
+    assert isinstance(parsed, Command) and parsed.choice == choice

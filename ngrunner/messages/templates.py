@@ -29,6 +29,8 @@ QUESTIONS = {
     "fetch_failed": "Could not get a complete IC summary",
     "ic_changed": "IC changed: which render governs?",
     "row_changed": "Row changed: which job?",
+    "remake": "Is this a remake?",
+    "design_mismatch": "The report and Studio's proposal differ",
 }
 
 
@@ -72,6 +74,12 @@ ALARMS = {   # P1a alarms, for the For you line (design 4, "Silence and failure"
                         " being seen",
     "job_list_stale": "The job list is over an hour old and older than the oldest waiting row,"
                       " so that row can't be matched yet",
+    "ng_jobs_unreachable": "NG Jobs can't be read, so new rows wait and nothing is filed; check"
+                           " that this PC can reach the NG Jobs folder",
+    "board_failed": "The board could not start, so cards can't be answered there; NG Runner tries"
+                    " again every minute",
+    "tray_failed": "The tray icon could not start, so NG Runner shows no colour at the PC; it tries"
+                   " again every minute",
     "toasts_off": "Windows notifications are off for NG Runner, so its pop-ups don't show",
     "paused": "NG Runner is paused, so nothing is filed until you resume it at the PC",
     "no_receipts": "Messages are not being confirmed sent, so some may not reach you; the board"
@@ -87,6 +95,12 @@ def install_soon(job: str, install: date) -> str:
 def stuck(job: str) -> str:
     """A DEV item older than 48 hours, with the manual fallback (design 4)."""
     return f"{job} has waited on NG Runner for over 2 days; work it in chat as before"
+
+
+def fetch_stuck(job: str) -> str:
+    """Your list, at once: a fetch of this job hung, and if it can hang so can the next, so all
+    filing may be held up. NG Runner has freed its place and goes on trying."""
+    return f"{job}: a fetch ran for over 15 minutes and was given up; NG Runner keeps trying"
 
 
 def missed_digest(*, due: datetime, sent: datetime) -> str:
@@ -109,6 +123,8 @@ _CARD_BACK = {   # an open card, as it comes back in the digest
     "fetch_failed": "still no complete IC summary for {job}.",
     "ic_changed": "the IC summary of {job} changed; which render governs?",
     "row_changed": "{row} changed after {job} was filed; which job is it?",
+    "remake": "is {row} a remake of {job}?",
+    "design_mismatch": "the report of {job} and Studio's proposal still list different designs.",
 }
 
 
@@ -127,11 +143,23 @@ def _card_back(card: Card) -> str:
 
 
 def filed(job: str, *, row: str, designer: str = "", install: date | None = None,
-          garage: bool = False) -> Message:
-    """Barbara's "Filed as <Job>": her row is now that job, and its IC summary is filed."""
+          garage: bool = False, designs: int | None = None, pages: int | None = None) -> Message:
+    """Barbara's "Filed as <Job>: 3 designs, 19 pages": her row is now that job, and its IC summary
+    is filed. The counts let a person who knows the job spot a missing room at no cost, and are
+    left out when they can't be read, never guessed. Counts only, never a design's name."""
     branch = " (garage)" if garage else ""
-    return Message("filed", f"Filed as {job}",
-                   (f"{_row(row, designer, install)} is filed as {job}{branch}.",))
+    counts = filed_counts(designs, pages)
+    said = f": {counts}" if counts else ""
+    return Message("filed", f"Filed as {job}{said}",
+                   (f"{_row(row, designer, install)} is filed as {job}{branch}{said}.",))
+
+
+def filed_counts(designs: int | None, pages: int | None) -> str:
+    """A filed job's counts, as every place shows them: "3 designs, 19 pages". Empty when either
+    can't be read, since a count that is a guess is worse than none."""
+    if designs is None or not pages:
+        return ""
+    return f"{_count(designs, 'design')}, {_count(pages, 'page')}"
 
 
 def which_job_email(row: str, *, designer: str = "", install: date | None = None,
@@ -194,16 +222,29 @@ def fetch_failed_card(job: str, *, since: datetime, reason: str) -> CardSpec:
     )
 
 
+def design_counts(report: int, proposal: int, *, differ: bool = True) -> str:
+    """What the report and Studio's proposal list, in counts, never a design's name (decision 10).
+    Equal counts that differ mean the names differ, which must be said or it reads as agreement."""
+    same = ", with different names" if differ and report == proposal else ""
+    return (f"the report lists {_count(report, 'design')} and Studio's proposal lists"
+            f" {proposal}{same}")
+
+
 def ic_changed_card(job: str, *, filed_at: datetime, filed_pages: int, new_at: datetime,
-                    new_pages: int) -> CardSpec:
+                    new_pages: int, designs: str = "", changed: str = "") -> CardSpec:
     """Jim's "IC changed: which render governs?": two agreeing fetches differ from the filed
-    IC summary. Nothing is re-filed by itself; keeping the filed one is what happens meanwhile."""
+    IC summary. Nothing is re-filed by itself; keeping the filed one is what happens meanwhile.
+    designs: what Studio's proposal said of the new one, as design_counts gives it, since Jim
+    can't see a lost room from a page count. changed: what differs, as report_diff words it, since
+    a catalog update can raise this on many jobs at once."""
+    also = f" {designs};" if designs else ""
+    differs = f" {changed}" if changed else ""
     return CardSpec(
         "ic_changed", job=job, row=None, choices=("Keep the filed one", "File the new one"),
         default_choice="Keep the filed one",
         text=f"The IC summary fetched {_when(new_at)} ({_count(new_pages, 'page')}) differs from"
-             f" the one filed {fmt_day(filed_at)} ({_count(filed_pages, 'page')}); nothing is"
-             " re-filed until you choose.",
+             f" the one filed {fmt_day(filed_at)} ({_count(filed_pages, 'page')});{also} nothing"
+             f" is re-filed until you choose.{differs}",
     )
 
 
@@ -223,8 +264,7 @@ def row_changed_card(job: str, *, was: str, now_reads: str,
     )
 
 
-# The remake card's choices, in order: the first says it is a remake. It is a "row changed" card
-# with these choices, which is how the pipeline tells it from the other.
+# The remake card's choices, in order: the first says it is a remake.
 REMAKE_CHOICES = ("A remake", "The same job")
 
 
@@ -233,9 +273,24 @@ def remake_card(job: str, *, row: str) -> CardSpec:
     row whose old install date has passed, so it may be a remake, which must not be absorbed as an
     edit. Nothing is filed until Jim says which it is."""
     return CardSpec(
-        "row_changed", job=job, row=row, choices=REMAKE_CHOICES,
+        "remake", job=job, row=row, choices=REMAKE_CHOICES,
         text=f"Is this a remake of {job}? {_fab_row(row)} has a new install date or designer, and"
              " its old install date has passed; nothing is filed until you choose.",
+    )
+
+
+# The design card's choices, in order: the first queues a fresh fetch, the second files what is
+# there, and an event says Jim chose to.
+DESIGN_MISMATCH_CHOICES = ("Fetch it again", "File it as it is")
+
+
+def design_mismatch_card(job: str, *, report: int, proposal: int) -> CardSpec:
+    """Jim's "The report and Studio's proposal differ": the designs on the report's page 1 aren't
+    the ones on Studio's Proposal tab, so nothing is filed, only this job waits, and NG Runner
+    looks again every 30 minutes."""
+    return CardSpec(
+        "design_mismatch", job=job, row=None, choices=DESIGN_MISMATCH_CHOICES,
+        text=f"{job}: {design_counts(report, proposal)}.",
     )
 
 

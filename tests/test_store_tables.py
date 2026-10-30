@@ -21,7 +21,7 @@ from ngrunner.store import (
     add_alias, add_card, add_fab_row, add_outbox, add_pending, add_render, allocate_card_id,
     answer_card, clear_state, close_dev, due_pending, end_run, ensure_job, finish_pending,
     freeze_name, get_card, get_dev, get_fab_row, get_job, get_job_list, get_list_state,
-    get_opportunity, get_outbox, get_pending, get_render, get_run, get_state, get_state_time,
+    states_under, get_opportunity, get_outbox, get_pending, get_render, get_run, get_state, get_state_time,
     governing_render, jump_after_restore, last_accepted_seq, last_sent_seq, list_aliases,
     list_cards, list_dev,
     list_events, list_fab_rows, list_jobs, list_outbox, list_pending, list_renders, list_runs,
@@ -1367,6 +1367,15 @@ def test_state_values_are_set_replaced_and_cleared(store: Store) -> None:
     clear_state(store, "paused")
     clear_state(store, "never_set")
     assert get_state(store, "paused") is None
+
+
+def test_state_under_a_prefix_is_read_in_one_go(store: Store) -> None:
+    set_state(store, "filed.4242", "one")
+    set_state(store, "filed.4299", "two")
+    set_state(store, "filedx", "not under it")
+    set_state(store, "paused", "no")
+    assert states_under(store, "filed.") == {"filed.4242": "one", "filed.4299": "two"}
+    assert states_under(store, "nothing.") == {}
 
 
 def test_state_times_are_stored_like_every_other_time(store: Store) -> None:

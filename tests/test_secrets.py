@@ -6,6 +6,7 @@ throwaway target under NGRunner-test/ and removes it again.
 """
 from __future__ import annotations
 
+import json
 import secrets as random
 import traceback
 
@@ -86,11 +87,26 @@ def test_a_secret_is_stored_read_and_removed(store) -> None:
 
 
 def test_only_ng_runners_own_secret_names_are_kept(store) -> None:
-    assert NAMES == ("signing_key", "export_key", "pushover_token", "pushover_user")
+    assert NAMES == ("signing_key", "export_key", "pushover_token", "pushover_user",
+                     "studio_username", "studio_password", "studio_session")
     for call in (lambda: store.get("signing_kee"), lambda: store.put("Signing_Key", VALUE),
                  lambda: store.remove("anthropic_key")):
         with pytest.raises(SecretsError, match="signing_key, export_key"):
             call()
+
+
+def test_studios_login_and_its_session_are_kept_like_any_other_secret(store) -> None:
+    session = json.dumps({"sessionid": "a" * 32, "csrftoken": "b" * 64})  # as long as real ones
+
+    store.put("studio_username", "testerson@example.com")
+    store.put("studio_password", VALUE)
+    store.put("studio_session", session)
+
+    assert store.get("studio_username") == "testerson@example.com"
+    assert store.get("studio_password") == VALUE
+    assert json.loads(store.get("studio_session")) == json.loads(session)
+    store.remove("studio_session")
+    assert store.get("studio_session") is None and store.get("studio_password") == VALUE
 
 
 def test_a_value_passed_where_the_name_belongs_is_never_echoed(store) -> None:

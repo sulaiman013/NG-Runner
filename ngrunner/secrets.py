@@ -1,6 +1,7 @@
 """
-NG Runner's secrets: the control folder's signing key, the Render export key and the Pushover
-keys (build spec section 6.1; design section 6, "Secrets"; AGENTS.md rule 6).
+NG Runner's secrets: the control folder's signing key, the Render export key, the Pushover keys,
+and Studio's login with its session, the JSON of its two cookies (build spec section 6.1; design
+section 6, "Secrets"; AGENTS.md rule 6).
 
 Why Windows Credential Manager: it is per user and encrypted with the user's logon, so a copy
 of NG Runner's data folder, its database or a support bundle holds no key. Each secret is a
@@ -18,7 +19,8 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any, Protocol
 
-NAMES = ("signing_key", "export_key", "pushover_token", "pushover_user")
+NAMES = ("signing_key", "export_key", "pushover_token", "pushover_user",
+         "studio_username", "studio_password", "studio_session")
 TARGET_PREFIX = "NGRunner"
 MAX_BYTES = 2560  # Credential Manager's limit for one value (CRED_MAX_CREDENTIAL_BLOB_SIZE)
 _NOT_FOUND = 1168  # ERROR_NOT_FOUND

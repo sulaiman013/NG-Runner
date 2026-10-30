@@ -79,6 +79,10 @@ class StudioJob:
     truncated: the file ends part-way.
     delay: seconds before the reply starts (Studio rendering).
     renders: how many reports it has handed out.
+    proposal: the design names on its project page's Proposal tab, when not page 1's.
+    page_status: the status of its project page, when it isn't there to read.
+    page_changed: its project page no longer has the tabs NG Runner reads.
+    real_slugs: the address Studio really has it at, when no derived one finds it.
     """
 
     studio_id: str
@@ -91,6 +95,10 @@ class StudioJob:
     truncated: bool = False
     delay: float = 0.0
     renders: int = 0
+    proposal: tuple[str, ...] | None = None
+    page_status: int = 200
+    page_changed: bool = False
+    real_slugs: tuple[str, str] | None = None
 
     def __post_init__(self) -> None:
         if not self.designs:
@@ -99,7 +107,7 @@ class StudioJob:
 
     @property
     def slugs(self) -> tuple[str, str]:
-        return candidate_slugs(self.name, self.client or None)[0]
+        return self.real_slugs or candidate_slugs(self.name, self.client or None)[0]
 
 
 class _LiveReplies(dict):
@@ -117,6 +125,23 @@ class _LiveReplies(dict):
 _REPORT = re.compile(r"/(?P<kind>install_summary(?:_landscape)?)/(?P<client>[^/]+)/"
                      r"(?P<project>[^/]+)/(?P<id>[0-9]+)/")
 _LAYOUTS = {path: layout for layout, path in LAYOUT_PATHS.items()}
+_PROJECT_PAGE = re.compile(r"/project/details/(?P<id>[0-9]+)/")
+
+
+def _project_page_html(job: StudioJob) -> str:
+    """A project page in the shape measured on real ones (intake/studio_designs.py): a wrapper per
+    design on each tab, one div.design-details inside it, and the report's link."""
+    def cards(wrapper: str, names: Iterable[str]) -> str:
+        return "".join(
+            f'<form id="{wrapper}_{n}" class="design-details"><div class="design-details">'
+            f"<h3>{name}</h3></div></form>" for n, name in enumerate(names, start=1))
+
+    client, project = job.slugs
+    listed = tuple(name for name, _ in job.designs) if job.proposal is None else job.proposal
+    return (f'<html><body><a href="/install_summary_landscape/{client}/{project}/{job.studio_id}/">'
+            f'Install report</a><div id="project-proposal">'
+            f"{cards('design_proposal_details', listed)}</div>"
+            f'<div id="project-design">{cards("design_details", listed)}</div></body></html>')
 
 
 class Studio:
@@ -161,6 +186,9 @@ class Studio:
     def reply(self, path: str) -> Reply | None:
         if self.down:
             return Reply(status=503, body=b"<html>Service Unavailable</html>")
+        page = _PROJECT_PAGE.fullmatch(path)
+        if page is not None:
+            return self._project_page(page["id"])
         found = _REPORT.fullmatch(path)
         job = self.jobs.get(found["id"]) if found else None
         if job is None or job.missing or (found["client"], found["project"]) != job.slugs:
@@ -176,6 +204,16 @@ class Studio:
         finished = max(len(job.designs) - 1, 0) if early else None
         pdf = self.report(job.studio_id, layout=layout, note=note, finished=finished)
         return Reply(body=pdf[:-64] if job.truncated else pdf, delay=job.delay)
+
+    def _project_page(self, studio_id: str) -> Reply | None:
+        job = self.jobs.get(studio_id)
+        if job is None:
+            return None
+        if job.page_status != 200:
+            return Reply(status=job.page_status, body=b"<html>Not here</html>")
+        html = "<html><body>A new design</body></html>" if job.page_changed else (
+            _project_page_html(job))
+        return Reply(body=html.encode("utf-8"))
 
 
 # ----- Render: the job list, as the office PC last pushed it
@@ -742,6 +780,9 @@ class World:
         self.tray = RecordingTray()
         self.toasts = RecordingToasts()
         self.sup: Any = None
+        self.site: Any = None           # what Ctx.studio is, in the pipeline on its own
+        self.site_http: Any = None
+        self.sign_ins: list[str] = []
         self._store: Any = None
         self._ctx: Any = None
         self._messenger: Any = None
@@ -753,7 +794,7 @@ class World:
         from ngrunner.supervisor import Supervisor
 
         self.sup = Supervisor(self.paths, clock=self.clock, secrets=self.secrets, http=self.http,
-                              tray_backend=self.tray, toaster=self.toasts)
+                              tray_backend=self.tray, toaster=self.toasts, studio=self.site)
         self.sup.start()
         return self.sup
 
@@ -810,7 +851,7 @@ class World:
             self._ctx = Ctx(store=self.store, settings=self.settings, secrets=self.secrets,
                             clock=self.clock, roots=self.roots, paths=self.paths,
                             studio_http=self.http, render_client=client,
-                            messenger=self.messenger, mode=self.settings.mode)
+                            messenger=self.messenger, mode=self.settings.mode, studio=self.site)
         return self._ctx
 
     # ----- time
@@ -984,6 +1025,28 @@ def running_world(tmp: Path, *, mode: str = "live", at: datetime = START, data: 
         finally:
             world.stop()
             http.close()
+            if world.site_http is not None:
+                world.site_http.close()
+
+
+def with_studio_site(world: World, *, signed_in: bool = True) -> World:
+    """The real StudioSite and its real parser for this world's pipeline, over real HTTP to the
+    fake Studio. StudioSite asks for Studio's own address, so it gets a session of its own whose one
+    route is the fake. It never signs in: signed_in stores a session it can use, and without one it
+    finds no login. A sign-in it did try would be noted in sign_ins, and fail."""
+    from ngrunner.intake.fetch import STUDIO_URL as STUDIOS_OWN_ADDRESS
+    from ngrunner.intake.studio_designs import StudioSite, StudioUnavailable
+
+    def no_sign_in(username: str, password: str) -> dict[str, str]:
+        world.sign_ins.append(username)
+        raise StudioUnavailable("sign_in_failed", "A test never signs in.")
+
+    if signed_in:
+        world.secrets.put("studio_session", json.dumps({"sessionid": "a-test-session",
+                                                        "csrftoken": "a-test-token"}))
+    world.site_http = LocalRoutes({urlsplit(STUDIOS_OWN_ADDRESS).hostname: world.studio.base_url})
+    world.site = StudioSite(world.secrets, world.clock, http=world.site_http, sign_in=no_sign_in)
+    return world
 
 
 def opps(world: World, *listed: Opp) -> None:

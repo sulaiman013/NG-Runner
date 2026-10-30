@@ -705,7 +705,7 @@ def match_fab_row(
         exact = _exact_opportunity(typed, opportunities, rules)
         if exact is not None:
             return exact
-    typed = replace(typed, variant=_typed_variant(row.text))
+    typed = replace(typed, variant=typed_variant(row.text))
     return _by_surname(typed, row.text, opportunities, rules)
 
 
@@ -1175,7 +1175,7 @@ def _mmddyy(m: re.Match[str]) -> str | None:
 _TYPED_WORD = re.compile(r"(?<![a-z0-9'’])[a-z]|(?<!\d)-\d")
 
 
-def _typed_variant(text: str) -> str | None:
+def typed_variant(text: str) -> str | None:
     """Every run and branch word of a row, in the order typed: anywhere after its first word
     ("Testerson closet remake") and right after a date, so a run typed before a date that "_Gar"
     follows ("Testerson remake 101426 gar") is never lost."""

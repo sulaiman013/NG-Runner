@@ -8,6 +8,8 @@ install (an OBSERVED job gets no writes: watch and check only), or write anywher
 the control folder. A pause stops filing and nothing else: heartbeats, the digest, messages and
 backups all go to the control folder, and go on, or the 45-minute alarm would fire on a paused PC.
 So paused applies only to NG Jobs and control\shadow\. HELD is not here: nothing can set it in P1a.
+Shadow mode writes nothing in NG Jobs, whoever filed the job there: this is where no path can
+forget it (docs/decisions.md).
 
 It reads the store each time it is asked, since a pause or a new OBSERVED job can come while a
 commit waits its turn. It takes anything with .store and .roots, so the messenger and the
@@ -29,12 +31,14 @@ SHADOW = "shadow"                    # control\shadow\: what shadow mode files
 GARAGE_SUFFIX = "_Gar"
 
 PAUSED_REASON = "NG Runner is paused, so nothing is filed until it is resumed at the PC."
+SHADOW_REASON = "NG Runner is in shadow mode, so nothing is written in NG Jobs."
 
 
 def p1a_interlock(ctx: Any) -> Callable[[list[Path]], str | None]:
     """The interlock for commit_write: given the target paths, a plain reason not to write them,
-    or None when they may be written. ctx needs .store and .roots. If the store can't be read this
-    raises, and commit_write refuses: a safety check that cannot run means wait."""
+    or None when they may be written. ctx needs .store and .roots, and .mode when it can file. If
+    the store can't be read this raises, and commit_write refuses: a safety check that cannot run
+    means wait."""
     store, roots = ctx.store, ctx.roots
 
     def check(targets: list[Path]) -> str | None:
@@ -47,6 +51,8 @@ def p1a_interlock(ctx: Any) -> Callable[[list[Path]], str | None]:
             filing, folder = place
             if filing and is_paused(store):
                 return PAUSED_REASON
+            if getattr(ctx, "mode", None) == SHADOW and _below(Path(target), roots.ng_jobs):
+                return SHADOW_REASON
             if folder is not None:
                 watched = _observed_folders(store) if watched is None else watched
                 if folder.casefold() in watched:

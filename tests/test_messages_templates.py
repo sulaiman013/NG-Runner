@@ -47,6 +47,28 @@ def test_filed_as_says_garage_and_leaves_out_what_it_does_not_know():
         'Fab row "Testerson garage" is filed as Testerson_101426 (garage).',)
 
 
+def test_filed_as_shows_the_design_and_page_counts_for_a_person_to_check():
+    message = t.filed("Testerson_101426", row="Testerson", designs=3, pages=19)
+    assert_clean(message)
+    assert message.title == "Filed as Testerson_101426: 3 designs, 19 pages"
+    assert message.lines == (
+        'Fab row "Testerson" is filed as Testerson_101426: 3 designs, 19 pages.',)
+    garage = t.filed("Testerson_101426_Gar", row="Testerson", designs=1, pages=1, garage=True)
+    assert_clean(garage)
+    assert garage.title == "Filed as Testerson_101426_Gar: 1 design, 1 page"
+    assert garage.lines == (
+        'Fab row "Testerson" is filed as Testerson_101426_Gar (garage): 1 design, 1 page.',)
+
+
+@pytest.mark.parametrize("designs, pages", [(None, 19), (3, None), (3, 0), (None, None)])
+def test_a_count_that_cant_be_read_is_left_out_never_guessed(designs, pages):
+    assert t.filed_counts(designs, pages) == ""
+    message = t.filed("Testerson_101426", row="Testerson", designs=designs, pages=pages)
+    assert_clean(message)
+    assert message.title == "Filed as Testerson_101426"
+    assert message.lines == ('Fab row "Testerson" is filed as Testerson_101426.',)
+
+
 def test_which_job_email_lists_the_candidates_for_barbara():
     message = t.which_job_email("Dummitt", designer="PE", install=INSTALL, candidates=CANDIDATES)
     assert_clean(message)
@@ -190,6 +212,16 @@ def test_ic_changed_asks_which_render_governs_and_refiles_nothing():
     assert made.default_choice == "Keep the filed one"
 
 
+def test_ic_changed_says_what_differs_after_its_question():
+    made = card(t.ic_changed_card("Testerson_101426", filed_at=NOW - timedelta(days=2),
+                                  filed_pages=19, new_at=NOW, new_pages=19,
+                                  changed="The drawings changed. The text is the same."))
+    message = t.card_message(made)
+    assert_clean(message)
+    assert message.lines[0].endswith(
+        "nothing is re-filed until you choose. The drawings changed. The text is the same.")
+
+
 def test_row_changed_asks_which_job_the_edited_row_is():
     message = t.card_message(card(t.row_changed_card(
         "Testerson_101426", was="Testerson", now_reads="Fakeley",
@@ -252,6 +284,34 @@ def test_a_cards_subject_is_its_job_or_the_fab_row_it_asks_about():
 
 def test_every_kind_of_card_has_its_words():
     assert set(t.QUESTIONS) == set(CARD_KINDS)
+    assert set(t._CARD_BACK) == set(CARD_KINDS)
+
+
+def test_the_remake_card_is_a_kind_of_its_own():
+    made = card(t.remake_card("Testerson_101426", row="Testerson"))
+    assert made.kind == "remake" and made.choices == t.REMAKE_CHOICES
+    message = t.card_message(made)
+    assert_clean(message)
+    assert message.title.endswith("· Testerson_101426 · Is this a remake?")
+
+
+@pytest.mark.parametrize("report, proposal, words", [
+    (3, 4, "the report lists 3 designs and Studio's proposal lists 4."),
+    (1, 2, "the report lists 1 design and Studio's proposal lists 2."),
+    (2, 0, "the report lists 2 designs and Studio's proposal lists 0."),
+    (3, 3, "the report lists 3 designs and Studio's proposal lists 3, with different names."),
+])
+def test_the_design_mismatch_card_says_it_in_counts(report, proposal, words):
+    made = card(t.design_mismatch_card("Testerson_101426", report=report, proposal=proposal))
+    assert made.kind == "design_mismatch" and made.job == "Testerson_101426"
+    assert made.text == f"Testerson_101426: {words}"
+    assert made.choices == t.DESIGN_MISMATCH_CHOICES == ("Fetch it again", "File it as it is")
+    assert made.default_choice is None
+    message = t.card_message(made)
+    assert_clean(message)
+    assert message.title.endswith("· Testerson_101426 · The report and Studio's proposal differ")
+    assert message.lines == (made.text, "1. Fetch it again", "2. File it as it is")
+    assert t.vetted(message, now=NOW) == t.Vetted(message, ())
 
 
 def test_two_sales_with_one_name_get_choices_that_tell_them_apart():
@@ -508,6 +568,8 @@ def every_template() -> list[tuple[str, Message]]:
         ("quiet digest", t.quiet_digest(day, open_items=3, oldest_days=12)),
         ("filed as", t.filed("O'Testa_101426_Gar", row=TRICKY_ROW, designer="PE",
                              install=INSTALL, garage=True)),
+        ("filed as, with counts", t.filed("O'Testa_101426_Gar", row=TRICKY_ROW, designer="PE",
+                                          install=INSTALL, garage=True, designs=3, pages=19)),
         ("which job email", t.which_job_email(TRICKY_ROW, designer="PE", candidates=CANDIDATES)),
         ("which job card", t.card_message(which)),
         ("closet or garage", t.card_message(card(t.closet_or_garage_card(
@@ -518,6 +580,9 @@ def every_template() -> list[tuple[str, Message]]:
             "Testerson_101426", filed_at=NOW, filed_pages=1, new_at=NOW, new_pages=2)))),
         ("row changed", t.card_message(card(t.row_changed_card(
             "Testerson_101426", was="Testerson", now_reads=TRICKY_ROW, candidates=CANDIDATES)))),
+        ("remake", t.card_message(card(t.remake_card("O'Testa_101426", row=TRICKY_ROW)))),
+        ("designs differ", t.card_message(card(t.design_mismatch_card(
+            "O'Testa_101426_Gar", report=3, proposal=4)))),
         ("DEV", t.dev((t.DevLine(NOW, "the job list is 2 hours old"),), day=day)),
         ("ran", t.ran(day, version="0.1.10", new_rows=1, filed=1, cards_opened=0,
                       cards_answered=2, writes_refused=1, dev_open=0)),
@@ -560,17 +625,20 @@ def row_messages(row: str) -> list[tuple[str, Message]]:
     nothing = card(t.which_job_card(row, designer="PE"))
     changed = card(t.row_changed_card("Testerson_101426", was=row, now_reads=row,
                                       candidates=CANDIDATES))
-    back = [(which, 1), (nothing, 3), (changed, 7)]
+    remake = card(t.remake_card("Testerson_101426", row=row))
+    back = [(which, 1), (nothing, 3), (changed, 7), (remake, 3)]
     aged = [dataclasses.replace(made, created_at=NOW - timedelta(days=age)) for made, age in back]
     return [
         ("filed", t.filed("Testerson_101426", row=row, designer="PE", install=INSTALL)),
         ("filed, garage", t.filed("Testerson_101426_Gar", row=row, garage=True)),
+        ("filed, with counts", t.filed("Testerson_101426", row=row, designs=3, pages=19)),
         ("which job email", t.which_job_email(row, designer="PE", install=INSTALL,
                                               candidates=CANDIDATES)),
         ("which job email, no candidates", t.which_job_email(row)),
         ("which job card", t.card_message(which)),
         ("which job card, no candidates", t.card_message(nothing)),
         ("row changed card", t.card_message(changed)),
+        ("remake card", t.card_message(remake)),
         ("digest with the cards back", t.digest(date(2026, 10, 30), cards=back, open_items=3,
                                                 oldest_days=7)),
         ("composed digest", compose(DigestView(now=NOW, cards=tuple(aged), open_items=3))),

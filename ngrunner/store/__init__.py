@@ -81,7 +81,7 @@ from ngrunner.store.sequences import (
     prune_seen_ids, seen_id,
 )
 from ngrunner.store.state import (
-    clear_state, get_state, get_state_time, set_state, set_state_time,
+    clear_state, get_state, get_state_time, set_state, set_state_time, states_under,
 )
 from ngrunner.store.write_journal import (
     JOURNAL_STATES, PendingWrite, Settled, StoreRegistry, list_pending_writes,
@@ -146,5 +146,5 @@ __all__ = [
     "accept_envelope", "accept_seq", "jump_after_restore", "last_accepted_seq", "last_sent_seq",
     "next_seq", "prune_seen_ids", "seen_id",
     # state
-    "clear_state", "get_state", "get_state_time", "set_state", "set_state_time",
+    "clear_state", "get_state", "get_state_time", "set_state", "set_state_time", "states_under",
 ]

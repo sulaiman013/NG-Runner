@@ -11,7 +11,14 @@ from pathlib import Path
 
 import pytest
 
-from ngrunner.interlock import INSTALL_FOLDERS, PAUSED, PAUSED_REASON, is_paused, p1a_interlock
+from ngrunner.interlock import (
+    INSTALL_FOLDERS,
+    PAUSED,
+    PAUSED_REASON,
+    SHADOW,
+    is_paused,
+    p1a_interlock,
+)
 from ngrunner.store import Store, StoreError, ensure_job, open_store, set_state
 from ngrunner.writes import FileWrite, Roots, commit_write
 
@@ -23,6 +30,11 @@ JOB = "Testerson_101426"
 class _Ctx:
     store: Store
     roots: Roots
+
+
+@dataclass
+class _ShadowCtx(_Ctx):
+    mode: str
 
 
 @pytest.fixture
@@ -48,6 +60,23 @@ def control_file(ctx: _Ctx, *parts: str) -> Path:
 def test_a_job_file_and_a_control_file_are_clear(ctx):
     check = p1a_interlock(ctx)
     assert check([job_file(ctx), control_file(ctx, "outbox", "a.json")]) is None
+
+
+def test_in_shadow_nothing_is_written_in_ng_jobs_whatever_the_job(ctx):
+    shadow = _ShadowCtx(ctx.store, ctx.roots, SHADOW)
+    check = p1a_interlock(shadow)
+    assert "shadow mode" in check([job_file(ctx)])
+    assert "shadow mode" in check([ctx.roots.ng_jobs / "Old" / JOB / "x.pdf"])
+    assert check([control_file(ctx, SHADOW, JOB, f"{JOB}_summary.pdf")]) is None
+    assert check([control_file(ctx, "outbox", "a.json")]) is None
+    shadow.mode = "live"
+    assert check([job_file(ctx)]) is None                  # it is read each time it is asked
+
+
+def test_a_pause_is_named_before_shadow_mode(ctx):
+    set_state(ctx.store, PAUSED, "yes")
+    check = p1a_interlock(_ShadowCtx(ctx.store, ctx.roots, SHADOW))
+    assert check([job_file(ctx)]) == PAUSED_REASON
 
 
 @pytest.mark.parametrize("where", ["mozaik", "data", "elsewhere"])

@@ -38,6 +38,7 @@ from fakes import (
     seen_rows,
     tree,
     wait_for_fetches,
+    with_studio_site,
 )
 from ngrunner import fab, heartbeat, single, toasts
 from ngrunner.clock import at_pacific
@@ -50,7 +51,7 @@ from ngrunner.messages import Message, pushover, templates
 from ngrunner.messages.lint import lint
 from ngrunner.messages.outbox import outbox_file, read_receipt
 from ngrunner.signing import open_envelope
-from ngrunner.store import get_list_state, get_outbox
+from ngrunner.store import answer_card, get_list_state, get_outbox
 from ngrunner.tray import COLOURS, draw_icon
 
 PE, LS = "Pat Example", "Lee Sample"
@@ -547,6 +548,21 @@ def test_a_slow_fetch_never_holds_the_tick_up_and_lands_by_itself(make_world):
     world.run_until(is_filed(world, "Testerson_101426"), within=minutes(15))
 
 
+def test_two_fetches_that_disagree_file_nothing_until_two_agree(make_world):
+    world = make_world()
+    installed(world, TESTERSON)
+    world.script.add_row("Testerson", "PE")
+    world.run_until(lambda: world.renders("4242"), within=minutes(30))
+    world.studio.jobs["4242"].designs = DESIGNS_2            # Studio changes it between the two
+    world.run_until(lambda: len(world.renders("4242")) == 2, within=minutes(15))
+    world.run(minutes=2)
+    assert tree(world.ng_jobs) == {}
+    world.run_until(is_filed(world, "Testerson_101426"), within=minutes(15))
+    first, second, third = world.renders("4242")
+    assert first.fingerprint != second.fingerprint == third.fingerprint
+    assert third.fetched_at - second.fetched_at >= minutes(10)
+
+
 # ----- scenario 5: the branch
 
 
@@ -640,7 +656,7 @@ def test_scenario_07_paused_stops_filing_and_nothing_else(make_world):
     email = world.outbox(to="barbara", subject="Which job")
     assert len(email) == 1 and email[0].state == "sent"
     assert world.board(paused=True).paused is True
-    assert world.board_row("Testerson_101426", paused=True).overlay in ("PAUSED", "BLOCKED")
+    assert world.board_row("Testerson_101426", paused=True).overlay == "PAUSED"
     assert world.outbox(to="barbara", subject="Filed as") == []
 
     # Resumed: it carries on from where it stopped.
@@ -950,7 +966,7 @@ def test_scenario_13_every_filed_summary_belongs_to_the_row_it_was_generated_for
 
     def settled() -> bool:
         states = {r.text: r for r in world.rows()}
-        held = {c.studio_id for c in world.cards()}
+        held = {c.studio_id for c in world.cards() if c.studio_id is not None}
         return all(case.row in states
                    and (states[case.row].state in ("filed", "asked", "none")
                         or states[case.row].studio_id in held)
@@ -969,7 +985,8 @@ def test_scenario_13_every_filed_summary_belongs_to_the_row_it_was_generated_for
             asks = world.cards("which_job", state="open")
             held = world.cards(state="open")
             assert (any(c.fab_row_id == row.id for c in asks)
-                    or any(c.studio_id == row.studio_id for c in held)), f"{case}: {row}"
+                    or any(row.studio_id is not None and c.studio_id == row.studio_id
+                           for c in held)), f"{case}: {row}"
 
     # Every summary in NG Jobs is its own job's, and is explained by a row.
     folders = {path.split("/")[0] for path in tree(world.ng_jobs) if path.endswith("_summary.pdf")}
@@ -980,7 +997,8 @@ def test_scenario_13_every_filed_summary_belongs_to_the_row_it_was_generated_for
     # The property was really tried: the plainest rows file, and the ones that can't be sure ask.
     shapes_filed = {case.how for case in filed}
     assert {"exact", "bare"} <= shapes_filed
-    assert not shapes_filed & {"two_sold", "first_name", "wrong_report"}
+    assert not shapes_filed & {"two_sold", "first_name", "wrong_report", "newer_unsold",
+                               "compound_rival", "remake", "five_digit"}
 
 
 # ----- scenario 14: shadow mode
@@ -1165,7 +1183,7 @@ def test_scenario_18_an_empty_export_is_held_and_rows_seen_at_install_stay_seen(
     world.script.export(rows=[])                             # a sheet that came back empty
     world.step()
     assert {r.state for r in world.rows()} == {"seen_at_install"}
-    assert world.dev() != []                                 # held, and logged to DEV
+    assert [d for d in world.dev() if d.code == "fab_held"]  # held, and logged to DEV
 
     world.clock.advance(minutes(5))
     world.script.export()                                    # the whole sheet again
@@ -1298,3 +1316,189 @@ def test_the_generated_day_holds_every_shape_and_types_each_row_for_its_target()
     assert len({o.name for o in listed}) == len(listed)
     assert len(wrong) == 1
     assert _generated_day(1, count=len(_KINDS))[1] == cases  # the same seed, the same day
+
+
+# ----- the Studio design check: the real StudioSite and parser, over HTTP to the fake Studio
+
+
+def log_of(world: World, folder: str) -> str:
+    return (world.ng_jobs / folder / f"{folder}_NGRunner_log.txt").read_text(encoding="utf-8")
+
+
+def answer(world: World, card: object, choice: str) -> None:
+    assert answer_card(world.store, card.id, answer=choice, answer_words=choice, answered_by="jim",
+                       answered_at=world.clock.now(), channel="board")
+
+
+def test_scenario_23_a_report_that_matches_files_with_its_counts_for_a_person_to_check(make_world):
+    world = with_studio_site(make_world())
+    installed(world, TESTERSON, supervised=False)
+    world.studio.jobs["4242"].designs = DESIGNS_2
+    world.script.add_row("Testerson", "PE")
+    world.run_until(is_filed(world, "Testerson_101426"), within=minutes(45))
+    world.run(minutes=2)
+
+    pages = world.renders("4242")[-1].page_count
+    record = record_of(world, "Testerson_101426")
+    assert record["designs"] == 2 and record["designs_checked"] is True
+    assert record["summary"]["pages"] == pages
+    assert f"2 designs, {pages} pages" in log_of(world, "Testerson_101426")
+    assert "not cross-checked" not in log_of(world, "Testerson_101426")
+    told, = world.outbox(to="barbara", subject="Filed as Testerson_101426")
+    assert told.subject == f"Filed as Testerson_101426: 2 designs, {pages} pages"
+    assert told.lines[0].endswith(f"is filed as Testerson_101426: 2 designs, {pages} pages.")
+    assert [s.subject for s in world.script.sent if s.to == "barbara"] == [told.subject]
+    assert lint(Message("filed", told.subject, told.lines)) == []
+    assert world.dev() == [] and world.sign_ins == []
+
+
+def test_scenario_24_a_report_that_differs_from_the_proposal_never_files_until_jim_says(make_world):
+    world = with_studio_site(make_world())
+    installed(world, TESTERSON, FAKELEY, supervised=False)
+    world.studio.jobs["4242"].proposal = ("Testerson - Primary Closet", "Testerson - Office")
+    world.script.add_row("Testerson", "PE")
+    world.script.add_row("Fakeley", "PE")
+
+    # Only that job waits.
+    world.run_until(is_filed(world, "Fakeley_101426"), within=minutes(45))
+    card, = world.cards("design_mismatch")
+    assert card.text == ("Testerson_101426: the report lists 1 design and Studio's proposal lists"
+                         " 2.")
+    assert card.choices == ("Fetch it again", "File it as it is")
+    assert folder_files(world, "Testerson_101426") == set()
+
+    # It looks again every 30 minutes, and one card stands however long nobody answers.
+    served = world.studio.fetches("4242")
+    world.run(minutes=120, step=300)
+    assert world.studio.fetches("4242") >= served + 3
+    assert len(world.cards("design_mismatch", state=None)) == 1
+    assert folder_files(world, "Testerson_101426") == set()
+    assert world.outbox(to="barbara", subject="Filed as Testerson") == []
+    assert world.row("Testerson").state == "matched"
+
+    # "Fetch it again" still differs: a new card, and nothing filed.
+    answer(world, card, "Fetch it again")
+    world.run_until(lambda: world.cards("design_mismatch"), within=minutes(5))
+    again, = world.cards("design_mismatch")
+    assert again.id != card.id
+    assert folder_files(world, "Testerson_101426") == set()
+
+    # "File it as it is" files it, once two fetches agree, and says Jim chose to.
+    answer(world, again, "File it as it is")
+    world.run_until(is_filed(world, "Testerson_101426"), within=minutes(30))
+    world.run(minutes=2)
+    assert_one_commit(world, "Testerson_101426")
+    record = record_of(world, "Testerson_101426")
+    assert record["designs"] == 1 and record["designs_checked"] is False
+    assert "Jim chose to file it as it is" in log_of(world, "Testerson_101426")
+    event, = world.events(kind="designs_differ_filed")
+    assert event.lane == "ACT" and "Jim chose to file it as it is" in event.text
+    assert world.cards("design_mismatch") == []
+    assert len(world.outbox(to="barbara", subject="Filed as Testerson_101426")) == 1
+    assert world.dev() == []
+
+
+def test_scenario_25_once_the_proposal_is_put_right_the_card_goes_and_the_job_carries_on(make_world):
+    world = with_studio_site(make_world())
+    installed(world, TESTERSON, supervised=False)
+    world.studio.jobs["4242"].proposal = ("Testerson - Primary Closet", "Testerson - Office")
+    world.script.add_row("Testerson", "PE")
+    world.run_until(lambda: world.cards("design_mismatch"), within=minutes(45))
+    world.studio.jobs["4242"].proposal = None
+    world.run_until(is_filed(world, "Testerson_101426"), within=minutes(60))
+    assert world.cards("design_mismatch") == []
+    assert len(world.cards("design_mismatch", state="withdrawn")) == 1
+    assert record_of(world, "Testerson_101426")["designs_checked"] is True
+
+
+@pytest.mark.parametrize("how, dev_code", [("page 503", "studio_unavailable"),
+                                           ("no login", "studio_unavailable"),
+                                           ("page changed", "studio_page_changed")])
+def test_scenario_26_studio_unreachable_still_files_and_says_so(make_world, how, dev_code):
+    world = with_studio_site(make_world(), signed_in=how != "no login")
+    installed(world, TESTERSON, FAKELEY, supervised=False)
+    for studio_id in ("4242", "4343"):
+        world.studio.jobs[studio_id].page_status = 503 if how == "page 503" else 200
+        world.studio.jobs[studio_id].page_changed = how == "page changed"
+    world.script.add_row("Testerson", "PE")
+    world.script.add_row("Fakeley", "PE")
+    world.run_until(is_filed(world, "Fakeley_101426"), within=minutes(45))
+    world.run_until(is_filed(world, "Testerson_101426"), within=minutes(10))
+    world.run(minutes=2)
+
+    for folder in ("Testerson_101426", "Fakeley_101426"):
+        assert_one_commit(world, folder)
+        record = record_of(world, folder)
+        assert record["designs"] == 1 and record["designs_checked"] is False
+        assert "designs not cross-checked" in log_of(world, folder)
+    assert world.cards("design_mismatch", state=None) == []
+    assert [d.code for d in world.dev()] == [dev_code]       # one a day, for both jobs
+    told = world.outbox(to="barbara", subject="Filed as")
+    assert len(told) == 2 and all("1 design," in m.subject for m in told)
+    assert world.sign_ins == []
+
+
+def test_scenario_27_a_job_the_derived_addresses_miss_is_fetched_through_studios_own_link(make_world):
+    world = with_studio_site(make_world())
+    installed(world, TESTERSON, supervised=False)
+    world.studio.jobs["4242"].real_slugs = ("testerson_family_trust", "testerson_jobsite")
+    world.script.add_row("Testerson", "PE")
+    world.run_until(is_filed(world, "Testerson_101426"), within=minutes(45))
+    first, second = world.renders("4242")
+    assert "/testerson_family_trust/testerson_jobsite/4242/" in first.url
+    assert second.url == first.url
+    assert record_of(world, "Testerson_101426")["designs_checked"] is True
+    assert world.cards(state=None) == []
+
+
+@pytest.mark.parametrize("reachable", [True, False], ids=["checked", "not cross-checked"])
+def test_scenario_28_the_board_and_the_digest_show_the_counts_and_if_they_were_checked(make_world,
+                                                                                       reachable):
+    from ngrunner import jobmodel
+
+    world = with_studio_site(make_world())
+    installed(world, TESTERSON)
+    world.studio.jobs["4242"].page_status = 200 if reachable else 503
+    world.script.add_row("Testerson", "PE")
+    world.run_until(is_filed(world, "Testerson_101426"), within=minutes(45))
+    world.run(minutes=2)
+
+    pages = world.renders("4242")[-1].page_count
+    step = world.board_row("Testerson_101426").next_step
+    assert step.startswith("Filed") and f"1 design, {pages} pages" in step
+    assert ("designs not cross-checked" in step) is not reachable
+    line, = [line for line in jobmodel.digest_view(world.store, world.settings, world.clock).jobs
+             if line.job == "Testerson_101426"]
+    assert f"1 design, {pages} pages" in line.text
+    assert ("designs not cross-checked" in line.text) is not reachable
+    assert record_of(world, "Testerson_101426")["designs_checked"] is reachable
+
+
+# ----- scenario 29: going live with jobs the trial run filed aside
+
+
+def test_scenario_29_going_live_files_what_the_trial_run_filed_aside(make_world):
+    world = make_world(mode="shadow")
+    installed(world, TESTERSON)
+    world.script.add_row("Testerson", "PE")
+    world.run_until(row_is(world, "Testerson", "filed"), within=minutes(45))
+    world.run(minutes=2)
+    assert tree(world.ng_jobs) == {}
+    assert world.outbox(to="barbara") == []
+
+    # The switch brings it back at the next pass, and the board says what is true until it lands.
+    world.actions.set_mode("live")
+    world.settings = replace(world.settings, mode="live")
+    world.step()
+    row = world.board_row("Testerson_101426")
+    assert row.next_step.startswith("Trial run only, not in NG Jobs")
+    assert {t.key: t.state for t in row.ticks}["filed"] != "done"
+
+    world.run_until(is_filed(world, "Testerson_101426"), within=minutes(45))
+    world.run(minutes=2)
+    assert_one_commit(world, "Testerson_101426")
+    assert set(tree(world.control / "shadow")) == filed_paths("Testerson_101426")
+    assert len(world.outbox(to="barbara", subject="Filed as Testerson_101426")) == 1
+    row = world.board_row("Testerson_101426")
+    assert row.next_step.startswith("Filed") and "Trial" not in row.next_step
+    assert {t.key: t.state for t in row.ticks}["filed"] == "done"

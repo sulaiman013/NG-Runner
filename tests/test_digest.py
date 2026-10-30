@@ -121,6 +121,22 @@ def test_every_kind_of_card_reads_well_when_it_comes_back():
     assert lint(message) == []
 
 
+def test_the_remake_and_design_cards_each_ask_their_own_question_when_they_come_back():
+    cards = (
+        open_card("remake", job="Testova_102226", row="Testova", age=timedelta(days=3)),
+        open_card("design_mismatch", job="Fakeley_102826", age=timedelta(days=1), number=2),
+    )
+    message = compose(DigestView(now=NOW, cards=cards, open_items=2,
+                                 oldest_item=NOW - timedelta(days=3)))
+    assert message.lines == (
+        '1. Card TES-1, open 3 days: is Fab row "Testova" a remake of Testova_102226?',
+        "2. Card FAK-2, open 1 day: the report of Fakeley_102826 and Studio's proposal still list"
+        " different designs.",
+        "Your list: 2 open, oldest 3 days.",
+    )
+    assert lint(message) == []
+
+
 def test_ages_read_naturally_and_an_unknown_age_is_left_out():
     def your_list(**kw) -> str:
         return compose(DigestView(now=NOW, owner=("Paused",), **kw)).lines[-1]

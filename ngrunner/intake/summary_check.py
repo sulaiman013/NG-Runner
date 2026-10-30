@@ -939,11 +939,15 @@ def _pulled_problems(pulled: list[tuple[int, PulledLayout | None, int]]) -> tupl
 # ----- the two entry points
 
 
+def _reading_order(line: _Line) -> tuple[float, float]:
+    return (-line.y, line.x)
+
+
 def _fingerprint(pages: list[_Page]) -> str:
     digest = hashlib.sha256()
     for page in pages:
         digest.update(b"\f\n")  # page break
-        for line in sorted(page.lines, key=lambda ln: (-ln.y, ln.x)):  # reading order
+        for line in sorted(page.lines, key=_reading_order):
             digest.update(line.text.encode("utf-8") + b"\n")
         for picture in page.pictures:  # in the order the page draws them; no text line starts with \f
             digest.update(b"\f" + picture.digest.encode("ascii") + b"\n")
@@ -975,6 +979,18 @@ def content_fingerprint(source: Source) -> str:
     except _Unusable as unusable:
         raise ValueError(unusable.message) from None
     return _fingerprint(pages)
+
+
+def read_contents(source: Source) -> list[tuple[list[str], list[str]]]:
+    """Each page as (its lines in reading order, its pictures' digests in drawn order): what
+    content_fingerprint hashes, so report_diff can say what differs. Raises ValueError when the
+    file cannot be read as a PDF, as content_fingerprint does."""
+    try:
+        pages, _created = _read(_load(source))
+    except _Unusable as unusable:
+        raise ValueError(unusable.message) from None
+    return [([line.text for line in sorted(page.lines, key=_reading_order)],
+             [picture.digest for picture in page.pictures]) for page in pages]
 
 
 def check_summary(source: Source) -> SummaryCheck:

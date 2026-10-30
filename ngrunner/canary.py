@@ -227,6 +227,8 @@ def _junction_note(run: Path, target: Path, made: _Made, report: _Report) -> Non
     try:
         _winapi.CreateJunction(str(target), str(junction))
     except OSError:
+        if junction.is_dir():      # CreateJunction makes the folder first, and on Drive it stays
+            made.note(junction)
         report.say("NOTE  A junction can't be made here, so none can appear in a job folder.")
         return
     made.note(junction)
@@ -291,6 +293,9 @@ def _clear(paths: list[Path]) -> None:
 # ----- removing what it made
 
 
+DRIVES_NOTE = "desktop.ini"
+
+
 class _Made:
     """Everything the canary made, with its identity, in the order made."""
 
@@ -325,13 +330,29 @@ class _Made:
                 if (st.st_dev, st.st_ino) != identity:
                     kept.append(f"{path.name} (it is not what the canary made)")
                     continue
-                (os.rmdir if stat.S_ISDIR(st.st_mode) else os.unlink)(path)
+                if stat.S_ISDIR(st.st_mode):
+                    _remove_drives_note(path)
+                    os.rmdir(path)
+                else:
+                    os.unlink(path)
                 removed += 1
             except FileNotFoundError:
                 continue
             except OSError as exc:
                 kept.append(f"{path.name} ({_why(exc)})")
         return removed, kept
+
+
+def _remove_drives_note(folder: Path) -> None:
+    """Drive for desktop adds a hidden desktop.ini to a folder a little while after it is made
+    (measured 2026-10-30), and os.rmdir then refuses. It is Drive's own note on a folder the canary
+    made, so it goes with the folder. Anything else in there still stops the removal."""
+    note = folder / DRIVES_NOTE
+    try:
+        if stat.S_ISREG(os.lstat(note).st_mode):
+            os.unlink(note)
+    except OSError:
+        pass  # none there, or it can't go: then os.rmdir says what stayed
 
 
 def _clean(made: _Made, local: Path, run: Path, report: _Report) -> None:

@@ -13,9 +13,12 @@ What each fact means here, which is the contract with whoever writes it:
                seen_at_install and gone rows with no job never show: nothing will happen to them.
     jobs       mode "observed" gets no writes (ruling 12c). branch, once known. "held" is unused.
     events     A "filed" event with the job's Studio ID says when it was filed; a row in state
-               "filed" says the same. Only the ACT lane and "filed" and "blocked" events count as
-               touching a job for the digest, so a nightly re-fetch that found nothing keeps a
-               night quiet.
+               "filed" says the same, and pipeline.filed_note what its line adds: the design and
+               page counts, and "designs not cross-checked". A "blocked" event says when a refusal
+               began. Only the ACT lane and "filed" and "blocked" events count as touching a job for
+               the digest, so a nightly re-fetch that found nothing keeps a night quiet. "refiled"
+               is a new time for a filed job. A "trial_only" event says it was filed only aside in
+               the shadow run, so it is not in NG Jobs, whatever came before, until the next "filed".
     pending    "list..." waits on the job list; "fetch_2" is the second fetch; other "fetch..."
                kinds are the first or a retry; "refetch..." (filed jobs) doesn't show. A "file..."
                operation with a note is a refused filing: BLOCKED, with the refusal as its note,
@@ -25,6 +28,8 @@ What each fact means here, which is the contract with whoever writes it:
     dev        Open items, by job. A code in templates.ALARMS is that alarm standing, so close it
                when the alarm clears. urgent turns the tray red. told_jim_at, set by the night's
                work, puts the item on the next digest's For you line, so it is told once.
+               pipeline.FETCH_STUCK goes on Your list at once; a code in
+               pipeline.CLOSED_BY_FILING says nothing of a job that has filed.
     outbox     ref "digest:<day>" marks a digest, whose time is what "since the last digest"
                means. Written over 5 minutes ago with no receipt turns the tray red.
     state      "paused", as interlock.is_paused reads it, so the digest and the filing never
@@ -47,6 +52,9 @@ from ngrunner.clock import Clock, fmt_clock, fmt_date, fmt_day, pacific_day
 from ngrunner.config import Settings
 from ngrunner.digest import DigestView, JobLine
 from ngrunner.fab import install_date
+from ngrunner.intake.pipeline import (
+    CLOSED_BY_FILING, FETCH_STUCK, TRIAL_ONLY_EVENT, all_filed_facts, filed_facts, filed_note_of,
+)
 from ngrunner.interlock import is_paused
 from ngrunner.messages import Message, templates
 from ngrunner.messages.lint import ABOUT_ITSELF, check_line, lint
@@ -62,14 +70,21 @@ DIGEST_REF = "digest:"                 # messages.outbox.outbox_file's ref on a 
 EXPORTED_AT_KEY = "fab_exported_at"    # state keys
 TOASTS_KEY = "toast_setting"
 BLOCKED_EVENT = "blocked"
+REFILED_EVENT = "refiled"
 OLD_FOLDER_WORDS = "old folder"        # in a refusal's note: its folder is in NG Jobs Old
+PAUSED_WORDS = "paused"                # in a refusal's note: only the pause said no
 _TOLD_ELSEWHERE = ("dev_told_jim",)    # the night's note of a stuck job: For you says it already
 
 _NO_RECEIPT_FOR = timedelta(minutes=5)
 _EXPORT_STALE_AFTER = timedelta(minutes=30)
 _DEV_TOLD_AFTER = timedelta(hours=48)
+_BLOCKED_COUNTS_AFTER = timedelta(hours=1)
 _INSTALL_SOON_DAYS = 5
 _LIST_STALE_AFTER = timedelta(hours=1)
+_ALARM_COUNTS_AFTER = timedelta(hours=1)
+_BOARD_KEEPS = timedelta(days=30)      # as long as a filed job is re-fetched: nothing happens after
+_ON_YOUR_LIST = ("ng_jobs_unreachable",)    # an alarm that holds up new rows, once it has stood
+_TRAY_SAYS = ("fab_export_stale", "job_list_stale", "board_failed")   # never "nothing is waiting"
 
 _TICKS = (
     ("row", "On the Fab Schedule"),
@@ -85,6 +100,8 @@ PAUSED_STEP = "Paused: nothing is filed until you resume it at the PC"
 LIST_STEP = "Waiting for a fresh job list"
 NEW_ROW_STEP = "Waiting for the next Fab export, in case this row is still being typed"
 NEXT_CHECK_STEP = "Starts at NG Runner's next check"
+NG_JOBS_STEP = "NG Jobs can't be read, so this row waits; check that this PC can reach that folder"
+TRIAL_ONLY_STEP = "Trial run only, not in NG Jobs"
 ASKED_STEP = "Waiting for the full job name in the row"
 NO_JOB_STEP = "No job found. Waiting for the full job name in the row, or for add job"
 OBSERVED_STEP = ("Its folder was there at install, so NG Runner only watches it; work it in chat"
@@ -116,6 +133,9 @@ class _JobFacts:
     ended: tuple[PendingRecord, ...]
     dev: tuple[DevRecord, ...]
     filed_at: datetime | None
+    blocked_since: datetime | None
+    facts: dict[str, Any] | None = None     # pipeline.filed_facts, read once for all the jobs
+    trial_only: bool = False
 
 
 @dataclass(frozen=True)
@@ -129,6 +149,7 @@ class _Facts:
     events: tuple[EventRecord, ...]
     names: dict[str, str]
     overdue: bool
+    standing: frozenset[str] = frozenset()  # the codes of the alarms the store says stand
 
 
 def _read(store: Store, now: datetime) -> _Facts:
@@ -150,6 +171,7 @@ def _read(store: Store, now: datetime) -> _Facts:
         events=events,
         names=names,
         overdue=_no_receipt(store, now),
+        standing=_standing(store, now, dev),
     )
 
 
@@ -164,8 +186,21 @@ def _job_facts(
     """Grouped once, not searched per job: every page and tray update reads all the jobs, and
     jobs and their nightly re-fetches only pile up. Finished operations are left out but for
     those that ended badly, for the same reason."""
-    filed = {e.studio_id: e.at for e in events if e.kind == FILED_EVENT and e.lane != "DEV"}
+    filed: dict[str | None, datetime] = {}
+    trial_only: set[str | None] = set()
+    for event in events:                       # oldest first, so the last word on a job stands
+        if event.lane == "DEV":
+            continue
+        if event.kind in (FILED_EVENT, REFILED_EVENT):
+            filed[event.studio_id] = event.at
+            trial_only.discard(event.studio_id)
+        elif event.kind == TRIAL_ONLY_EVENT:
+            filed.pop(event.studio_id, None)
+            trial_only.add(event.studio_id)
+    facts_of = all_filed_facts(store)
     rows_of, cards_of, dev_of = _by_job(rows), _by_job(cards), _by_job(dev)
+    refusals_of = _by_job(e for e in events
+                          if e.kind in (FILED_EVENT, BLOCKED_EVENT) and e.lane != "DEV")
     open_of = _by_job(list_pending(store))
     ended_of = _by_job(sorted((*list_pending(store, state="failed"),
                                *list_pending(store, state="expired")), key=lambda p: p.due_at))
@@ -177,12 +212,28 @@ def _job_facts(
             pending=tuple(open_of.get(job.studio_id, ())),
             ended=tuple(ended_of.get(job.studio_id, ())),
             dev=tuple(dev_of.get(job.studio_id, ())),
-            filed_at=filed.get(job.studio_id) or max(
+            filed_at=None if job.studio_id in trial_only else filed.get(job.studio_id) or max(
                 (r.updated_at for r in rows_of.get(job.studio_id, ()) if r.state == "filed"),
                 default=None),
+            blocked_since=_blocked_since(refusals_of.get(job.studio_id, ())),
+            facts=facts_of.get(job.studio_id),
+            trial_only=job.studio_id in trial_only,
         )
         for job in jobs
     )
+
+
+def _blocked_since(events: Iterable[EventRecord]) -> datetime | None:
+    """When a job's refusals began, from its "filed" and "blocked" events, oldest first: the first
+    "blocked" since it was last filed, and since the last refusal that was only the pause. A reason
+    that changes doesn't restart it, as the job has still not been filed all that time."""
+    since = None
+    for event in events:
+        if event.kind == FILED_EVENT or _only_the_pause(event.text):
+            since = None
+        elif since is None:
+            since = event.at
+    return since
 
 
 def _by_job(records: Iterable[Any]) -> dict[str | None, list[Any]]:
@@ -215,7 +266,7 @@ def board_view(
     facts = _read(store, clock.now())
     return BoardView(
         jobs=_board_rows(store, facts, paused=paused),
-        your_list=tuple(item for _, item in _your_list(facts)),
+        your_list=tuple(item for _, item in _your_list(facts, paused=paused)),
         cards=tuple(_card_view(card, facts.now) for card in facts.cards),
         health=replace(health, alarms=tuple(dict.fromkeys(
             (*_alarms(store, facts, paused=paused), *health.alarms)))),
@@ -226,9 +277,23 @@ def board_view(
 
 
 def _board_rows(store: Store, facts: _Facts, *, paused: bool) -> tuple[JobRow, ...]:
-    rows = [_job_row(store, j, facts.now, paused=paused) for j in facts.jobs]
-    rows += [_free_row(row, _row_cards(row, facts), paused=paused) for row in facts.free_rows]
+    rows = [_job_row(store, j, facts.now, paused=paused) for j in facts.jobs
+            if _still_on_the_board(j, facts.now)]
+    away = "ng_jobs_unreachable" in facts.standing
+    rows += [_free_row(row, _row_cards(row, facts), paused=paused, away=away)
+             for row in facts.free_rows]
     return tuple(sorted(rows, key=_board_order))
+
+
+def _still_on_the_board(j: _JobFacts, now: datetime) -> bool:
+    """A job stays while anything is open on it or its row is on the sheet, and for 30 days after.
+    Then nothing more happens to it, and every page would go on reading it: jobs only pile up. Its
+    folder, its events in History and "add job" still know it."""
+    if j.cards or j.dev or any(r.state != "gone" for r in j.rows):
+        return True
+    if any(not p.kind.startswith("refetch") for p in j.pending):
+        return True
+    return now - (j.filed_at or j.job.updated_at) <= _BOARD_KEEPS
 
 
 def _board_order(row: JobRow) -> tuple[bool, date, str]:
@@ -245,12 +310,13 @@ def _job_row(store: Store, j: _JobFacts, now: datetime, *, paused: bool) -> JobR
         name=j.job.name,
         install=_install(*_install_cells(j)),
         ticks=_job_ticks(store, j, overlay),
-        next_step=_next_step(j, overlay, now),
+        next_step=_next_step(store, j, overlay, now),
         overlay=overlay,
     )
 
 
-def _free_row(row: FabRowRecord, cards: tuple[CardRecord, ...], *, paused: bool) -> JobRow:
+def _free_row(row: FabRowRecord, cards: tuple[CardRecord, ...], *, paused: bool,
+              away: bool = False) -> JobRow:
     """A Fab row with no job yet: a row waiting on its which-job card still shows."""
     asking = bool(cards) or row.state in ("asked", "none")
     return JobRow(
@@ -258,16 +324,19 @@ def _free_row(row: FabRowRecord, cards: tuple[CardRecord, ...], *, paused: bool)
         name=row.text,
         install=_install(row.install, row.first_seen),
         ticks=_ticks(row="done", job="blocked" if asking else "todo"),
-        next_step=_free_step(row, cards, paused=paused),
+        next_step=_free_step(row, cards, paused=paused, away=away),
         overlay="PAUSED" if paused else ("WAITING" if not asking else None),
     )
 
 
-def _free_step(row: FabRowRecord, cards: tuple[CardRecord, ...], *, paused: bool) -> str:
+def _free_step(row: FabRowRecord, cards: tuple[CardRecord, ...], *, paused: bool,
+               away: bool = False) -> str:
     if cards:
         return _card_step(cards[0])
     if paused:
         return PAUSED_STEP
+    if away and row.state in ("new", "waiting_list"):
+        return NG_JOBS_STEP
     if row.state == "waiting_list":
         return LIST_STEP
     if row.state == "new":
@@ -304,7 +373,13 @@ def _job_ticks(store: Store, j: _JobFacts, overlay: str | None) -> tuple[Tick, .
 
 
 def _summary_tick(store: Store, j: _JobFacts, kinds: set[str]) -> str:
-    if j.filed_at or _agreed(store, j.job.studio_id):
+    if j.filed_at:
+        return "done"
+    if "design_mismatch" in kinds:             # two renders agreeing doesn't settle it: Jim does
+        return "blocked"
+    if j.trial_only:                           # what agreed then was the trial run's
+        return "blocked" if "fetch_failed" in kinds else "todo"
+    if _agreed(store, j.job.studio_id):
         return "done"
     return "blocked" if "fetch_failed" in kinds else "todo"
 
@@ -368,6 +443,10 @@ def _refusal(j: _JobFacts) -> PendingRecord | None:
                 None)
 
 
+def _only_the_pause(note: str | None) -> bool:
+    return PAUSED_WORDS in (note or "").casefold()
+
+
 def _old_folder_note(j: _JobFacts) -> str | None:
     """A folder in NG Jobs Old gets no write and no second folder at the top: nothing to fix, as
     with a folder found at install, and Jim works it in chat as before (ruling 12d)."""
@@ -389,19 +468,28 @@ def _not_run_reason(j: _JobFacts) -> str | None:
     work and no card left open."""
     if j.filed_at or j.cards or j.pending or {"new", "waiting_list"} & {r.state for r in j.rows}:
         return None
+    if j.trial_only:
+        return "its row left the Fab Schedule before NG Runner went live"
     if j.ended:
         return _plain(j.ended[-1].note) or "a step stopped before it finished"
     return "a problem is with Sulaiman" if j.dev else None
 
 
-def _next_step(j: _JobFacts, overlay: str | None, now: datetime) -> str:
+def _next_step(store: Store, j: _JobFacts, overlay: str | None, now: datetime) -> str:
+    step = _step_of(store, j, overlay, now)
+    return f"{TRIAL_ONLY_STEP}. {step}" if j.trial_only else step
+
+
+def _step_of(store: Store, j: _JobFacts, overlay: str | None, now: datetime) -> str:
     refusal = _refusal(j)
     if overlay == "BLOCKED" and refusal is not None:
         return _blocked_step(refusal)
     if j.cards:
         return _card_step(j.cards[0])
     if j.filed_at:
-        return f"Filed {fmt_date(j.filed_at)} {fmt_clock(j.filed_at)}"
+        when = f"Filed {fmt_date(j.filed_at)} {fmt_clock(j.filed_at)}"
+        note = filed_note_of(j.facts) if j.facts else ""
+        return f"{when}, {note}" if note else when
     if overlay == "OBSERVED":
         reasons = (_plain(_old_folder_note(j)), *(_plain(r.reason) for r in j.rows))
         return next(filter(None, reasons), OBSERVED_STEP)
@@ -448,10 +536,7 @@ def _card_step(card: CardRecord) -> str:
 
 
 def _question(card: Card | CardRecord) -> str:
-    """A card's question, to go on in a line: "IC changed, which render governs?". The remake card
-    is a "row changed" card with its own choices (templates.remake_card)."""
-    if tuple(card.choices) == templates.REMAKE_CHOICES:
-        return "is this a remake?"
+    """A card's question, to go on in a line: "IC changed, which render governs?"."""
     question = templates.QUESTIONS.get(card.kind, "A question for you")
     return _first_lower(question).replace(": ", ", ")
 
@@ -473,6 +558,12 @@ def _plain(text: str | None) -> str | None:
     return line if " " in line and not check_line(line) else None
 
 
+def settled_by_filing(store: Store, item: DevRecord) -> bool:
+    """A DEV item about a job's fetching or filing, on a job that has filed: nothing waits on NG
+    Runner, so the night doesn't tell Jim it does (supervisor._night_tell_jim)."""
+    return item.code in CLOSED_BY_FILING and filed_facts(store, item.studio_id or "") is not None
+
+
 def _first_lower(text: str) -> str:
     """Lowercase its first letter, unless it starts a capitalised word like IC."""
     return text[0].lower() + text[1:] if text[1:2].islower() else text
@@ -486,30 +577,73 @@ def _card_view(card: Card, now: datetime) -> CardView:
                     age_days(card, now))
 
 
-def _your_list(facts: _Facts) -> list[tuple[datetime, ListItem]]:
-    """Open cards, and DEV items over 48 hours old that name a job, one line per job, oldest
-    first, with when each was raised. A DEV item about no job leaves nothing to work in chat, so
-    it stays with Sulaiman. Nothing pins items in P1a; a later phase's pins join here."""
+def _your_list(facts: _Facts, *, paused: bool) -> list[tuple[datetime, ListItem]]:
+    """Open cards, DEV items over 48 hours old that name a job, one line per job, and jobs BLOCKED
+    for over an hour, oldest first, with when each was raised. A DEV item about no job leaves
+    nothing to work in chat, so it stays with Sulaiman. Nothing pins items in P1a; a later phase's
+    pins join here."""
     items = [(card.created_at, ListItem(
         f"{templates.card_subject(card)}: {_ended(_question(card))} Card {card.id}.",
         job=card.job, age_days=age_days(card, facts.now), card_id=card.id,
     )) for card in facts.cards]
+    for item in facts.dev:     # what holds up new rows goes to Jim once it has stood an hour
+        if item.code in _ON_YOUR_LIST and facts.now - item.at > _ALARM_COUNTS_AFTER:
+            items.append((item.at, ListItem(_ended(templates.ALARMS[item.code]),
+                                            age_days=(facts.now - item.at) // timedelta(days=1))))
     for sid, raised in _stuck(facts).items():
         name = facts.names[sid]
         items.append((raised, ListItem(
             _ended(templates.stuck(name)), job=name,
             age_days=(facts.now - raised) // timedelta(days=1),
         )))
+    for item in facts.dev:     # all filing may be held up: it can't wait 48 hours like the rest
+        if item.code == FETCH_STUCK and item.studio_id in facts.names:
+            name = facts.names[item.studio_id]
+            items.append((item.at, ListItem(
+                _ended(templates.fetch_stuck(name)), job=name,
+                age_days=(facts.now - item.at) // timedelta(days=1),
+            )))
+    for j in facts.jobs:
+        blocked = _blocked_item(j, facts.now, paused=paused)
+        if blocked is not None:
+            items.append(blocked)
     return sorted(items, key=lambda item: item[0])
 
 
+def _blocked_item(j: _JobFacts, now: datetime, *, paused: bool) -> tuple[datetime, ListItem] | None:
+    """A job BLOCKED for over an hour, so the tray goes amber: silence is never success. A pause
+    doesn't count, nor a refusal only the pause caused: the tray is grey then, or it clears by
+    itself. A refusal with no event to date it can't be shown to be recent, so it counts."""
+    refusal = _refusal(j)
+    if (refusal is None or _overlay(j, paused=paused) != "BLOCKED"
+            or _only_the_pause(refusal.note)):
+        return None
+    since = j.blocked_since or now
+    if j.blocked_since is not None and now - since <= _BLOCKED_COUNTS_AFTER:
+        return None
+    return since, ListItem(f"{j.job.name}: {_ended(_blocked_step(refusal))}", job=j.job.name,
+                           age_days=(now - since) // timedelta(days=1))
+
+
 def _stuck(facts: _Facts) -> dict[str, datetime]:
-    """The jobs with an open DEV item over 48 hours old, and when the oldest was raised."""
+    """The jobs with an open DEV item over 48 hours old, and when the oldest was raised. An item
+    about a job's fetching says nothing of a job that has filed, and amber that never clears teaches
+    people to ignore amber."""
     stuck: dict[str, datetime] = {}
+    filed = _filed_ids(facts)
     for item in facts.dev:  # oldest first, so the first per job is its oldest
-        if item.studio_id and facts.now - item.at > _DEV_TOLD_AFTER:
+        if (item.studio_id and item.code != FETCH_STUCK and facts.now - item.at > _DEV_TOLD_AFTER
+                and not _settled(item, filed)):
             stuck.setdefault(item.studio_id, item.at)
     return stuck
+
+
+def _filed_ids(facts: _Facts) -> set[str]:
+    return {j.job.studio_id for j in facts.jobs if j.filed_at}
+
+
+def _settled(item: DevRecord, filed: set[str]) -> bool:
+    return item.code in CLOSED_BY_FILING and item.studio_id in filed
 
 
 def _ended(text: str) -> str:
@@ -536,7 +670,7 @@ def tray_state(
 
 
 def _tray(facts: _Facts, *, unwell: bool, paused: bool, shadow: bool) -> TrayState:
-    count = len(_your_list(facts))
+    count = len(_your_list(facts, paused=paused))
     colour, words = _tray_words(facts, count, unwell=unwell, paused=paused)
     return TrayState(colour, count, tray_tooltip(words, shadow=shadow))
 
@@ -550,9 +684,13 @@ def _tray_words(facts: _Facts, count: int, *, unwell: bool, paused: bool) -> tup
         return "red", "NG Runner can't carry on until Sulaiman acts; the board still shows all."
     if unwell:
         return "red", "NG Runner is not well; the Health page on the board says why."
+    alarm = next((templates.ALARMS[code] for code in _TRAY_SAYS if code in facts.standing), None)
     if count:
-        return "amber", f"{count} item is on Your list." if count == 1 else (
+        words = f"{count} item is on Your list." if count == 1 else (
             f"{count} items are on Your list.")
+        return "amber", f"{words} {_ended(alarm)}" if alarm else words
+    if alarm:
+        return "amber", _ended(alarm)
     return "green", "NG Runner is running, and nothing is waiting on you."
 
 
@@ -568,20 +706,26 @@ def alarms(store: Store, clock: Clock, *, paused: bool | None = None) -> tuple[s
 
 
 def _alarms(store: Store, facts: _Facts, *, paused: bool | None) -> tuple[str, ...]:
-    known = {
-        "paused": is_paused(store) if paused is None else paused,
-        "no_receipts": facts.overdue,
-        "job_list_stale": _list_is_stale(store, facts.now),
-    }
+    codes = set(facts.standing)
+    if is_paused(store) if paused is None else paused:
+        codes.add("paused")
+    if facts.overdue:
+        codes.add("no_receipts")
+    return tuple(words for code, words in templates.ALARMS.items() if code in codes)
+
+
+def _standing(store: Store, now: datetime, dev: Iterable[DevRecord]) -> frozenset[str]:
+    """The alarms the store says stand, apart from a pause and missing receipts, which every caller
+    has to hand. What the state table can say decides, whatever the DEV lane says."""
+    known = {"job_list_stale": _list_is_stale(store, now)}
     exported = get_state_time(store, EXPORTED_AT_KEY)
     if exported is not None:
-        known["fab_export_stale"] = facts.now - exported > _EXPORT_STALE_AFTER
+        known["fab_export_stale"] = now - exported > _EXPORT_STALE_AFTER
     toasts = get_state(store, TOASTS_KEY)
     if toasts in ("on", "off"):
         known["toasts_off"] = toasts == "off"
-    codes = {item.code for item in facts.dev} - set(known)
-    codes |= {code for code, stands in known.items() if stands}
-    return tuple(words for code, words in templates.ALARMS.items() if code in codes)
+    codes = {item.code for item in dev} - set(known) - {"paused", "no_receipts"}
+    return frozenset(codes | {code for code, stands in known.items() if stands})
 
 
 def _list_is_stale(store: Store, now: datetime) -> bool:
@@ -607,13 +751,13 @@ def digest_view(store: Store, settings: Settings | None, clock: Clock) -> Digest
     it adds templates.missed_digest to view.owner with dataclasses.replace."""
     now = clock.now()
     facts = _read(store, now)
-    day, since = pacific_day(now), _last_digest(store)
-    items = _your_list(facts)
+    day, since, paused = pacific_day(now), _last_digest(store), is_paused(store)
+    items = _your_list(facts, paused=paused)
     return DigestView(
         now=now,
         owner=(*_installing_soon(facts, day), *_alarms(store, facts, paused=None),
                *_told_stuck(facts, since)),
-        jobs=_touched(facts, since, paused=is_paused(store), day=day),
+        jobs=_touched(store, facts, since, paused=paused, day=day),
         cards=facts.cards,
         open_items=len(items),
         oldest_item=items[0][0] if items else None,
@@ -624,8 +768,10 @@ def _told_stuck(facts: _Facts, since: datetime | None) -> list[str]:
     """Each DEV item the night's work marked told since the last digest: the digest is what tells
     Jim (the only message he gets in P1a), once, with the manual fallback. One not marked yet
     waits for the next digest, and is on Your list meanwhile."""
+    filed = _filed_ids(facts)
     names = dict.fromkeys(facts.names[i.studio_id] for i in facts.dev if i.studio_id
-                          and i.told_jim_at is not None and _since(i.told_jim_at, since))
+                          and i.told_jim_at is not None and _since(i.told_jim_at, since)
+                          and not _settled(i, filed))
     return [_fit(templates.stuck(name), "A job has waited on NG Runner for over 2 days; see Your"
                                         " list on the board") for name in names]
 
@@ -650,7 +796,7 @@ def _last_digest(store: Store) -> datetime | None:
                 if (m.ref or "").startswith(DIGEST_REF) and m.state != "failed"), default=None)
 
 
-def _touched(facts: _Facts, since: datetime | None, *, paused: bool, day: date
+def _touched(store: Store, facts: _Facts, since: datetime | None, *, paused: bool, day: date
              ) -> tuple[JobLine, ...]:
     """One line per job touched since the last digest, first touched first, then one per new
     which-job card. A card due back today comes back by itself (digest.compose), so a row's
@@ -658,7 +804,7 @@ def _touched(facts: _Facts, since: datetime | None, *, paused: bool, day: date
     ids = [e.studio_id for e in facts.events if _touches(e, since)]
     ids += [c.studio_id for c in facts.records if c.studio_id and _since(c.created_at, since)]
     jobs = {j.job.studio_id: j for j in facts.jobs}
-    lines = [_job_line(jobs[sid], facts.now, paused=paused, day=day)
+    lines = [_job_line(store, jobs[sid], facts.now, paused=paused, day=day)
              for sid in dict.fromkeys(ids) if sid in jobs]
     lines += [_fit_line(templates.card_subject(card), _card_digest(card), day=day)
               for card in facts.cards
@@ -678,9 +824,9 @@ def _since(when: datetime, since: datetime | None) -> bool:
     return since is None or when >= since
 
 
-def _job_line(j: _JobFacts, now: datetime, *, paused: bool, day: date) -> JobLine:
-    return _fit_line(j.job.name, _digest_text(_next_step(j, _overlay(j, paused=paused), now)),
-                     day=day)
+def _job_line(store: Store, j: _JobFacts, now: datetime, *, paused: bool, day: date) -> JobLine:
+    return _fit_line(j.job.name,
+                     _digest_text(_next_step(store, j, _overlay(j, paused=paused), now)), day=day)
 
 
 _CARD_STEP = re.compile(r"Card (?P<id>\S+): (?P<question>.*)")

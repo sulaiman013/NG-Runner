@@ -191,6 +191,28 @@ Measured facts behind them are in AGENTS.md: Before filing goes live, item 8. Th
 | A BLOCKED job | It counts on Your list once it has been blocked for over an hour, so the tray goes amber. A pause doesn't count, since the tray is already grey | Silence is never success. The tray stayed green while a job was BLOCKED |
 | `match._typed_variant` | It gets a public name, `typed_variant` | So `branch.py` stops importing a private one |
 | A rename after filing | Raising one "IC changed" card stands. The folder is never renamed | PROJECT NAME is part of the fingerprint, so the content really does differ. The pipeline owner was right not to suppress it, since that could hide a real change, and Jim settles it with one tap |
+| Shadow mode and NG Jobs | Shadow mode writes nothing in NG Jobs, including for a job filed there while live: "File the new one" files aside in `control\shadow\`, its notes wait until live, and `p1a_interlock` refuses any NG Jobs target in shadow, so no path can forget it. Live files in NG Jobs even for a job filed aside: a missing file there is a new filing, and one that exists is compared, never overwritten blindly | `set_mode` and the integration spec both say shadow files only into the control folder. A job filed live kept `where: ng_jobs`, so "File the new one" replaced the real summary during a shadow run, and a job filed aside and answered live changed only the copy pruned after 30 days |
+
+### After the three independent reviews (wave 3)
+
+Three reviews of the running app (safety, the running app itself, and breaking the code on purpose) found 35 problems between them. These are the rulings their fixes made.
+
+| Question | Ruling |
+|---|---|
+| Can shadow mode write in NG Jobs? | Never. The interlock refuses it, and notes wait until live |
+| What happens to jobs filed in shadow at go-live? | Each one whose row is on the sheet, or that has no row, goes through a fresh fetch and files in NG Jobs, and Barbara gets her "Filed as" then. A folder Jim made is compared and never overwritten. One whose rows have left the sheet stays aside, reads "Trial run only, not in NG Jobs", and `add job` or a new row brings it back |
+| A Studio sign-in or a fetch that hangs? | The sign-in has 7 minutes. A fetch over 15 minutes frees its slot, opens DEV `fetch_stuck` and turns the tray amber at once, and whatever it brings back later is dropped |
+| A wrong password in a crash loop? | The last sign-in's time is kept in the store, so a restart can't try again within the hour. A browser that hangs stays parked until the process exits |
+| A job past its deadline that was never tried? | It gets the 24-hour card an hour after it is first seen past the deadline, which lets a PC that slept make its attempt first |
+| Does the night's re-fetch check the proposal? | Yes. The card gives the counts, or says the designs could not be cross-checked |
+| A design card whose content or counts moved? | It is replaced, and a late answer to the old one is logged and ignored |
+| Two sales with one name? | The second is BLOCKED with DEV `same_folder`, since one folder can't hold both |
+| NG Jobs unreadable? | `ng_jobs_unreachable` is an alarm. After an hour the row is on Your list and the tray is amber, and its next step says why |
+| A board or tray that can't start? | `board_failed` and `tray_failed` are alarms, retried every minute and closed on success |
+| DEV items that stay open for good? | Each closes when the thing works again: a job's fetch items on filing, a task's on its next clean pass, the heartbeat, backup, log and night-step items on their next success. `message_replaced` stays until `NGRunner.exe dev-close` closes it, because it names wording to fix |
+| Old jobs on the board? | Filed jobs with nothing open and no row on the sheet leave the board after 30 days. There is no "show all" view yet |
+| What does an "IC changed" card say? | What differs (`intake/report_diff.py`), since Studio's report changes with its catalog: part numbers or names only, text, or drawings. It describes and never decides |
+| A multi-day install (`10/29-30`)? | It counts as its first day, the day the job must be ready |
 
 ## Matching (settled)
 

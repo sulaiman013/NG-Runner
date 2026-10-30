@@ -188,3 +188,12 @@ def test_no_archived_summary_gets_the_other_branch_than_the_one_jim_filed_it_as(
             wrong.append(f"n{i:02d}")
     assert wrong == []
     assert seen["garage", "garage"] == sum(n for (filed, _), n in seen.items() if filed == "garage")
+
+
+def test_branch_reads_a_rows_variant_through_matchs_public_name():
+    import ngrunner.intake.branch as branch
+    from ngrunner import match
+
+    assert branch.typed_variant is match.typed_variant
+    assert not hasattr(match, "_typed_variant") and not hasattr(branch, "_typed_variant")
+    assert branch_of([("Testerson - Primary Closet", "Closet")], "Testerson_Gar").kind == "unclear"

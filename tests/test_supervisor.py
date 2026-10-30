@@ -27,10 +27,14 @@ import requests
 from ngrunner import backup, jobmodel, launcher, single, supervisor, toasts
 from ngrunner.clock import PACIFIC, FakeClock, pacific_day
 from ngrunner.config import AppPaths, Settings, load_settings, save_settings
+from ngrunner.intake.studio_designs import StudioSite, StudioUnavailable
 from ngrunner.joblist import RenderClient
-from ngrunner.secrets import MemorySecrets, SecretsUnavailable
+from ngrunner.messages import Message, templates
+from ngrunner.messages.lint import check_line, lint
+from ngrunner.secrets import MemorySecrets, SecretsError, SecretsUnavailable
 from ngrunner.signing import key_from_text, new_id, new_key, open_envelope, seal
 from ngrunner.store import (
+    get_state_time,
     MIGRATIONS,
     Store,
     add_card,
@@ -79,6 +83,7 @@ class FakeCtx:
     messenger: Any
     mode: str
     stop_requested: Any = None
+    studio: Any = None
 
     def commit(self, writes: list) -> Any:
         return commit_write(writes, roots=self.roots, interlock=lambda paths: None)
@@ -92,6 +97,7 @@ class FakePipeline:
         self.added: list[dict[str, Any]] = []
         self.fail: Exception | None = None
         self.stopped = 0
+        self.went_live = 0
 
     def tick(self, ctx: FakeCtx) -> None:
         self.ticks.append(ctx)
@@ -105,6 +111,9 @@ class FakePipeline:
 
     def stop_work(self, ctx: FakeCtx) -> None:
         self.stopped += 1
+
+    def go_live(self, db: Any, now: Any) -> None:
+        self.went_live += 1
 
 
 class FakeMessenger:
@@ -710,7 +719,7 @@ def test_a_blank_backup_key_is_a_board_item_and_not_a_failed_night(make_world):
     world = make_world(at(10, 30, 1, 25))
     sup = world.start()
     world.run(sup, minutes=6)
-    assert supervisor.NO_BACKUP_KEY in [item.text for item in sup.board().your_list]
+    assert supervisor.NO_BACKUP_KEY in sup.board().health.alarms
     assert sup.board().tray.colour != "red"
     assert not (world.control / "backups").exists()
     assert get_state(world.store, "night_key") == "2026-10-30"
@@ -791,6 +800,27 @@ def test_a_failed_heartbeat_is_one_dev_item(make_world, monkeypatch):
         ok=False, reason="Drive is away."))
     world.run(sup, minutes=11)
     assert world.dev_codes().count("heartbeat_failed") == 1
+
+
+def test_a_heartbeat_that_gets_through_again_closes_its_item(make_world, monkeypatch):
+    world = make_world(at(10, 30, 12))
+    sup = world.start()
+    with monkeypatch.context() as away:
+        away.setattr(FakeCtx, "commit", lambda self, writes: SimpleNamespace(
+            ok=False, reason="Drive is away."))
+        world.run(sup, minutes=11)
+    assert "heartbeat_failed" in world.dev_codes()
+    world.run(sup, minutes=11)
+    assert "heartbeat_failed" not in world.dev_codes()
+
+
+def test_the_last_studio_sign_in_survives_in_the_store(make_world):
+    world = make_world(at(10, 30, 12))
+    sup = world.start()
+    assert sup._last_studio_sign_in() is None
+    sup._note_studio_sign_in(world.clock.now())
+    assert sup._last_studio_sign_in() == world.clock.now()
+    assert get_state_time(world.store, "studio.last_sign_in") == world.clock.now()
 
 
 # ----- the board's actions
@@ -1278,12 +1308,241 @@ def test_a_card_due_back_is_marked_when_the_digest_brings_it_back(make_world):
     assert get_card(world.store, record.id).reminded_at == reminded
 
 
+def real_messenger(world: World, monkeypatch: Any) -> None:
+    from ngrunner import messenger
+
+    monkeypatch.setattr(supervisor, "_seams", lambda: SimpleNamespace(
+        pipeline=world.pipeline, messenger=messenger, jobmodel=jobmodel))
+
+
+def test_a_digest_the_lint_replaced_marks_no_card_so_the_next_one_brings_it_back(
+        make_world, monkeypatch):
+    world = make_world(at(10, 28, 12))
+    real_messenger(world, monkeypatch)
+    sup = world.start()
+    record = card(world)
+    kept = supervisor.digest.compose
+    bad = Message("digest", "Friday's list", ("1. It is in C:\\Users\\Testerson\\Fab.pdf",))
+    assert lint(bad)
+    monkeypatch.setattr(supervisor.digest, "compose", lambda view: bad)
+    world.clock.set(at(10, 29, 12, 30))
+    sup.run_due(world.clock.now())
+    sent, = world.sent(ref="digest:2026-10-29")
+    assert sent.lines != bad.lines                      # the fixed template went instead
+    assert "message_replaced" in world.dev_codes()
+    assert get_card(world.store, record.id).reminded_at == ()
+    monkeypatch.setattr(supervisor.digest, "compose", kept)
+    world.clock.set(at(10, 30, 6, 30))
+    sup.run_due(world.clock.now())
+    assert get_card(world.store, record.id).reminded_at != ()
+
+
+def test_a_digest_redirected_in_shadow_mode_still_marks_its_cards(make_world, monkeypatch):
+    world = make_world(at(10, 28, 12), mode="shadow")
+    real_messenger(world, monkeypatch)
+    sup = world.start()
+    record = card(world)
+    world.clock.set(at(10, 29, 12, 30))
+    sup.run_due(world.clock.now())
+    sent, = world.sent(ref="digest:2026-10-29")
+    assert sent.recipient == "sulaiman" and sent.subject.startswith("SHADOW")
+    assert get_card(world.store, record.id).reminded_at != ()
+
+
+@pytest.mark.parametrize("restart_at", [at(10, 30, 1, 45), at(10, 31, 0, 10)],
+                         ids=["the same night", "after midnight"])
+def test_a_crash_after_the_nights_lines_went_sends_neither_again(make_world, restart_at):
+    """The crash came after the sends, before their steps were noted: the night runs them again,
+    and finds their refs in the outbox."""
+    world = make_world(at(10, 30, 1, 25))
+    sup = world.start()
+    open_dev(world.store, at=world.clock.now(), code="a_problem", text="A problem.")
+    world.run(sup, minutes=6)
+    assert get_state(world.store, "night_key") == "2026-10-30"
+    sent = [(row.id, row.ref) for row in world.sent(to="sulaiman")]
+    assert {ref for _, ref in sent} == {"ran:2026-10-29", "dev:2026-10-30"}
+    set_state(world.store, "night_key", "2026-10-29")
+    set_state(world.store, "night_steps", json.dumps({"key": "2026-10-30", "done": ["backup"]}))
+    world.clock.set(restart_at)
+    sup.run_due(world.clock.now())
+    assert get_state(world.store, "night_key") == "2026-10-30"
+    assert [(row.id, row.ref) for row in world.sent(to="sulaiman")] == sent
+
+
+def test_the_real_messenger_keeps_the_refs_the_night_looks_for(make_world, monkeypatch):
+    world = make_world(at(10, 30, 1, 25))
+    real_messenger(world, monkeypatch)
+    sup = world.start()
+    open_dev(world.store, at=world.clock.now(), code="a_problem", text="A problem.")
+    world.run(sup, minutes=6)
+    sent = sorted(row.ref for row in world.sent(to="sulaiman"))
+    assert sent == ["dev:2026-10-30", "ran:2026-10-29"]
+    set_state(world.store, "night_key", "2026-10-29")
+    set_state(world.store, "night_steps", "{}")
+    world.run(sup, minutes=1)
+    assert sorted(row.ref for row in world.sent(to="sulaiman")) == sent
+
+
+def test_the_next_nights_lines_still_go(make_world):
+    world = make_world(at(10, 30, 1, 25))
+    sup = world.start()
+    open_dev(world.store, at=world.clock.now(), code="a_problem", text="A problem.")
+    world.run(sup, minutes=6)
+    world.clock.set(at(10, 31, 1, 30))
+    sup.run_due(world.clock.now())
+    assert {row.ref for row in world.sent(to="sulaiman")} == {
+        "ran:2026-10-29", "dev:2026-10-30", "ran:2026-10-30", "dev:2026-10-31"}
+
+
+@pytest.mark.parametrize("flag, paused", [("yes", True), ("no", False), ("anything else", True)])
+def test_the_tray_and_the_interlock_read_the_paused_flag_alike(make_world, flag, paused):
+    from ngrunner.interlock import is_paused
+
+    world = make_world(at(10, 30, 12))
+    sup = world.start()
+    set_state(world.store, "paused", flag)
+    assert sup._is_paused() is is_paused(world.store) is paused
+    assert sup.board().paused is paused
+    assert (sup.board().tray.colour == "grey") is paused
+
+
+# ----- Ctx.studio, from the saved login
+
+
+STUDIO_LOGIN = {"studio_username": "testerson@example.com", "studio_password": "not-a-real-one"}
+
+
+class StudioDown:
+    """Stands in for Studio's address: it says who asked, and that it is down. No network."""
+
+    def __init__(self) -> None:
+        self.asked: list[tuple[str, dict[str, str]]] = []
+
+    def get(self, url: str, **options: Any) -> Any:
+        self.asked.append((url, options["cookies"]))
+        return SimpleNamespace(status_code=503, headers={}, url=url, text="")
+
+
+def test_with_no_studio_login_it_is_a_board_item_and_nothing_else_stops(make_world):
+    world = make_world(at(10, 30, 12))
+    sup = world.start()
+    assert sup._ctx.studio is None
+    assert supervisor.NO_STUDIO_LOGIN in sup.board().health.alarms
+    assert sup.board().tray.colour == "green"
+    assert "setup" in world.dev_codes() and "task_failed" not in world.dev_codes()
+    world.run(sup, minutes=2)
+    assert len(world.pipeline.ticks) == 2 and world.pipeline.ticks[-1].studio is None
+
+
+def test_the_words_for_a_missing_login_pass_the_message_check():
+    for words in (supervisor.NO_STUDIO_LOGIN, supervisor.BAD_STUDIO_LOGIN):
+        assert not check_line(words), words
+        dev = templates.dev((templates.DevLine(at(10, 30), words, None, "setup"),),
+                            day=at(10, 30).date())
+        assert not lint(dev), words
+
+
+@pytest.mark.parametrize("half", ["studio_username", "studio_password"])
+def test_half_a_login_is_no_login(make_world, half):
+    world = make_world(at(10, 30, 12), secrets={"signing_key": KEY_HEX, "export_key": EXPORT,
+                                                half: STUDIO_LOGIN[half]})
+    sup = world.start()
+    assert sup._ctx.studio is None
+    assert supervisor.NO_STUDIO_LOGIN in sup.board().health.alarms
+
+
+def test_a_saved_login_builds_one_studio_site_with_no_restart(make_world):
+    world = make_world(at(10, 30, 12))
+    sup = world.start()
+    for name, value in STUDIO_LOGIN.items():
+        world.secrets.put(name, value)
+    world.run(sup, minutes=1)
+    site = sup._ctx.studio
+    assert isinstance(site, StudioSite)
+    assert world.pipeline.ticks[-1].studio is site
+    assert supervisor.NO_STUDIO_LOGIN not in sup.board().health.alarms
+    assert not [i for i in list_dev(world.store)
+                if i.code == "setup" and i.text == supervisor.NO_STUDIO_LOGIN]
+    world.run(sup, minutes=3)
+    assert sup._ctx.studio is site                      # it remembers its last sign-in
+
+
+def test_a_login_taken_away_is_none_again_and_coming_back_keeps_the_same_site(make_world):
+    world = make_world(at(10, 30, 12), secrets={"signing_key": KEY_HEX, "export_key": EXPORT,
+                                                **STUDIO_LOGIN})
+    sup = world.start()
+    site = sup._ctx.studio
+    assert isinstance(site, StudioSite)
+    world.secrets.remove("studio_password")
+    world.run(sup, minutes=1)
+    assert sup._ctx.studio is None
+    assert supervisor.NO_STUDIO_LOGIN in sup.board().health.alarms
+    world.secrets.put("studio_password", STUDIO_LOGIN["studio_password"])
+    world.run(sup, minutes=1)
+    assert sup._ctx.studio is site                      # a wrong password can't lock the account
+
+
+def test_the_studio_site_reads_with_the_saved_secrets_and_no_browser(make_world):
+    session = {"sessionid": "a" * 32, "csrftoken": "b" * 64}
+    world = make_world(at(10, 30, 12), secrets={
+        "signing_key": KEY_HEX, "export_key": EXPORT, **STUDIO_LOGIN,
+        "studio_session": json.dumps(session)})
+    down = StudioDown()
+    sup = world.start(http=down)
+    with pytest.raises(StudioUnavailable) as caught:
+        sup._ctx.studio.project_page("4242")            # with its session: no sign-in is needed
+    assert caught.value.code == "network"
+    assert [cookies for _, cookies in down.asked] == [session]
+    assert down.asked[0][0].endswith("/project/details/4242/")
+
+
+def test_the_studio_site_lasts_through_a_switch_of_mode_and_a_new_export_key(make_world):
+    world = make_world(at(10, 30, 12), secrets={"signing_key": KEY_HEX, "export_key": EXPORT,
+                                                **STUDIO_LOGIN})
+    sup = world.start()
+    site = sup._ctx.studio
+    sup.set_mode("shadow")
+    world.secrets.put("export_key", "another-export-key-for-the-tests")
+    world.run(sup, minutes=2)
+    assert sup._ctx.studio is site and sup._ctx.mode == "shadow"
+    assert sup._ctx.render_client is not None
+
+
+def test_a_studio_site_handed_in_is_used_with_no_login_and_no_board_item(make_world):
+    world = make_world(at(10, 30, 12))
+    site = object()
+    sup = world.start(studio=site)
+    assert sup._ctx.studio is site
+    assert supervisor.NO_STUDIO_LOGIN not in sup.board().health.alarms
+
+
+class NoLoginReads(MemorySecrets):
+    """Credential Manager failing for the login alone, its error naming the secret."""
+
+    def get(self, name: str) -> str | None:
+        if name.startswith("studio_"):
+            raise SecretsError(f"Windows Credential Manager could not read the {name} secret")
+        return super().get(name)
+
+
+def test_a_login_that_cant_be_read_is_a_board_item_and_not_a_crash(make_world):
+    world = make_world(at(10, 30, 12))
+    world.secrets = NoLoginReads({"signing_key": KEY_HEX, "export_key": EXPORT})
+    sup = world.start()
+    assert sup._ctx.studio is None
+    assert supervisor.BAD_STUDIO_LOGIN in sup.board().health.alarms
+    assert sup.board().tray.colour == "green"
+    world.run(sup, minutes=2)
+    assert len(world.pipeline.ticks) == 2 and "task_failed" not in world.dev_codes()
+
+
 def test_every_new_module_is_in_the_self_test():
     from ngrunner.selftest import P1A_MODULES
 
-    assert {"ngrunner.intake.pipeline", "ngrunner.interlock", "ngrunner.jobmodel",
-            "ngrunner.supervisor", "ngrunner.messenger", "ngrunner.canary", "pythoncom",
-            "win32com", "win32cred"} <= set(P1A_MODULES)
+    assert {"ngrunner.intake.pipeline", "ngrunner.intake.studio_designs", "ngrunner.interlock",
+            "ngrunner.jobmodel", "ngrunner.supervisor", "ngrunner.messenger", "ngrunner.canary",
+            "pythoncom", "win32com", "win32com.shell", "win32com.propsys",
+            "win32cred"} <= set(P1A_MODULES)
 
 
 def test_the_real_pipeline_messenger_and_job_model_fit_the_supervisor(make_world, monkeypatch):
@@ -1325,3 +1584,165 @@ def test_a_part_that_cant_start_is_a_board_item_and_not_a_green_tray(make_world,
     assert sup.board().tray.colour == "red"
     world.run(sup, minutes=2)
     assert world.pipeline.ticks == []
+
+
+# ----- a board or a tray that can't start
+
+
+def _beats(world: World) -> list[Any]:
+    return [open_envelope(path.read_bytes(), key=KEY, kind="heartbeat").payload
+            for path in world.heartbeats()]
+
+
+def test_a_board_that_cant_start_is_told_and_the_schedule_tries_again(make_world, monkeypatch):
+    world = make_world(at(10, 30, 12))
+    real, broken = supervisor.create_board, {"now": True}
+
+    def create(*args: Any, **options: Any) -> Any:
+        if broken["now"]:
+            raise OSError("no port")
+        return real(*args, **options)
+
+    monkeypatch.setattr(supervisor, "create_board", create)
+    sup = world.start()
+    assert sup._board_url is None and "board_failed" in world.dev_codes()
+    world.run(sup, minutes=6)
+    assert templates.ALARMS["board_failed"] in _beats(world)[-1]["open_risks"]
+    assert templates.ALARMS["board_failed"] in world.tray.tooltip
+    broken["now"] = False
+    world.run(sup, minutes=1)
+    assert sup._board_url is not None and "board_failed" not in world.dev_codes()
+    board_file = world.paths.app_data / single.BOARD_FILE
+    assert sup._board_url in board_file.read_text(encoding="utf-8")
+
+
+def test_a_tray_that_cant_start_is_told_and_the_schedule_tries_again(make_world, monkeypatch):
+    world = make_world(at(10, 30, 12))
+    real, broken = supervisor.Tray, {"now": True}
+
+    def make(*args: Any, **options: Any) -> Any:
+        if broken["now"]:
+            raise OSError("no tray here")
+        return real(*args, **options)
+
+    monkeypatch.setattr(supervisor, "Tray", make)
+    sup = world.start()
+    assert sup._tray is None and "tray_failed" in world.dev_codes()
+    world.run(sup, minutes=6)
+    assert templates.ALARMS["tray_failed"] in _beats(world)[-1]["open_risks"]
+    broken["now"] = False
+    world.run(sup, minutes=1)
+    assert sup._tray is not None and "tray_failed" not in world.dev_codes()
+
+
+# ----- the switch of mode
+
+
+def test_the_mode_switch_never_waits_on_a_pass_and_takes_effect_when_it_ends(make_world):
+    world = make_world(at(10, 30, 12), mode="shadow")
+    sup = world.start()
+    held, release = threading.Event(), threading.Event()
+
+    def a_long_pass() -> None:
+        with sup._run_lock:
+            held.set()
+            release.wait(20)
+
+    long_pass = threading.Thread(target=a_long_pass, daemon=True)
+    long_pass.start()
+    assert held.wait(5)
+    answers: list[str] = []
+    click = threading.Thread(target=lambda: answers.append(sup.set_mode("live")), daemon=True)
+    click.start()
+    click.join(5)
+    try:
+        assert answers and "live" in answers[0]
+        assert load_settings(world.paths).mode == "live"
+        assert sup.board().shadow is False
+        assert sup._ctx.mode == "shadow"              # what the pass under way goes on with
+        assert "already" in sup.set_mode("live")
+    finally:
+        release.set()
+        long_pass.join(5)
+    sup.run_due(world.clock.now())
+    assert sup._ctx.mode == "live" and sup._messenger.settings.mode == "live"
+    assert world.pipeline.ticks[-1].mode == "live"
+    assert len([e for e in list_events(world.store) if e.kind == "mode_changed"]) == 1
+
+
+def test_a_switch_and_a_switch_back_during_one_pass_end_where_they_were_told(make_world):
+    world = make_world(at(10, 30, 12), mode="shadow")
+    sup = world.start()
+    sup._run_lock.acquire()
+    done = threading.Event()
+
+    def clicks() -> None:
+        assert "live" in sup.set_mode("live")
+        assert "shadow" in sup.set_mode("shadow")
+        done.set()
+
+    click = threading.Thread(target=clicks, daemon=True)
+    click.start()
+    try:
+        assert done.wait(5)
+    finally:
+        sup._run_lock.release()
+    click.join(5)
+    sup.run_due(world.clock.now())
+    assert sup._ctx.mode == "shadow" and load_settings(world.paths).mode == "shadow"
+
+
+def test_the_switch_ticks_at_the_next_pass(make_world):
+    world = make_world(at(10, 30, 12), mode="shadow")
+    sup = world.start()
+    world.run(sup, minutes=1)
+    ticks = len(world.pipeline.ticks)
+    sup.set_mode("live")
+    sup.run_due(world.clock.now())
+    assert len(world.pipeline.ticks) == ticks + 1 and world.pipeline.ticks[-1].mode == "live"
+    assert world.pipeline.went_live == 1
+    sup.set_mode("shadow")
+    assert world.pipeline.went_live == 1
+
+
+# ----- what closes, and what a note is
+
+
+def test_a_note_is_on_health_and_not_on_your_list_so_the_board_agrees_with_itself(make_world):
+    world = make_world(at(10, 30, 12))
+    sup = world.start()
+    view = sup.board()
+    assert view.your_list == () and view.tray.colour == "green"
+    assert "nothing is waiting" in view.tray.tooltip
+    assert {supervisor.NO_BACKUP_KEY, supervisor.NO_STUDIO_LOGIN} <= set(view.health.alarms)
+
+
+def test_a_failed_task_item_closes_on_that_tasks_next_clean_pass(make_world):
+    world = make_world(at(10, 30, 12))
+    sup = world.start()
+    world.pipeline.fail = RuntimeError("it broke")
+    world.run(sup, minutes=2)
+    assert world.dev_codes().count("task_failed") == 1
+    world.pipeline.fail = None
+    world.run(sup, minutes=1)
+    assert "task_failed" not in world.dev_codes()
+
+
+def test_a_clean_pass_of_one_task_leaves_anothers_item_open(make_world):
+    world = make_world(at(10, 30, 12))
+    sup = world.start()
+    open_dev(world.store, at=world.clock.now(), code="task_failed",
+             text="The night work failed (OSError).")
+    sup._guarded("pipeline tick", lambda now: None, world.clock.now())
+    assert "task_failed" in world.dev_codes()
+
+
+def test_the_night_does_not_tell_jim_a_filed_job_waits(make_world):
+    world = make_world(at(10, 30, 12))
+    sup = world.start()
+    ensure_job(world.store, "4242", JOB, now=world.clock.now())
+    open_dev(world.store, at=world.clock.now() - timedelta(hours=49), code="layouts_differ",
+             text="They differ.", studio_id="4242")
+    set_state(world.store, "job.filed.4242", json.dumps({"where": "ng_jobs"}))
+    sup._night_tell_jim(world.clock.now())
+    assert list_dev(world.store)[0].told_jim_at is None

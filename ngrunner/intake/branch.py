@@ -29,9 +29,9 @@ from typing import Any, Literal
 
 from ngrunner.intake.summary_check import SummaryCheck
 
-# _typed_variant is the row's variant as match_fab_row reads it (MatchResult.normalized.variant),
-# so the _Gar flag is read one way only. match.py has no public name for it yet.
-from ngrunner.match import _typed_variant, room_words, slugify
+# typed_variant is the row's variant as match_fab_row reads it (MatchResult.normalized.variant),
+# so the _Gar flag is read one way only.
+from ngrunner.match import room_words, slugify, typed_variant
 
 BranchKind = Literal["closet", "garage", "unclear"]
 # One design as page 1 lists it: (name, category), or check_summary's record of it (a mapping
@@ -129,7 +129,7 @@ def _count(n: int, thing: str) -> str:
 def _row_says_garage(text: str) -> bool:
     """A garage room word or the _Gar flag, as match reads a row: never its first word."""
     return (_GARAGE_ROOM in room_words(text)
-            or _GAR_FLAG in (_typed_variant(text) or "").split("+"))
+            or _GAR_FLAG in (typed_variant(text) or "").split("+"))
 
 
 def _words(text: str) -> list[str]:

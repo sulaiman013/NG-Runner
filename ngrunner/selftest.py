@@ -34,6 +34,7 @@ from pathlib import Path, PureWindowsPath
 
 from ngrunner.backup import BackupError, DatabaseFacts, describe, remove_own_tree, snapshot
 from ngrunner.config import AppPaths
+from ngrunner.secrets import CredentialSecrets, Secrets, SecretsUnavailable
 from ngrunner.writes import CommitResult, FileWrite, Roots, commit_write
 
 # Every P1a module (spec section 5) and the libraries a build must carry.
@@ -47,12 +48,18 @@ P1A_MODULES: tuple[str, ...] = (
     "ngrunner.launcher", "ngrunner.single", "ngrunner.backup", "ngrunner.support",
     "ngrunner.selftest", "ngrunner.intake.pipeline", "ngrunner.interlock", "ngrunner.jobmodel",
     "ngrunner.messenger", "ngrunner.supervisor", "ngrunner.canary",
+    "ngrunner.intake.studio_designs",
     "flask", "waitress", "requests", "pystray", "PIL", "psutil", "win32api", "pywintypes",
-    "pythoncom", "win32com", "win32cred", "windows_toasts", "cryptography",
+    "pythoncom", "win32com", "win32com.shell", "win32com.propsys", "win32cred", "win32timezone",
+    "windows_toasts",
+    "cryptography",
     "cryptography.hazmat.primitives.ciphers.aead", "pypdf", "tzdata", "sqlite3",
+    "playwright.sync_api",
 )
 
 SANDBOX_CONTENT = b"NG Runner self-test: safe to delete\n"
+_CREDENTIAL_PREFIX = "NGRunner-selftest"
+_CREDENTIAL_NAME = "signing_key"
 
 Migrate = Callable[[Path], object]
 Commit = Callable[..., CommitResult]
@@ -68,10 +75,11 @@ def run_self_test(
     migrate: Migrate | None = None,
     samples: Callable[[], Iterable[object]] | None = None,
     lint: Callable[[object], list[str]] | None = None,
+    credentials: Callable[[], Secrets] | None = None,
 ) -> list[str]:
     """Every problem found, one plain sentence each; empty means this build may run. migrate
-    and lint default to the store's and the lint module's own, samples to message_samples (tests
-    fake them)."""
+    and lint default to the store's and the lint module's own, samples to message_samples, and
+    credentials to Credential Manager under the self-test's own name (tests fake them)."""
     problems = import_problems(modules)
     if getattr(sys, "frozen", False) and not sys.flags.utf8_mode:
         problems.append("This build does not run in UTF-8 mode (ngrunner.spec must pass X utf8).")
@@ -84,6 +92,7 @@ def run_self_test(
         if left:
             problems.append(f"The self-test could not clean up after itself: {left}")
     problems += _templates(samples, lint)
+    problems += credential_problems(credentials)
     return problems
 
 
@@ -105,6 +114,37 @@ def import_problems(modules: Iterable[str]) -> list[str]:
         except Exception as exc:  # noqa: BLE001 - any failure to import is a failed self-test
             problems.append(f"{name} could not be imported ({type(exc).__name__}: {exc}).")
     return problems
+
+
+# ----- Credential Manager, for real
+
+
+def credential_problems(make: Callable[[], Secrets] | None = None) -> list[str]:
+    """Store, read back and remove one throwaway credential under the self-test's own name, never
+    NG Runner's keys. Importing win32cred proves little: reading a credential imports win32timezone
+    by name at run time, and a build without it could read no key at all (found by the first real
+    run of the built app, 2026-10-30). No Credential Manager here is not a broken build, and setup
+    says so when it matters."""
+    keeper = (make or _selftest_secrets)()
+    stored = secrets.token_hex(16)
+    try:
+        keeper.put(_CREDENTIAL_NAME, stored)
+        if keeper.get(_CREDENTIAL_NAME) != stored:
+            return ["Windows Credential Manager gave back something other than what was stored."]
+        return []
+    except SecretsUnavailable:
+        return []
+    except Exception as exc:  # noqa: BLE001 - whatever stops a key being read fails this build
+        return [f"A saved key could not be read from Windows Credential Manager ({_reason(exc)})."]
+    finally:
+        try:
+            keeper.remove(_CREDENTIAL_NAME)
+        except Exception:  # noqa: BLE001 - what stays is a random value under its own name
+            pass
+
+
+def _selftest_secrets() -> Secrets:
+    return CredentialSecrets(target_prefix=_CREDENTIAL_PREFIX)
 
 
 # ----- 2. the database migration, on a copy
@@ -331,11 +371,13 @@ def message_samples() -> list[object]:
         t.ic_changed_card(job, filed_at=at, filed_pages=19, new_at=at, new_pages=20),
         t.row_changed_card(job, was="Testerson", now_reads=row, candidates=candidates),
         t.remake_card(job, row="Testerson"),
+        t.design_mismatch_card(job, report=3, proposal=4),
+        t.design_mismatch_card(other, report=3, proposal=3),
     )]
     echoes = [t.echo(parse_command(typed, cards)) for typed in (
         f"{cards[2].id} 2", "pause", "resume", f"add job {job}", "add job 84213")]
     return [
-        t.digest(day, for_you=(t.install_soon(job, install), t.stuck(other),
+        t.digest(day, for_you=(t.install_soon(job, install), t.stuck(other), t.fetch_stuck(other),
                                t.missed_digest(due=at, sent=at), *t.ALARMS.values()),
                  jobs=((other, "filed 10/29 3:05 PM"),), cards=[(card, 3) for card in cards],
                  open_items=len(cards), oldest_days=3),

@@ -66,6 +66,8 @@ from ngrunner.clock import (
     utc,
 )
 from ngrunner.config import AppPaths, Settings, SettingsError
+from ngrunner.intake.studio_designs import StudioSite
+from ngrunner.interlock import PAUSED, is_paused
 from ngrunner.joblist import RenderClient
 from ngrunner.messages import Message, templates
 from ngrunner.messages.lint import redact
@@ -82,6 +84,7 @@ from ngrunner.store import (
     get_fab_row,
     get_job,
     get_list_state,
+    get_outbox,
     get_state,
     get_state_time,
     last_accepted_seq,
@@ -130,12 +133,12 @@ _STOP_WAIT_S = 30.0
 
 # ----- what it keeps in the state table
 
-PAUSED = "paused"                     # "yes" or "no", as store/__init__.py shows
 LAST_DIGEST_DAY = "last_digest_day"   # the Pacific date the digest last went
 LAST_DIGEST_AT = "last_digest_at"
 NIGHT_KEY = "night_key"               # the night whose work is done
 NIGHT_STEPS = "night_steps"           # JSON {"key": ..., "done": [...]}: how far tonight has got
 LAST_HEARTBEAT = "last_heartbeat"
+STUDIO_SIGN_IN = "studio.last_sign_in"
 LEFTOVER_TEMPS = "leftover_temps"     # JSON list of the *.ngr-tmp paths the night's scan found
 TOAST_SETTING = "toast_setting"       # "on", "off" or "unknown"
 TOASTED_CARDS = "cards_toasted"       # JSON list of the open cards already shown
@@ -153,6 +156,10 @@ BAD_SIGNING_KEY = ("NG Runner's signing key can't be used, so it can't read the 
 NO_EXPORT_KEY = f"NG Runner has no job list key, so it can't match new rows. {SETUP}"
 BAD_EXPORT_KEY = f"NG Runner's job list key can't be used, so it can't match new rows. {SETUP}"
 NO_BACKUP_KEY = "The nightly backup is off: NG Runner has no backup key. Tell Sulaiman."
+STUDIO_LOGIN = ("studio_username", "studio_password")  # the secrets Ctx.studio is built from
+NO_STUDIO_LOGIN = f"Designs are not cross-checked: NG Runner has no Studio login. {SETUP}"
+BAD_STUDIO_LOGIN = ("Designs are not cross-checked: NG Runner can't read its Studio login. Tell"
+                    " Sulaiman.")
 NO_STORE = ("NG Runner can't read its database, so it isn't working. Tell Sulaiman; the runbook"
             " says how to restore it.")
 CANT_DO_THAT = "That can't be done right now: NG Runner can't read its database. Tell Sulaiman."
@@ -247,9 +254,9 @@ class Supervisor:
     it. It is also the board's BoardViews and BoardActions (board/views.py).
 
     start() starts no thread of its own, so a test drives run_due by a fake clock;
-    start_scheduler() is the thread that does it in real life (run() below). settings and
-    render_client are for tests: everywhere else settings come from settings.json and the client
-    from the setting and the key."""
+    start_scheduler() is the thread that does it in real life (run() below). settings,
+    render_client and studio are for tests: everywhere else settings come from settings.json, the
+    client from the setting and the key, and the Studio site from the saved login."""
 
     def __init__(
         self,
@@ -263,6 +270,7 @@ class Supervisor:
         attempt: str | None = None,
         settings: Settings | None = None,
         render_client: Any = None,
+        studio: Any = None,
         confirm: Callable[[str], bool] | None = None,
         browser: Callable[[str], object] = webbrowser.open,
         opener: Callable[[str], None] | None = None,
@@ -277,6 +285,8 @@ class Supervisor:
         self._settings = settings
         self._given_settings = settings is not None
         self._given_client = render_client
+        self._given_studio = studio
+        self._studio: Any = studio
         self._confirm = confirm
         self._browser = browser
         self._opener = opener
@@ -309,6 +319,7 @@ class Supervisor:
         self._stop_requested = threading.Event()
         self._asked: set[str] = set()
         self._asked_lock = threading.Lock()
+        self._mode_wanted: Settings | None = None
         self._tasks = (
             _Task("database check", MINUTE, self._check_store),
             _Task("setup check", MINUTE, self._check_setup),
@@ -321,6 +332,7 @@ class Supervisor:
             _Task("digest", MINUTE, self._digest),
             _Task("toasts", MINUTE, self._show_toasts),
             _Task("health check", MINUTE, self._refresh_health),
+            _Task("starts", MINUTE, self._retry_starts),
         )
         self._night_steps: tuple[tuple[str, Callable[[datetime], bool]], ...] = (
             ("backup", self._night_backup),
@@ -347,7 +359,7 @@ class Supervisor:
         self._guarded("start-up", lambda _now: self._build_parts(), now)
         self._guarded("setup check", self._refresh_setup, now)
         self._guarded("start-up", self._mark_first_start, now)
-        self._start_board()
+        self._start_board(now)
         self._start_tray(now)
         self._announce_up()
         self._guarded("launcher notes", self._take_launcher_notes, now)
@@ -436,7 +448,8 @@ class Supervisor:
             store=self._store, settings=self._settings, secrets=self._secrets, clock=self._clock,
             roots=roots, paths=self._paths, studio_http=self._http,
             render_client=self._given_client, messenger=self._messenger,
-            mode=self._settings.mode, stop_requested=self._stop.is_set)
+            mode=self._settings.mode, stop_requested=self._stop.is_set,
+            studio=None)  # _read_studio_login fills it in, at once and every minute
 
     def _mark_first_start(self, now: datetime) -> None:
         """Nothing was missed before NG Runner existed, so a new install owes no digest and no
@@ -451,15 +464,18 @@ class Supervisor:
         if get_state(self._store, NIGHT_KEY) is None:
             set_state(self._store, NIGHT_KEY, night_key(now).isoformat())
 
-    def _start_board(self) -> None:
+    def _start_board(self, now: datetime) -> None:
+        """One that can't start tells Sulaiman, the heartbeat and the digest (an alarm while its
+        DEV item stands), since with no board Jim can't answer a card. The schedule tries again."""
         try:
             app = create_board(self, self, token=new_token(), roots=self._open_roots(),
                                clock=self._clock, opener=self._opener)
             self._server = BoardServer(app)
             self._board_url = self._server.start()
-        except Exception:  # noqa: BLE001 - logged; NG Runner still files without its board
+        except Exception:  # noqa: BLE001 - logged and told; NG Runner still files without its board
             _log.exception("the board could not start")
             self._server = None
+            self._dev(now, "board_failed", templates.ALARMS["board_failed"])
 
     def _open_roots(self) -> tuple[Path, ...]:
         """What the board's Open may open. control\\shadow in either mode: a switch on the board
@@ -477,9 +493,26 @@ class Supervisor:
             self._tray = Tray(actions, self._tray_state(now), paused=self._is_paused(),
                               confirm=self._confirm, backend=self._tray_backend)
             self._tray.start()
-        except Exception:  # noqa: BLE001 - logged; NG Runner still files without its icon
+        except Exception:  # noqa: BLE001 - logged and told; NG Runner still files without its icon
             _log.exception("the tray could not start")
             self._tray = None
+            self._dev(now, "tray_failed", templates.ALARMS["tray_failed"])
+
+    def _retry_starts(self, now: datetime) -> None:
+        """What could not start at start-up. No board and no tray leave Jim no sign at all, while
+        heartbeats go on, so a watchdog has nothing to report."""
+        if self._server is None:
+            self._start_board(now)
+            if self._server is not None:
+                self._quietly("publishing the board",
+                              lambda: single.publish_board(self._paths, self._board_url))
+        if self._tray is None:
+            self._start_tray(now)
+            self._last_tray = None
+        running = {"board_failed": self._server, "tray_failed": self._tray}
+        for item in list_dev(self._store) if self._store is not None else ():
+            if running.get(item.code) is not None:
+                close_dev(self._store, item.id)
 
     def _announce_up(self) -> None:
         """The board's address where a second start finds it, then the launcher's "this worked"."""
@@ -520,7 +553,9 @@ class Supervisor:
                 self._guarded("tray update", self._update_tray, now)
 
     def _do_what_was_asked(self, now: datetime) -> bool:
-        """What the tray asked for since the last pass: its thread must return at once."""
+        """What the tray and the board asked for since the last pass: their threads must return at
+        once."""
+        self._take_mode()
         with self._asked_lock:
             asked, self._asked = self._asked, set()
         if "check" in asked:
@@ -532,12 +567,28 @@ class Supervisor:
     def _guarded(self, name: str, action: Callable[[datetime], object], now: datetime) -> None:
         try:
             action(now)
+            self._task_passed(name)
         except StoreError as exc:
             _log.error("the %s could not use the database: %s", name, exc)
             self._store_problem = NO_STORE
         except Exception as exc:  # noqa: BLE001 - one task's failure must never stop the others
             _log.exception("the %s failed", name)
             self._dev(now, "task_failed", f"The {name} failed ({type(exc).__name__}).")
+
+    def _close_dev(self, code: str, text: str = "") -> None:
+        """What stopped being wrong: the DEV lane holds what is wrong now, and the nightly line
+        doesn't repeat what has cleared."""
+        for item in list_dev(self._store):
+            if item.code == code and item.text.startswith(text):
+                close_dev(self._store, item.id)
+
+    def _task_passed(self, name: str) -> None:
+        """A failed task's DEV item goes at its next clean pass, so the DEV lane holds what is wrong
+        now and the nightly line doesn't repeat what has cleared."""
+        if self._store is not None and not self._store_problem:
+            for item in list_dev(self._store):
+                if item.code == "task_failed" and item.text.startswith(f"The {name} failed"):
+                    close_dev(self._store, item.id)
 
     @staticmethod
     def _quietly(what: str, action: Callable[[], object]) -> None:
@@ -591,6 +642,7 @@ class Supervisor:
             blockers += self._read_keys()
             if not self._settings.backup_public_key:
                 notes.append(NO_BACKUP_KEY)
+            notes += self._read_studio_login()
         found = (tuple(blockers), tuple(notes))
         if found != self._last_setup:
             self._last_setup = found
@@ -648,6 +700,38 @@ class Supervisor:
                 self._export_problem = BAD_EXPORT_KEY
         self._ctx = replace(self._ctx, render_client=client)
 
+    def _read_studio_login(self) -> list[str]:
+        """Ctx.studio: the Studio site while its login is saved, otherwise None, which files each
+        report marked "designs not cross-checked". So it is a board item and never a blocker, and a
+        login put in place starts working with no restart. One StudioSite serves the whole run, as
+        it remembers when it last signed in, so a wrong password can't lock the account."""
+        problem = None
+        if self._given_studio is None:
+            try:
+                if not all(self._secrets.get(name) for name in STUDIO_LOGIN):
+                    problem = NO_STUDIO_LOGIN
+            except SecretsError:
+                problem = BAD_STUDIO_LOGIN
+        if self._studio is None and problem is None:
+            self._studio = StudioSite(self._secrets, self._clock, http=self._http,
+                                      recall=self._last_studio_sign_in,
+                                      remember=self._note_studio_sign_in)
+        studio = None if problem else self._studio
+        if self._ctx is not None and self._ctx.studio is not studio:
+            self._ctx = replace(self._ctx, studio=studio)
+        return [problem] if problem else []
+
+    def _last_studio_sign_in(self) -> datetime | None:
+        """Across a restart, so a crash loop can't retry a wrong password. An unreadable store
+        counts as never: this process still remembers its own."""
+        try:
+            return get_state_time(self._store, STUDIO_SIGN_IN) if self._store is not None else None
+        except StoreError:
+            return None
+
+    def _note_studio_sign_in(self, when: datetime) -> None:
+        self._quietly("noting a Studio sign-in", lambda: set_state_time(self._store, STUDIO_SIGN_IN, when))
+
     # ----- the minute's work
 
     def _tick(self, now: datetime) -> None:
@@ -679,6 +763,7 @@ class Supervisor:
         result = self._ctx.commit([FileWrite(self._settings.control.joinpath(*parts), data, None)])
         if result.ok:
             set_state_time(store, LAST_HEARTBEAT, now)
+            self._close_dev("heartbeat_failed")
         else:
             _log.warning("a heartbeat was not written: %s", result.reason)
             self._dev(now, "heartbeat_failed", "Heartbeats are not reaching the control folder.")
@@ -780,16 +865,25 @@ class Supervisor:
         due = at_pacific(day, parse_wall(self._settings.digest_at))
         if now < due or get_state(store, LAST_DIGEST_DAY) == day.isoformat():
             return
-        if not any(r.ref == f"digest:{day.isoformat()}" for r in list_outbox(store)):
+        if not self._sent(f"digest:{day.isoformat()}"):
             view = self._seams.jobmodel.digest_view(store, self._settings, self._clock)
             if now - due >= LATE_AFTER:
                 missed = templates.missed_digest(due=due, sent=now)
                 view = replace(view, owner=(*view.owner, missed))
-            self._messenger.send(digest.compose(view), to="jim")
-            for card in digest.reminders(view):
-                record_reminder(store, card.id, at=view.now)
+            message = digest.compose(view)
+            queued = get_outbox(store, self._messenger.send(message, to="jim"))
+            # Replaced by vetted(), it brought no card back, so each stays due for the next digest.
+            if queued is not None and queued.lines == message.lines:
+                for card in digest.reminders(view):
+                    record_reminder(store, card.id, at=view.now)
         set_state(store, LAST_DIGEST_DAY, day.isoformat())
         set_state_time(store, LAST_DIGEST_AT, now)
+
+    def _sent(self, ref: str) -> bool:
+        """Whether a message with this ref has a row: a crash after a send, before its step was
+        noted, must not send it twice. Jim's and Sulaiman's email never waits out quiet hours, so
+        it has its row from the moment it is sent."""
+        return any(row.ref == ref for row in list_outbox(self._store))
 
     # ----- the night's work
 
@@ -826,7 +920,10 @@ class Supervisor:
 
     def _night_step(self, name: str, step: Callable[[datetime], bool], now: datetime) -> bool:
         try:
-            return step(now)
+            done = step(now)
+            if done:
+                self._close_dev("night_step_failed", f"The night's {name} step failed")
+            return done
         except StoreError:
             raise
         except Exception as exc:  # noqa: BLE001 - one step's failure must not cost the rest
@@ -859,6 +956,8 @@ class Supervisor:
         result = self._ctx.commit([FileWrite(target, made.data, None)])
         if not result.ok:
             self._dev(now, "backup_failed", f"Tonight's backup was not saved: {result.reason}")
+        else:
+            self._close_dev("backup_failed")
         return result.ok
 
     def _night_log(self, now: datetime) -> bool:
@@ -871,6 +970,8 @@ class Supervisor:
         result = self._ctx.commit([FileWrite(target, self._yesterdays_log(day), None)])
         if not result.ok:
             self._dev(now, "log_failed", f"Yesterday's log was not saved: {result.reason}")
+        else:
+            self._close_dev("log_failed")
         return result.ok
 
     def _yesterdays_log(self, day: date) -> bytes:
@@ -920,9 +1021,12 @@ class Supervisor:
         return True
 
     def _night_ran(self, now: datetime) -> bool:
-        """The daily "ran" line: its absence is itself the alarm (design 2)."""
-        day = pacific_day(now) - timedelta(days=1)
-        self._messenger.send(self._ran_line(day), to="sulaiman", ref=f"ran:{day.isoformat()}")
+        """The daily "ran" line: its absence is itself the alarm (design 2). Named by the night,
+        as a retry after midnight is still that night, and so still the same line."""
+        day = night_key(now) - timedelta(days=1)
+        ref = f"ran:{day.isoformat()}"
+        if not self._sent(ref):
+            self._messenger.send(self._ran_line(day), to="sulaiman", ref=ref)
         return True
 
     def _ran_line(self, day: date) -> Any:
@@ -944,14 +1048,13 @@ class Supervisor:
 
     def _night_dev_lines(self, now: datetime) -> bool:
         """The open DEV items for Sulaiman; none means no message, as "ran" gives the count."""
-        items = list_dev(self._store)
-        if items:
+        items, day = list_dev(self._store), night_key(now)
+        ref = f"dev:{day.isoformat()}"
+        if items and not self._sent(ref):
             names = {job.studio_id: job.name for job in list_jobs(self._store)}
             lines = [templates.DevLine(item.at, item.text, names.get(item.studio_id), item.code)
                      for item in items]
-            day = pacific_day(now)
-            self._messenger.send(templates.dev(lines, day=day), to="sulaiman",
-                                 ref=f"dev:{day.isoformat()}")
+            self._messenger.send(templates.dev(lines, day=day), to="sulaiman", ref=ref)
         return True
 
     def _night_tell_jim(self, now: datetime) -> bool:
@@ -960,7 +1063,8 @@ class Supervisor:
         nothing to work in chat, so it stays with Sulaiman."""
         for item in list_dev(self._store):
             if (item.told_jim_at is None and item.studio_id is not None
-                    and now - item.at >= TOLD_JIM_AFTER):
+                    and now - item.at >= TOLD_JIM_AFTER
+                    and not self._seams.jobmodel.settled_by_filing(self._store, item)):
                 job = get_job(self._store, item.studio_id)
                 if job is not None:
                     log_event(self._store, at=now, kind="dev_told_jim", lane="ACT",
@@ -1040,11 +1144,13 @@ class Supervisor:
     # ----- the board: what it shows
 
     def board(self) -> BoardView:
-        """The current view. What NG Runner lacks comes first on Your list, in plain words; with no
-        settings or no database, that is all there is to show."""
+        """The current view. What NG Runner lacks and can't work without comes first on Your list,
+        in plain words; with no settings or no database, that is all there is to show. A note (no
+        backup key, no Studio login) is for Sulaiman and stops nothing, so it shows on Health: on
+        Your list it would say something waits while the tray says nothing does."""
         now, paused, shadow = self._clock.now(), self._is_paused(), self._is_shadow()
         health = self._health()
-        items = tuple(ListItem(text) for text in (*self._blockers, *self._notes))
+        items = tuple(ListItem(text) for text in self._blockers)
         if self._store is not None and self._settings is not None and not self._store_problem:
             try:
                 view = self._seams.jobmodel.board_view(
@@ -1088,12 +1194,13 @@ class Supervisor:
         if self._store is None:
             return False
         try:
-            return get_state(self._store, PAUSED) == "yes"
+            return is_paused(self._store)
         except StoreError:
             return False
 
     def _is_shadow(self) -> bool:
-        return self._settings is None or self._settings.mode == "shadow"
+        settings = self._mode_wanted or self._settings
+        return settings is None or settings.mode == "shadow"
 
     # ----- the board: what it does
 
@@ -1134,26 +1241,50 @@ class Supervisor:
         return self._run_command(f"add job {text}", channel="board")
 
     def set_mode(self, mode: str) -> str:
-        """The deliberate switch between shadow and live, on Health, logged as an event."""
+        """The deliberate switch between shadow and live, on Health, logged as an event. It answers
+        at once: a pass of the schedule can be waiting on Render, and goes on as it began. So it
+        takes effect now if no pass is running, or else as the next one starts, and that pass ticks.
+        Going live hands back what the trial run filed aside (pipeline.go_live)."""
         if self._settings is None:
             return NOT_SET_UP
         if self._store is None or self._store_problem or self._ctx is None:
             return CANT_DO_THAT
-        old = self._settings.mode
+        now = self._clock.now()
+        current = self._mode_wanted or self._settings
+        old = current.mode
         if mode == old:
             return f"NG Runner is already in {mode} mode, so nothing changed."
-        settings = replace(self._settings, mode=mode)
+        settings = replace(current, mode=mode)
         config.save_settings(self._paths, settings)
-        log_event(self._store, at=self._clock.now(), kind="mode_changed", lane="ACT",
+        log_event(self._store, at=now, kind="mode_changed", lane="ACT",
                   text=f"Switched from {old} to {mode}.")
-        with self._run_lock:
-            self._settings = settings
-            self._messenger.settings = settings  # it reads them at each send
-            self._ctx = replace(self._ctx, settings=settings, mode=mode)
-        self._update_tray(self._clock.now())
+        if mode == "live":
+            self._seams.pipeline.go_live(self._store, now)
+        with self._asked_lock:
+            self._mode_wanted = settings
+            self._asked.add("check")
+        if self._run_lock.acquire(blocking=False):
+            try:
+                self._take_mode()
+            finally:
+                self._run_lock.release()
+        self._update_tray(now)
         if mode == "live":
             return "Switched to live: NG Runner now files into NG Jobs."
         return "Switched to shadow: NG Runner now files only into the control folder."
+
+    def _take_mode(self) -> None:
+        """Between passes: the switch set_mode was asked for. Never during one, as a pass rebuilds
+        the context from what it read."""
+        with self._asked_lock:
+            settings, self._mode_wanted = self._mode_wanted, None
+        if settings is None:
+            return
+        self._settings = settings
+        if self._messenger is not None:
+            self._messenger.settings = settings  # it reads them at each send
+        if self._ctx is not None:
+            self._ctx = replace(self._ctx, settings=settings, mode=settings.mode)
 
     def _run_command(self, text: str, *, channel: str) -> str:
         if self._store is None or self._store_problem:

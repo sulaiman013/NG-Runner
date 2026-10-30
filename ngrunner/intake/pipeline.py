@@ -28,6 +28,13 @@ and then only if commit_write finds it is still NG Runner's own.
 
 What leaves the PC (decision 10): cards and messages name jobs and dates only. Agreement.reason
 can quote IC design names, so it goes to the event log and DEV only; Fetched.reason is safe.
+
+A report can leave a design out and still pass everything above, so after fetch 1 passes the
+summary check its designs are compared with Studio's Proposal tab (intake.studio_designs). A
+difference never files: one card, and a look every 30 minutes, until they agree or Jim says. Studio
+out of reach, or a login that is missing or refused, still files, since a login problem must not
+stop all filing, and what was filed says "designs not cross-checked". A filed summary is "checked",
+never "complete".
 """
 from __future__ import annotations
 
@@ -40,6 +47,7 @@ from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, time, timedelta
 from pathlib import Path
+from time import monotonic
 from typing import Any, Protocol
 
 from ngrunner.cards import Command, card_prefix, parse_command
@@ -47,7 +55,17 @@ from ngrunner.clock import Clock, fmt_clock, fmt_date, from_iso, next_at, pacifi
 from ngrunner.config import LAYOUTS, AppPaths, Settings
 from ngrunner.fab import ExportRow, RowChange, diff, install_date, read_edits, read_export
 from ngrunner.intake.branch import branch_of
-from ngrunner.intake.fetch import Agreement, Fetched, FetchTarget, Render, agree, fetch_render
+from ngrunner.intake.fetch import (
+    Agreement,
+    Fetched,
+    FetchTarget,
+    Render,
+    agree,
+    fetch_render,
+    report_urls,
+)
+from ngrunner.intake.report_diff import describe_change
+from ngrunner.intake.studio_designs import ProjectPage, StudioUnavailable, check_designs
 from ngrunner.intake.summary_check import SummaryCheck, check_summary, content_fingerprint
 from ngrunner.interlock import GARAGE_SUFFIX, INSTALL_FOLDERS, SHADOW, is_paused, p1a_interlock
 from ngrunner.joblist import JobListError
@@ -71,7 +89,6 @@ from ngrunner.store import (
     PendingRecord,
     RenderRecord,
     Store,
-    StoreRegistry,
     Transaction,
     accept_envelope,
     add_alias,
@@ -106,18 +123,18 @@ from ngrunner.store import (
     open_dev,
     owned_sha,
     past_deadline_pending,
-    record_commit,
     render_fingerprint,
     replace_opportunities,
     retry_pending,
     set_governing,
     set_state,
     set_state_time,
+    states_under,
     update_fab_row,
     update_job,
     withdraw_card,
 )
-from ngrunner.writes import CommitResult, FileWrite, Roots, commit_write
+from ngrunner.writes import CommitResult, FileWrite, Roots, commit_recorded
 
 _log = logging.getLogger("ngrunner.pipeline")
 
@@ -151,13 +168,37 @@ _LISTING = "notes.listing_items"        # jobs whose _NGRunner.json lists open c
 STREAM = "fab_export"
 BARBARA = "barbara"
 
+# ----- Studio's proposal: what a project page read says, and the DEV lane's two codes for no read
+
+_AGREES = "match"
+_DIFFERS = ("report_missing_designs", "proposal_missing_designs")
+STUDIO_UNAVAILABLE = "studio_unavailable"
+STUDIO_PAGE_CHANGED = "studio_page_changed"     # the parser needs attention, so it has its own code
+
+# ----- DEV codes the job model reads
+
+FETCH_STUCK = "fetch_stuck"       # a fetch past its time: on Your list at once, so the tray says so
+SAME_FOLDER = "same_folder"       # another sale with this name is filed in this job's folder
+# What a filing settles: these say the job's fetching or filing can't go on, and now it has.
+CLOSED_BY_FILING = ("too_big", "layouts_differ", "same_bytes", "wrong_job", "file_new_lost",
+                    FETCH_STUCK, SAME_FOLDER)
+
+TRIAL_ONLY_EVENT = "trial_only"   # filed only aside in the trial run: not in NG Jobs, and said so
+_GO_LIVE = "mode.go_live"          # the switch to live was made: go_live
+_TRIAL_ONLY = "Filed in the trial run only, so it is not in NG Jobs. It is being filed for real."
+_LEFT_ASIDE = ("Filed in the trial run only, so it is not in NG Jobs, and its row has left the"
+               " Fab Schedule.")
+
 # ----- times
 
 _TWO_FETCHES = timedelta(minutes=10)
 _EARLY_RETRY = timedelta(minutes=30)
 _BACKOFF = tuple(timedelta(minutes=m) for m in (5, 15, 30, 60))   # then hourly
 _FETCH_LIMIT = timedelta(hours=24)
+_FETCH_OVERRUN = timedelta(minutes=15)  # a fetch takes up to 95 s; past this it has hung
+_UNTRIED_FOR = timedelta(hours=1)       # past the limit, how long a job may wait for its one try
 _REFUSED_RETRY = timedelta(minutes=5)
+_DESIGN_RECHECK = timedelta(minutes=30)
 _HOLD = timedelta(minutes=5)            # a filing waiting on an answer looks again
 _WATCH_AGAIN = timedelta(hours=1)       # OBSERVED, and an Old folder: nothing to do but look
 _PUSH_EVERY = timedelta(minutes=5)
@@ -180,6 +221,15 @@ _OBSERVED_REASON = "Its folder was there when NG Runner was installed, so NG Run
 _OLD_REASON = "Its folder is in the Old folder of NG Jobs, so NG Runner wrote nothing"
 _NOT_REACHABLE = "NG Jobs isn't reachable right now, so nothing was written"
 _NOTE = "NG Runner filed this IC summary. Chat sessions read this file before working the job."
+_NO_STUDIO_LOGIN = "No Studio login is set up on this PC."
+_FETCH_STOPPED = "NG Runner could not finish fetching the IC summary for {job}"
+_NEW_GONE = ("The new IC summary is no longer saved, so NG Runner is fetching it again and asks"
+             " once more.")
+_NOTHING_NEW = "Nothing was left to file as the new IC summary"
+_FETCH_OVERRAN = "A fetch ran for over 15 minutes, so NG Runner gave up on it and freed its place."
+_UNTRIED = "NG Runner has not been able to start fetching it"
+_SAME_FOLDER = "Another sale with this name is filed in this folder, so nothing was written"
+_ALREADY_THERE = "The new IC summary is already in its NG Jobs folder, so nothing was written."
 
 
 # ----- running fetches off the tick's thread
@@ -198,35 +248,41 @@ class FetchRunner(Protocol):
 
     def finished(self) -> list[Any]: ...
 
+    def overran(self) -> list[int]: ...
+
     def stop(self) -> None: ...
 
 
 class BackgroundFetches:
     """A couple of fetches at a time, each on a daemon thread, so a stop never waits for Studio.
-    A fetch that dies with the process just leaves its pending row due."""
+    A fetch that dies with the process just leaves its pending row due. One that never comes back
+    can't be stopped, so past overrun it gives up its place and whatever it brings back later is
+    dropped: a hung browser or socket must not take all filing down with it."""
 
-    def __init__(self, limit: int = 2) -> None:
+    def __init__(self, limit: int = 2, *, overrun: timedelta = _FETCH_OVERRUN) -> None:
         self._limit = limit
+        self._overrun = overrun.total_seconds()
         self._lock = threading.Lock()
-        self._running: set[int] = set()
+        self._running: dict[int, tuple[float, object]] = {}   # by key: when it began, and which run
         self._done: list[tuple[int, Any]] = []
         self.stopped = False
 
     def busy(self) -> set[int]:
         with self._lock:
-            return self._running | {key for key, _ in self._done}
+            return set(self._running) | {key for key, _ in self._done}
 
     def free(self) -> int:
         with self._lock:
             return 0 if self.stopped else self._limit - len(self._running)
 
     def start(self, key: int, work: Callable[[], Any]) -> None:
+        run = object()
         with self._lock:
-            self._running.add(key)
-        threading.Thread(target=self._run, args=(key, work), daemon=True,
+            self._running[key] = (monotonic(), run)
+        threading.Thread(target=self._run, args=(key, run, work), daemon=True,
                          name=f"ngrunner-fetch-{key}").start()
 
-    def _run(self, key: int, work: Callable[[], Any]) -> None:
+    def _run(self, key: int, run: object, work: Callable[[], Any]) -> None:
         result: Any = None
         try:
             result = work()
@@ -234,13 +290,24 @@ class BackgroundFetches:
             _log.exception("A fetch stopped with an error")
         finally:
             with self._lock:
-                self._running.discard(key)
-                self._done.append((key, result))
+                if key in self._running and self._running[key][1] is run:   # else it overran
+                    del self._running[key]
+                    self._done.append((key, result))
 
     def finished(self) -> list[Any]:
         with self._lock:
             done, self._done = self._done, []
         return [result for _, result in done if result is not None]
+
+    def overran(self) -> list[int]:
+        """The fetches past their time. Their places are free from here on."""
+        now = monotonic()
+        with self._lock:
+            over = [key for key, (began, _) in self._running.items()
+                    if now - began >= self._overrun]
+            for key in over:
+                del self._running[key]
+        return over
 
     def stop(self) -> None:
         with self._lock:
@@ -268,6 +335,9 @@ class InlineFetches:
         done, self._done = self._done, []
         return done
 
+    def overran(self) -> list[int]:
+        return []
+
     def stop(self) -> None:
         self.stopped = True
 
@@ -291,6 +361,8 @@ class Ctx:
     mode            "shadow" or "live": where a filing lands.
     fetches         where fetches run (default: off this thread, a couple at a time).
     stop_requested  asked between steps; a tick stops there, leaving what is due still due.
+    studio          intake.studio_designs.StudioSite, or None when no Studio login is set up: a
+                    board item, never a crash. Jobs still file, marked "designs not cross-checked".
     """
 
     store: Store
@@ -305,14 +377,13 @@ class Ctx:
     mode: str
     fetches: FetchRunner = field(default_factory=BackgroundFetches)
     stop_requested: Callable[[], bool] = _never
+    studio: Any = None
+    failed_steps: set[str] = field(default_factory=set)   # this tick's, so only a clean pass closes
 
     def commit(self, writes: list[FileWrite]) -> CommitResult:
-        """The one way the pipeline writes: commit_write with the P1a interlock and the store's
-        write record, then a row for the commit, so no caller forgets either."""
-        result = commit_write(writes, roots=self.roots, interlock=p1a_interlock(self),
-                              registry=StoreRegistry(self.store, self.clock), clock=self.clock)
-        record_commit(self.store, writes, result, at=self.clock.now())
-        return result
+        """The one way the pipeline writes: commit_recorded, with the P1a interlock."""
+        return commit_recorded(writes, store=self.store, clock=self.clock, roots=self.roots,
+                               interlock=p1a_interlock(self))
 
 
 def stop_work(ctx: Ctx) -> None:
@@ -332,22 +403,45 @@ def tick(ctx: Ctx) -> None:
     from the store; a step that fails opens a DEV item and the rest still run, so one bad row can't
     stop the others. Anything but an Exception (a stop, a crash) goes through: the store holds
     only what was finished, and the next tick carries on from there."""
+    ctx.failed_steps.clear()
+    ran = []
     for step in _STEPS:
         if _stopping(ctx):
-            return
+            break
         _guarded(ctx, step.__name__, lambda step=step: step(ctx))
+        ran.append(_step_name(step.__name__))
+    _close_steps_that_passed(ctx, ran)
+
+
+def _step_name(where: str) -> str:
+    return where.strip("_").replace("_", " ")
 
 
 def _guarded(ctx: Ctx, where: str, work: Callable[[], None]) -> None:
+    """A step or item that fails opens a DEV item with the step's name and the error's class only:
+    an error's own text can quote a path and a job, and the night's line goes out to Sulaiman."""
     try:
         work()
     except Exception as exc:  # noqa: BLE001 - one step's or row's problem must not stop the rest
         _log.exception("The pipeline's %s failed", where)
+        ctx.failed_steps.add(_step_name(where))
         try:
             open_dev(ctx.store, at=ctx.clock.now(), code="pipeline_step",
-                     text=f"{where.strip('_').replace('_', ' ')}: {type(exc).__name__}: {exc}")
+                     text=f"{_step_name(where)}: {type(exc).__name__}")
         except Exception:  # noqa: BLE001 - a store that can't be written is the supervisor's
             _log.exception("A DEV item could not be opened")
+
+
+def _close_steps_that_passed(ctx: Ctx, ran: Sequence[str]) -> None:
+    """A step's item stands while the step or any of its items fails, and goes at its next clean
+    pass, so the DEV lane holds what is wrong now and a new problem isn't buried."""
+    try:
+        for item in list_dev(ctx.store):
+            step = item.text.split(":", 1)[0]
+            if item.code == "pipeline_step" and step in ran and step not in ctx.failed_steps:
+                close_dev(ctx.store, item.id)
+    except Exception:  # noqa: BLE001 - a store that can't be written is the supervisor's
+        _log.exception("The steps that passed could not be noted")
 
 
 def _each[T](ctx: Ctx, where: str, items: Iterable[T], work: Callable[[T], None]) -> None:
@@ -584,7 +678,7 @@ def _edited_with_a_job(tx: Transaction, record: FabRowRecord, row: ExportRow, pr
         return
     job = get_job(tx, sid)
     if record.state == "filed" and _install_has_passed(previous, now):
-        if job is not None and not _open_card(tx, sid, "row_changed"):
+        if job is not None and not _open_card(tx, sid, "remake"):
             spec = templates.remake_card(job.name, row=row.job)
             _add_card(tx, spec, now, studio_id=sid, fab_row_id=record.id)
         return
@@ -747,6 +841,9 @@ def _match_rows(ctx: Ctx) -> None:
     now, store = ctx.clock.now(), ctx.store
     ops = list_pending(store, kind=MATCH_ROW)
     if not ops:
+        if (any(item.code == "ng_jobs_unreachable" for item in list_dev(store))
+                and _scan_folders(ctx) is not None):
+            _clear_dev(store, "ng_jobs_unreachable")   # with no rows waiting, nothing else looks
         return
     state, listed = get_job_list(store)
     folders = _scan_folders(ctx)
@@ -787,7 +884,12 @@ def _link(tx: Transaction, row: FabRowRecord, studio_id: str, name: str, now: da
         mode = "observed" if _found_at_install(tx, name) else "auto"
         job = ensure_job(tx, studio_id, name, now=now, mode=mode, designer=row.designer,
                          install=row.install)
-    if filed_facts(tx, studio_id) is not None:
+    facts = filed_facts(tx, studio_id)
+    if facts is not None and facts.get("left_aside"):
+        update_fab_row(tx, row.id, now=now, state="matched", studio_id=studio_id, reason=None)
+        _file_for_real(tx, studio_id, now)
+        return
+    if facts is not None:
         update_fab_row(tx, row.id, now=now, state="filed", studio_id=studio_id, reason=None)
         _queue_filed(tx, job, row, now)
         return
@@ -900,7 +1002,7 @@ def _folders_in(folder: Path) -> list[str]:
 
 def _no_ng_jobs(ctx: Ctx, now: datetime) -> None:
     open_dev(ctx.store, at=now, code="ng_jobs_unreachable",
-             text="NG Jobs can't be read right now, so rows wait: what is there can't be verified.")
+             text=templates.ALARMS["ng_jobs_unreachable"])
 
 
 # ----- Jim's answers
@@ -934,10 +1036,11 @@ def _act(tx: Transaction, card: CardRecord, now: datetime) -> None:
     elif card.kind == "ic_changed":
         _answer_ic_changed(tx, card, now)
     elif card.kind == "row_changed":
-        if card.choices == templates.REMAKE_CHOICES:
-            _answer_remake(tx, card, now)
-        else:
-            _answer_row_changed(tx, card, now)
+        _answer_row_changed(tx, card, now)
+    elif card.kind == "remake":
+        _answer_remake(tx, card, now)
+    elif card.kind == "design_mismatch":
+        _answer_design_mismatch(tx, card, now)
 
 
 def _choice_id(card: CardRecord) -> str | None:
@@ -1018,6 +1121,7 @@ def _release_job(tx: Transaction, studio_id: str, now: datetime) -> None:
     for kind in (*_FIRST_FETCHES, FILE):
         _finish_ops(tx, kind, "failed", studio_id=studio_id,
                     note="Its Fab row now names another job")
+    _withdraw_job_cards(tx, studio_id, "design_mismatch")
     log_event(tx, at=now, kind="job_released", studio_id=studio_id,
               text="Its Fab row now names another job, so its fetching stopped.")
 
@@ -1033,6 +1137,41 @@ def _answer_remake(tx: Transaction, card: CardRecord, now: datetime) -> None:
     else:
         update_job(tx, sid, now=now, designer=row.designer, install=row.install)
     _wake_filing(tx, sid, now)
+
+
+def _answer_design_mismatch(tx: Transaction, card: CardRecord, now: datetime) -> None:
+    """Fetch it again: a fresh fetch 1, which is compared again. File it as it is: the fetch Jim was
+    told about goes on to its second fetch, since two must still agree, and files whatever the
+    proposal says, as long as that content stays the same. An event says he chose to. An answer
+    counts only for what its own card said: one that crosses with a change, so a newer card has
+    gone out, is logged and that card stands, and content other than what he was told asks again."""
+    sid = card.studio_id
+    job = None if sid is None else get_job(tx, sid)
+    if sid is None or job is None:
+        return
+    said = _load(tx, _designs_key(sid)) or {}
+    told = said.get("told") or said
+    if told.get("card", card.id) != card.id:
+        log_event(tx, at=now, kind="designs_answer_late", lane="ACT", studio_id=sid,
+                  text=f"The report or Studio's proposal changed before card {card.id} was"
+                       f" answered, so card {told['card']} asks again.")
+        return
+    _finish_ops(tx, FETCH_1, "done", studio_id=sid)
+    first = _first_render(tx, sid)
+    if first is None or card.choices.index(card.answer) == 0:
+        add_pending(tx, FETCH_1, due_at=now, deadline_at=now + _FETCH_LIMIT, studio_id=sid)
+        return
+    if told.get("fingerprint") != first.fingerprint:
+        _ask_on_designs(tx, job, first.fingerprint, said, now)
+        add_pending(tx, FETCH_1, due_at=now + _DESIGN_RECHECK, studio_id=sid)
+        return
+    set_state(tx, _designs_key(sid), json.dumps({**said, "chose": True}))
+    add_pending(tx, FETCH_2, due_at=max(now, first.fetched_at + _TWO_FETCHES),
+                deadline_at=now + _FETCH_LIMIT, studio_id=sid)
+    spec = templates.design_mismatch_card(job.name, report=told.get("report", 0),
+                                          proposal=told.get("proposal", 0))
+    log_event(tx, at=now, kind="designs_differ_filed", lane="ACT", studio_id=sid,
+              text=f"Jim chose to file it as it is. {spec.text}")
 
 
 def _wake_filing(tx: Transaction, studio_id: str | None, now: datetime) -> None:
@@ -1055,25 +1194,67 @@ def _answer_ic_changed(tx: Transaction, card: CardRecord, now: datetime) -> None
     clear_state(tx, _ic_key(sid))
     job = get_job(tx, sid)
     if question.get("first") and job is not None:
+        for kind in (*_FIRST_FETCHES, FILE):           # a fresh pair, if the render was lost
+            _finish_ops(tx, kind, "done", studio_id=sid)
         _mark_filed(tx, job, _facts_of_found(question, now), now, no_write=True)
 
 
 # ----- steps 4 and 5: the two fetches
 
 
+def _watch_fetches(ctx: Ctx) -> None:
+    """A fetch past its time gives up its place and the job goes on as after a failed fetch, with a
+    DEV item that shows on Your list at once: nothing else would ever say that all filing stopped,
+    since heartbeats and the digest go on regardless."""
+    now, store = ctx.clock.now(), ctx.store
+
+    def one(key: int) -> None:
+        op = get_pending(store, key)
+        job = None if op is None or op.studio_id is None else get_job(store, op.studio_id)
+        if op is None or job is None or op.state != "open":
+            return
+        reason = _FETCH_STOPPED.format(job=job.name)
+        with store.transaction() as tx:
+            open_dev(tx, at=now, code=FETCH_STUCK, text=_FETCH_OVERRAN, studio_id=job.studio_id)
+            if op.kind == REFETCH:
+                _next_night(tx, op, job.studio_id, now)
+            elif op.kind == REFETCH_2:
+                _end_confirming(tx, op, job.studio_id)
+            else:
+                retry_pending(tx, op.id, due_at=now + _backoff(op.attempts), note=reason)
+                _card_if_past_limit(tx, op, job, now, reason, now)
+
+    _each(ctx, "watch_fetches", ctx.fetches.overran(), one)
+
+
 def _raise_deadline_cards(ctx: Ctx) -> None:
     """Past 24 hours from the first attempt: the card, once, carrying the last Fetched.reason. An
-    attempt due now goes first, so a PC that slept gets its chance before anyone is asked."""
+    attempt due now goes first, so a PC that slept gets its chance before anyone is asked. That
+    chance can't be waited for without end: an hour past the limit and still not tried, or still
+    running, the card comes anyway, so a job that never gets a place is not silence."""
     now, store = ctx.clock.now(), ctx.store
     busy = ctx.fetches.busy()
     for op in past_deadline_pending(store, now):
-        if (op.kind not in _FIRST_FETCHES or not op.attempts or op.due_at <= now or op.id in busy
-                or op.studio_id is None):
+        if op.kind not in _FIRST_FETCHES or op.studio_id is None:
+            continue
+        if (not op.attempts or op.due_at <= now or op.id in busy) and not _waited_for_a_try(
+                store, op, now):
             continue
         job = get_job(store, op.studio_id)
         if job is not None:
             with store.transaction() as tx:
-                _fetch_failed_card(tx, job, since=_since_of(op, now), reason=op.note or "", now=now)
+                _fetch_failed_card(tx, job, since=_since_of(op, now), reason=op.note or _UNTRIED,
+                                   now=now)
+
+
+def _waited_for_a_try(store: Store, op: PendingRecord, now: datetime) -> bool:
+    """Whether this operation has been seen past its limit and waiting for over an hour."""
+    key = _untried_key(op.id)
+    seen = get_state_time(store, key)
+    if seen is None:
+        set_state_time(store, key, now)
+        return False
+    return now - seen >= _UNTRIED_FOR
 
 
 def _card_if_past_limit(tx: Transaction, op: PendingRecord, job: JobRecord, at: datetime,
@@ -1113,7 +1294,8 @@ def _start_fetches(ctx: Ctx) -> None:
             return
         nightly = nightly or op.kind in _NIGHTLY
         target = _target(ctx, job)
-        ctx.fetches.start(op.id, lambda: _fetch(ctx, op, target))
+        compared = _compared_fingerprint(store, op)
+        ctx.fetches.start(op.id, lambda: _fetch(ctx, op, target, compared))
 
     _each(ctx, "start_fetches", due, one)
 
@@ -1140,24 +1322,119 @@ def _known_url(db: Db, studio_id: str) -> str | None:
 
 
 @dataclass(frozen=True)
+class _Designs:
+    """What Studio's project page said of a fetched report, for the next tick. Counts and fixed
+    words only, never a design's name.
+
+    code      check_designs' code when the page was read, else StudioUnavailable's.
+    report    the designs on the report's page 1; proposal, the cards on the Proposal tab.
+    reason    why the page could not be read, in fixed plain words.
+    """
+
+    code: str
+    report: int = 0
+    proposal: int = 0
+    reason: str = ""
+
+    @property
+    def read(self) -> bool:
+        return self.code == _AGREES or self.code in _DIFFERS
+
+    @property
+    def differ(self) -> bool:
+        return self.code in _DIFFERS
+
+
+@dataclass(frozen=True)
 class _Outcome:
-    """A finished fetch, for the next tick. at: when it finished; path: its cached bytes."""
+    """A finished fetch, for the next tick. at: when the report came; path: its cached bytes;
+    designs: what Studio's project page said, when it was asked."""
 
     op_id: int
     target: FetchTarget
     fetched: Fetched
     at: datetime
     path: Path | None
+    designs: _Designs | None = None
 
 
-def _fetch(ctx: Ctx, op: PendingRecord, target: FetchTarget) -> _Outcome:
-    """Runs off the tick's thread: Studio, then the cache in NG Runner's own data folder. It
-    touches the store for nothing."""
-    fetched = fetch_render(target, http=ctx.studio_http, base_url=ctx.settings.studio_url)
-    path = None
-    if fetched.ok and fetched.data is not None and fetched.check is not None:
-        path = _cache(ctx.paths, target.studio_id, fetched.check.details["sha256"], fetched.data)
-    return _Outcome(op.id, target, fetched, ctx.clock.now(), path)
+def _compared_fingerprint(db: Db, op: PendingRecord) -> str | None:
+    """For a second fetch: the content its first was compared with Studio's proposal on."""
+    first = _first_render(db, op.studio_id) if op.kind == FETCH_2 and op.studio_id else None
+    return None if first is None else first.fingerprint
+
+
+def _fetch(ctx: Ctx, op: PendingRecord, target: FetchTarget, compared: str | None = None
+           ) -> _Outcome:
+    """Runs off the tick's thread: Studio, the cache in NG Runner's own data folder, then Studio's
+    project page, whose sign-in can take a minute. It touches the store for nothing. Whatever goes
+    wrong comes back as a refused Fetched, so backoff and the 24-hour card apply: an error here
+    must never leave a job due for ever with nobody told."""
+    try:
+        fetched, page, designs = _fetch_report(ctx, target)
+        path = None
+        if fetched.ok and fetched.data is not None and fetched.check is not None:
+            path = _cache(ctx.paths, target.studio_id, fetched.check.details["sha256"],
+                          fetched.data)
+        at = ctx.clock.now()   # before the proposal, so two fetches are timed as fetches
+        if _wants_designs(op, fetched, compared):
+            designs = designs or _against_proposal(ctx, target.studio_id, fetched.check, page)
+    except Exception:  # noqa: BLE001 - a full disk, a bug: the job's own problem, told like any
+        _log.exception("A fetch stopped with an error")
+        reason = _FETCH_STOPPED.format(job=target.name)
+        refused = Fetched(False, None, None, "network", reason, None)   # means: back off, retry
+        return _Outcome(op.id, target, refused, ctx.clock.now(), None)
+    return _Outcome(op.id, target, fetched, at, path, designs)
+
+
+def _fetch_report(ctx: Ctx, target: FetchTarget
+                  ) -> tuple[Fetched, ProjectPage | None, _Designs | None]:
+    """The report. When every derived address gives not_found, Studio's own link to it is tried
+    once as the job's known_url, which reaches the 1 sold job in 60 the derived addresses miss.
+    Also returns the project page if it was read, or why it couldn't be."""
+    studio_url = ctx.settings.studio_url
+    fetched = fetch_render(target, http=ctx.studio_http, base_url=studio_url)
+    if fetched.code != "not_found" or ctx.studio is None:
+        return fetched, None, None
+    page, problem = _project_page(ctx, target.studio_id)
+    if page is None or not page.report_url:
+        return fetched, page, problem
+    known = replace(target, known_url=page.report_url)
+    if report_urls(known, studio_url)[0] in report_urls(target, studio_url):
+        return fetched, page, problem                  # it was asked already, and gave a 404
+    return fetch_render(known, http=ctx.studio_http, base_url=studio_url), page, problem
+
+
+def _wants_designs(op: PendingRecord, fetched: Fetched, compared: str | None) -> bool:
+    """Fetch 1, once it passes the summary check. A second fetch only with other content, since it
+    then counts as fetch 1: the content that files is always the content that was compared. A
+    night's second fetch too, since what it confirms goes to Jim, who must be told what it says."""
+    if not (fetched.ok and fetched.check is not None and fetched.check.ok):
+        return False
+    if op.kind == FETCH_2:
+        return fetched.check.details.get("fingerprint") != compared
+    return op.kind in (FETCH_1, REFETCH_2)
+
+
+def _project_page(ctx: Ctx, studio_id: str) -> tuple[ProjectPage | None, _Designs | None]:
+    if ctx.studio is None:
+        return None, _Designs("no_login", reason=_NO_STUDIO_LOGIN)
+    try:
+        return ctx.studio.project_page(studio_id), None
+    except StudioUnavailable as exc:
+        return None, _Designs(exc.code, reason=exc.reason)
+
+
+def _against_proposal(ctx: Ctx, studio_id: str, check: SummaryCheck, page: ProjectPage | None
+                      ) -> _Designs:
+    """The report's designs against the proposal's. Counts leave here, never a design's name."""
+    problem = None
+    if page is None:
+        page, problem = _project_page(ctx, studio_id)
+    if page is None:
+        return problem or _Designs("network", reason="Studio could not be reached.")
+    verdict = check_designs(check.designs, page)
+    return _Designs(verdict.code, report=len(check.designs), proposal=len(page.proposal))
 
 
 def _cache(paths: AppPaths, studio_id: str, sha256: str, data: bytes) -> Path:
@@ -1176,12 +1453,14 @@ def _take_fetches(ctx: Ctx) -> None:
 
 def _after_fetch(ctx: Ctx, outcome: _Outcome) -> None:
     store = ctx.store
+    _clear_dev(store, FETCH_STUCK, outcome.target.studio_id)   # a fetch of this job came back
     op = get_pending(store, outcome.op_id)
     if op is None or op.state != "open" or op.studio_id is None:
         return                                     # answered while it ran
     job = get_job(store, op.studio_id)
     if job is None:
         return
+    _note_studio(store, outcome.designs, ctx.clock.now())
     if op.kind in _NIGHTLY:
         _after_refetch(ctx, op, job, outcome)
     elif not outcome.fetched.ok:
@@ -1262,12 +1541,92 @@ def _early_render(ctx: Ctx, op: PendingRecord, job: JobRecord, outcome: _Outcome
 
 
 def _first_fetched(ctx: Ctx, op: PendingRecord, job: JobRecord, outcome: _Outcome) -> None:
+    sid, now = job.studio_id, ctx.clock.now()
     with ctx.store.transaction() as tx:
         render = _add_outcome(tx, outcome)
-        set_state(tx, _first_key(job.studio_id), str(render.id))
+        set_state(tx, _first_key(sid), str(render.id))
         finish_pending(tx, op.id, "done")
-        add_pending(tx, FETCH_2, due_at=outcome.at + _TWO_FETCHES, deadline_at=op.deadline_at,
-                    studio_id=job.studio_id)
+        if _designs_hold(tx, job, render, outcome, now):
+            return
+        add_pending(tx, FETCH_2, due_at=outcome.at + _TWO_FETCHES,
+                    deadline_at=op.deadline_at or now + _FETCH_LIMIT, studio_id=sid)
+
+
+def _designs_hold(tx: Transaction, job: JobRecord, render: RenderRecord, outcome: _Outcome,
+                  now: datetime) -> bool:
+    """What Studio's proposal said of the fetch that now counts as the first, kept for its filing.
+    True when the job waits on it: one card, and a fresh fetch 1 every 30 minutes, with no 24-hour
+    limit, since the question is Jim's now. Only this job waits. A difference seen earlier stays
+    until a read shows it gone, so Studio going out of reach never reads as agreement. Content Jim
+    already chose to file as it is doesn't ask again. The open card says what the latest look saw:
+    when the content or the counts move, as they do while a designer is still editing, it goes and
+    a new one says so, since an answer can only stand for what its card said."""
+    designs, sid = outcome.designs, job.studio_id
+    if designs is None:
+        return False
+    before = _load(tx, _designs_key(sid)) or {}
+    if not designs.read and before.get("code") in _DIFFERS:
+        designs = replace(designs, code=before["code"], proposal=before.get("proposal", 0),
+                          report=len(outcome.fetched.check.designs))
+    chose = (designs.differ and bool(before.get("chose"))
+             and before.get("fingerprint") == render.fingerprint)
+    said = {"fingerprint": render.fingerprint, "code": designs.code, "report": designs.report,
+            "proposal": designs.proposal, "chose": chose}
+    if designs.differ and not chose:
+        _withdraw_job_cards(tx, sid, "fetch_failed")   # a fetch came: the question is this now
+        _ask_on_designs(tx, job, render.fingerprint, {**before, **said}, now)
+        add_pending(tx, FETCH_1, due_at=outcome.at + _DESIGN_RECHECK, studio_id=sid)
+        return True
+    set_state(tx, _designs_key(sid), json.dumps(said))
+    if _withdraw_job_cards(tx, sid, "design_mismatch"):
+        log_event(tx, at=now, kind="designs_agree", studio_id=sid,
+                  text="The report and Studio's proposal now list the same designs, so it carries"
+                       " on.")
+    return False
+
+
+def _ask_on_designs(tx: Transaction, job: JobRecord, fingerprint: str, said: dict[str, Any],
+                    now: datetime) -> None:
+    """One open design card, saying this content and these counts, and what it told kept with
+    them. A card that says anything else is withdrawn first."""
+    sid = job.studio_id
+    report, proposal = said.get("report", 0), said.get("proposal", 0)
+    told = said.get("told") or {}
+    current = {"fingerprint": fingerprint, "report": report, "proposal": proposal}
+    if _open_card(tx, sid, "design_mismatch") and {k: told.get(k) for k in current} != current:
+        _withdraw_job_cards(tx, sid, "design_mismatch")
+        log_event(tx, at=now, kind="designs_moved", studio_id=sid,
+                  text="The report or Studio's proposal changed while its card was open, so a new"
+                       " card says what they say now.")
+    if not _open_card(tx, sid, "design_mismatch"):
+        spec = templates.design_mismatch_card(job.name, report=report, proposal=proposal)
+        told = {**current, "card": _add_card(tx, spec, now, studio_id=sid).id}
+    set_state(tx, _designs_key(sid), json.dumps({**said, "fingerprint": fingerprint, "told": told}))
+
+
+def _note_studio(store: Store, designs: _Designs | None, now: datetime) -> None:
+    """One DEV item per day while Studio's project page can't be read, whichever job asked, and
+    yesterday's is closed, so a long outage is one line a night and not a pile. Today's stays once
+    a read works, so the night's line still tells Sulaiman of jobs filed unchecked; a read on a
+    later day closes it."""
+    if designs is None:
+        return
+    if designs.read:
+        today = pacific_day(now)
+        for item in list_dev(store):
+            if (item.code in (STUDIO_UNAVAILABLE, STUDIO_PAGE_CHANGED)
+                    and pacific_day(item.at) < today):
+                close_dev(store, item.id)
+        return
+    code = STUDIO_PAGE_CHANGED if designs.code == "page_changed" else STUDIO_UNAVAILABLE
+    key, today_text = _studio_dev_key(code), pacific_day(now).isoformat()
+    if get_state(store, key) == today_text:
+        return
+    with store.transaction() as tx:
+        set_state(tx, key, today_text)
+        _clear_dev(tx, code)
+        open_dev(tx, at=now, code=code,
+                 text=f"{designs.reason} Jobs filed now are marked designs not cross-checked.")
 
 
 def _second_fetched(ctx: Ctx, op: PendingRecord, job: JobRecord, outcome: _Outcome) -> None:
@@ -1289,6 +1648,9 @@ def _second_fetched(ctx: Ctx, op: PendingRecord, job: JobRecord, outcome: _Outco
         else:
             if code in ("first_incomplete", "differ"):
                 set_state(tx, _first_key(sid), str(render.id))   # the second counts as fetch 1
+                if _designs_hold(tx, job, render, outcome, now):
+                    finish_pending(tx, op.id, "done")
+                    return
             if code == "same_bytes":
                 open_dev(tx, at=now, code="same_bytes", text=agreement.reason, studio_id=sid)
             wait = _EARLY_RETRY if code == "second_incomplete" else _TWO_FETCHES
@@ -1361,6 +1723,11 @@ def _after_refetch(ctx: Ctx, op: PendingRecord, job: JobRecord, outcome: _Outcom
                 retry_pending(tx, op.id, due_at=now, note=None)
                 return
             open_dev(tx, at=now, code="wrong_job", text=fetched.reason, studio_id=sid)
+        elif fetched.ok and fetched.check is not None and fetched.check.ok:
+            _clear_dev(tx, "wrong_job", sid)
+            if not changed:                        # it reads as filed: the night's trouble is over
+                _clear_dev(tx, "same_bytes", sid)
+                _clear_dev(tx, "layouts_differ", sid)
         if changed:
             set_state(tx, _first_key(sid), str(render.id))
             add_pending(tx, REFETCH_2, due_at=outcome.at + _TWO_FETCHES, studio_id=sid)
@@ -1380,7 +1747,7 @@ def _differs_from_governing(store: Store, studio_id: str, check: SummaryCheck) -
     """A real change: not the filed content, not one Jim already chose to keep, and no card out
     already. A fingerprint read by another pypdf version is read again first, and one that can't
     be is "could not verify": no card."""
-    if any(card.kind == "ic_changed" for card in list_cards(store, studio_id=studio_id)):
+    if _ic_card_stands(store, studio_id):
         return False
     if check.details["fingerprint"] in (_load(store, _declined_key(studio_id)) or []):
         return False
@@ -1392,6 +1759,13 @@ def _differs_from_governing(store: Store, studio_id: str, check: SummaryCheck) -
     return stored is not None and stored != check.details["fingerprint"]
 
 
+def _ic_card_stands(db: Db, studio_id: str) -> bool:
+    """A card is out on a render still held. One that lost its render wants a fresh pair."""
+    if not _open_card(db, studio_id, "ic_changed"):
+        return False
+    return not (_load(db, _ic_key(studio_id)) or {}).get("lost")
+
+
 def _confirm_change(ctx: Ctx, op: PendingRecord, job: JobRecord, outcome: _Outcome,
                     now: datetime) -> None:
     """The second of the night's fetches: only two agreeing ones raise the card."""
@@ -1400,6 +1774,9 @@ def _confirm_change(ctx: Ctx, op: PendingRecord, job: JobRecord, outcome: _Outco
     complete = fetched.ok and fetched.check is not None and fetched.check.ok
     agreement = _agreement(first, outcome) if complete else None
     still = complete and _differs_from_governing(store, sid, fetched.check)
+    where, there = _night_place(ctx, job) if still else ("ng_jobs", None)
+    changed = _what_changed(there.path if there is not None else _cached(governing_render(store, sid)),
+                            outcome.path) if still else ""
     with store.transaction() as tx:
         render = _add_outcome(tx, outcome)
         if not complete or agreement is None or agreement.code == "first_incomplete":
@@ -1411,8 +1788,14 @@ def _confirm_change(ctx: Ctx, op: PendingRecord, job: JobRecord, outcome: _Outco
             return
         code = agreement.code
         if code == "agree":
+            _clear_dev(tx, "same_bytes", sid)
+            _clear_dev(tx, "layouts_differ", sid)
             if still:
-                _ic_changed_at_night(tx, job, render, agreement, first, now)
+                _ic_changed_at_night(tx, job, render, agreement, first, outcome.designs, where,
+                                     there, changed, now)
+            elif (_load(tx, _ic_key(sid)) or {}).get("lost"):   # the change has gone away
+                clear_state(tx, _ic_key(sid))
+                _withdraw_job_cards(tx, sid, "ic_changed")
             _end_confirming(tx, op, sid)
         elif code == "layouts_differ":
             open_dev(tx, at=now, code="layouts_differ", text=agreement.reason, studio_id=sid)
@@ -1436,20 +1819,107 @@ def _end_confirming(tx: Transaction, op: PendingRecord, studio_id: str) -> None:
     clear_state(tx, _first_key(studio_id))
 
 
+def _night_place(ctx: Ctx, job: JobRecord) -> tuple[str, _Found | None]:
+    """Where a new render of this job would be filed now, and, for a job filed aside and now live,
+    what NG Jobs holds under its folder, since that is what the new one must be compared with."""
+    facts = filed_facts(ctx.store, job.studio_id)
+    if facts is None:
+        return "ng_jobs", None
+    where, there = _where_now(ctx, facts["where"], facts["folder"]), None
+    if facts["where"] == SHADOW and where != SHADOW:
+        try:
+            there = _summary_in_folders(ctx, job, facts["folder"])
+        except (OSError, ValueError):              # can't verify: commit_write's rule still holds
+            there = None
+    return (there.where if there is not None else where), there
+
+
+def _where_now(ctx: Ctx, where: str, folder: str) -> str:
+    """Where a filing goes now, whatever the job's last one did. Shadow mode files aside, and
+    keeps out of NG Jobs even for a job filed there while live (decision: shadow writes nothing in
+    NG Jobs). Live files in NG Jobs, even for a job filed aside. A folder in Old stays in Old."""
+    if where == "old":
+        return "old"
+    if ctx.mode == SHADOW:
+        return SHADOW
+    return "old" if _only_in_old(ctx, folder) else "ng_jobs"
+
+
 def _ic_changed_at_night(tx: Transaction, job: JobRecord, render: RenderRecord,
-                         agreement: Agreement, first: RenderRecord, now: datetime) -> None:
-    facts = filed_facts(tx, job.studio_id)
-    if facts is None or _open_card(tx, job.studio_id, "ic_changed"):
+                         agreement: Agreement, first: RenderRecord, designs: _Designs | None,
+                         where: str, there: _Found | None, changed: str, now: datetime) -> None:
+    sid = job.studio_id
+    facts = filed_facts(tx, sid)
+    if facts is None or _ic_card_stands(tx, sid):
         return
-    spec = templates.ic_changed_card(job.name, filed_at=from_iso(facts["at"]),
-                                     filed_pages=facts["pages"], new_at=render.fetched_at,
-                                     new_pages=render.page_count or 0)
-    _add_card(tx, spec, now, studio_id=job.studio_id)
-    set_state(tx, _ic_key(job.studio_id), json.dumps({
+    if there is not None and there.fingerprint == agreement.fingerprint:
+        set_governing(tx, render.id)
+        checked = _proposal_facts(_verdict(designs))
+        set_state(tx, _filed_key(sid), json.dumps(_facts_of_there(job, there, facts, checked, now)))
+        log_event(tx, at=now, kind="refiled", lane="ACT", studio_id=sid, text=_ALREADY_THERE)
+        return
+    question = {
         "first": False, "render": render.id, "fingerprint": agreement.fingerprint,
-        "folder": facts["folder"], "where": facts["where"], "branch": facts["branch"],
-        "fetched": [to_iso(first.fetched_at), to_iso(render.fetched_at)]}))
-    log_event(tx, at=now, kind="ic_changed", studio_id=job.studio_id, text=agreement.reason)
+        "folder": facts["folder"], "where": where, "branch": facts["branch"],
+        "designs": _verdict(designs), "changed": changed,
+        "fetched": [to_iso(first.fetched_at), to_iso(render.fetched_at)]}
+    if (_load(tx, _ic_key(sid)) or {}).get("designs") != question["designs"]:
+        _withdraw_job_cards(tx, sid, "ic_changed")     # a lost render's card said something else
+    if not _open_card(tx, sid, "ic_changed"):
+        filed_at, filed_pages = from_iso(facts["at"]), facts["pages"]
+        if there is not None:                          # what Jim would be replacing is that one
+            filed_at = datetime.fromtimestamp(there.path.stat().st_mtime, tz=UTC)
+            filed_pages = there.check.page_count
+        spec = templates.ic_changed_card(job.name, filed_at=filed_at, filed_pages=filed_pages,
+                                         new_at=render.fetched_at, new_pages=render.page_count or 0,
+                                         designs=_verdict_words(question["designs"]),
+                                         changed=changed)
+        _add_card(tx, spec, now, studio_id=sid)
+    set_state(tx, _ic_key(sid), json.dumps(question))
+    log_event(tx, at=now, kind="ic_changed", studio_id=sid, text=agreement.reason)
+
+
+def _what_changed(old: Any, new: Any) -> str:
+    """What differs between two renders, in a card's words; "" when either can't be read. It only
+    describes, so a card never waits or fails for it."""
+    if old is None or new is None:
+        return ""
+    try:
+        return describe_change(old, new).words()
+    except (OSError, ValueError):
+        return ""
+
+
+def _verdict(designs: _Designs | None) -> dict[str, Any]:
+    """What Studio's proposal said of a night's change, kept in its question. Counts only."""
+    if designs is None or not designs.read:
+        return {"code": "unread"}
+    return {"code": designs.code, "report": designs.report, "proposal": designs.proposal}
+
+
+def _verdict_words(verdict: dict[str, Any] | None) -> str:
+    if verdict is None:
+        return ""
+    if verdict["code"] not in (_AGREES, *_DIFFERS):
+        return "its designs could not be cross-checked"
+    return templates.design_counts(verdict["report"], verdict["proposal"],
+                                   differ=verdict["code"] != _AGREES)
+
+
+def _proposal_facts(verdict: dict[str, Any]) -> dict[str, bool]:
+    """Checked when the proposal agreed. Differing means Jim chose it, told the counts."""
+    return {"designs_checked": verdict["code"] == _AGREES,
+            "designs_chosen": verdict["code"] in _DIFFERS}
+
+
+def _facts_of_there(job: JobRecord, there: _Found, facts: dict[str, Any], checked: dict[str, bool],
+                    now: datetime) -> dict[str, Any]:
+    """The content NG Runner would have filed is already in NG Jobs: it is filed as it is there."""
+    return {"job": job.name, "at": to_iso(now), "folder": facts["folder"], "where": there.where,
+            "wrote": False, "branch": facts["branch"], "sha256": _sha_file(there.path),
+            "layout": there.check.details.get("orientation"), "pages": there.check.page_count,
+            "designs": len(there.check.designs), **checked, "fetched": [], "items": [],
+            "replaced_by_hand": False}
 
 
 # ----- step 6: filing
@@ -1473,7 +1943,7 @@ def _file_ready(ctx: Ctx) -> None:
     ops = [op for op in list_pending(ctx.store, kind=FILE) if op.due_at <= now]
     _each(ctx, "file_ready", ops, lambda op: _file_one(ctx, op, now))
     ops = [op for op in list_pending(ctx.store, kind=FILE_NEW) if op.due_at <= now]
-    _each(ctx, "file_new", ops, lambda op: _file_new_one(ctx, op, now))
+    _each(ctx, "file_ready", ops, lambda op: _file_new_one(ctx, op, now))
 
 
 def _file_one(ctx: Ctx, op: PendingRecord, now: datetime) -> None:
@@ -1497,6 +1967,11 @@ def _file_one(ctx: Ctx, op: PendingRecord, now: datetime) -> None:
         retry_pending(store, op.id, due_at=now + _HOLD, note=None)
         return
     folder = job.folder or _folder_name(job.name, branch)
+    if _folder_is_another_sales(store, job, folder):
+        open_dev(store, at=now, code=SAME_FOLDER, studio_id=sid,
+                 text="Two sales with one name share a folder: a person decides what this one is.")
+        _refused(ctx, op, _SAME_FOLDER, now, retry=_WATCH_AGAIN)
+        return
     if not ctx.roots.ng_jobs.is_dir():
         _refused(ctx, op, _NOT_REACHABLE, now)
         return
@@ -1505,7 +1980,8 @@ def _file_one(ctx: Ctx, op: PendingRecord, now: datetime) -> None:
     except (OSError, ValueError) as exc:
         _refused(ctx, op, f"The summary in its folder can't be read ({type(exc).__name__})", now)
         return
-    pair = _Pair(ready["first"], render, data, ready["fingerprint"], branch, folder)
+    pair = _Pair(ready["first"], render, data, ready["fingerprint"], branch, folder,
+                 len(check.designs))
     if found is not None:
         _compare_with_folder(ctx, op, job, pair, found, now)
     elif job.mode == "observed":
@@ -1516,10 +1992,23 @@ def _file_one(ctx: Ctx, op: PendingRecord, now: datetime) -> None:
         _commit_new(ctx, op, job, pair, now)
 
 
+def _folder_is_another_sales(db: Db, job: JobRecord, folder: str) -> bool:
+    """The folder comes from the name alone, and two sales can share a name, so whatever is in this
+    folder may be the other sale's. It would read as an ordinary IC change, and Jim's answer would
+    replace the other sale's summary, so it is never asked as one."""
+    wanted = folder.casefold()
+    for other in list_jobs(db):
+        if other.studio_id != job.studio_id:
+            facts = filed_facts(db, other.studio_id) or {}
+            if wanted in ((other.folder or "").casefold(), (facts.get("folder") or "").casefold()):
+                return True
+    return False
+
+
 def _a_question_holds(db: Db, studio_id: str) -> bool:
     """A row of this job whose new text isn't settled yet: nothing new is filed until it is."""
-    return bool(list_pending(db, kind=LIST_REMATCH, studio_id=studio_id)) or _open_card(
-        db, studio_id, "row_changed")
+    return (bool(list_pending(db, kind=LIST_REMATCH, studio_id=studio_id))
+            or _open_card(db, studio_id, "row_changed") or _open_card(db, studio_id, "remake"))
 
 
 def _cached(render: RenderRecord | None) -> bytes | None:
@@ -1644,12 +2133,13 @@ def _compare_with_folder(ctx: Ctx, op: PendingRecord, job: JobRecord, pair: _Pai
     if found.fingerprint != pair.fingerprint:
         _ic_changed_first(ctx, op, job, pair, found, now)
         return
-    if found.where != "old" and job.mode != "observed" and _is_own(ctx, found.path, pair.folder):
+    if (found.where != "old" and job.mode != "observed" and _is_own(ctx, found.path, pair.folder)
+            and not _writes_barred(ctx, found.where)):
         there = replace(pair, data=found.path.read_bytes())    # the notes describe what is there
         if _commit_missing(ctx, op, job, there, found.where, now):
             _file_done(ctx, op, job, there, found.where, now, wrote=True)
         return
-    facts = _facts_from_file(found, pair, job, now)
+    facts = _facts_from_file(ctx.store, found, pair, job, now)
     with ctx.store.transaction() as tx:
         finish_pending(tx, op.id, "done")
         _mark_filed(tx, job, facts, now, no_write=True)
@@ -1678,8 +2168,11 @@ def _ic_changed_first(ctx: Ctx, op: PendingRecord, job: JobRecord, pair: _Pair, 
         "found_sha256": _sha_file(found.path),
         "found_layout": found.check.details.get("orientation"),
         "found_pages": found.check.page_count,
+        "found_designs": len(found.check.designs),
     }
     filed_at = datetime.fromtimestamp(found.path.stat().st_mtime, tz=UTC)
+    question["found_at"] = to_iso(filed_at)
+    question["changed"] = _what_changed(found.path, pair.data)
     with ctx.store.transaction() as tx:
         finish_pending(tx, op.id, "done")
         set_state(tx, _ic_key(sid), json.dumps(question))
@@ -1687,7 +2180,8 @@ def _ic_changed_first(ctx: Ctx, op: PendingRecord, job: JobRecord, pair: _Pair, 
             spec = templates.ic_changed_card(job.name, filed_at=filed_at,
                                              filed_pages=found.check.page_count,
                                              new_at=pair.render.fetched_at,
-                                             new_pages=pair.render.page_count or 0)
+                                             new_pages=pair.render.page_count or 0,
+                                             changed=question["changed"])
             _add_card(tx, spec, now, studio_id=sid)
 
 
@@ -1699,6 +2193,12 @@ def _observed_waits(ctx: Ctx, op: PendingRecord, job: JobRecord, now: datetime) 
         for row in _rows_of(tx, job.studio_id):
             if row.reason != _OBSERVED_REASON:
                 update_fab_row(tx, row.id, now=now, reason=_OBSERVED_REASON)
+
+
+def _writes_barred(ctx: Ctx, where: str) -> bool:
+    """Shadow mode writes nothing in NG Jobs, whoever filed what is there. Rewriting notes there
+    waits until it is live again."""
+    return ctx.mode == SHADOW and where != SHADOW
 
 
 def _is_own(ctx: Ctx, path: Path, folder: str) -> bool:
@@ -1759,6 +2259,7 @@ class _Pair:
     fingerprint: str
     branch: str
     folder: str
+    designs: int
 
 
 def _fetched_times(db: Db, pair: _Pair) -> list[str]:
@@ -1773,15 +2274,29 @@ def _facts_from_pair(ctx: Ctx, pair: _Pair, job: JobRecord, where: str, now: dat
     return {"job": job.name, "at": to_iso(now), "folder": pair.folder, "where": where,
             "wrote": wrote, "branch": pair.branch, "sha256": _sha(pair.data),
             "layout": pair.render.layout or _layout_of(ctx.store, ctx.settings, sid),
-            "pages": pair.render.page_count or 0, "fetched": _fetched_times(ctx.store, pair),
+            "pages": pair.render.page_count or 0, "designs": pair.designs,
+            **_designs_facts(ctx.store, sid, pair.fingerprint),
+            "fetched": _fetched_times(ctx.store, pair),
             "items": [], "replaced_by_hand": False, **_stat_of(_dir_of(
                 ctx, where, pair.folder) / f"{pair.folder}_summary.pdf")}
 
 
-def _facts_from_file(found: _Found, pair: _Pair, job: JobRecord, now: datetime) -> dict[str, Any]:
+def _designs_facts(db: Db, studio_id: str, fingerprint: str) -> dict[str, bool]:
+    """Whether this content was compared with Studio's proposal and agreed (designs_checked), or
+    differed and Jim chose to file it as it is (designs_chosen). Neither: not cross-checked."""
+    said = _load(db, _designs_key(studio_id)) or {}
+    same = said.get("fingerprint") == fingerprint
+    return {"designs_checked": same and said.get("code") == _AGREES,
+            "designs_chosen": same and bool(said.get("chose"))}
+
+
+def _facts_from_file(db: Db, found: _Found, pair: _Pair, job: JobRecord, now: datetime
+                     ) -> dict[str, Any]:
     return {"job": job.name, "at": to_iso(now), "folder": pair.folder, "where": found.where,
             "wrote": False, "branch": pair.branch, "sha256": _sha_file(found.path),
             "layout": found.check.details.get("orientation"), "pages": found.check.page_count,
+            "designs": len(found.check.designs),
+            **_designs_facts(db, job.studio_id, pair.fingerprint),
             "fetched": [], "items": [], "replaced_by_hand": False}
 
 
@@ -1790,7 +2305,8 @@ def _facts_of_found(question: dict[str, Any], now: datetime) -> dict[str, Any]:
     return {"job": "", "at": to_iso(now), "folder": question["folder"], "where": question["where"],
             "wrote": False, "branch": question["branch"], "sha256": question.get("found_sha256"),
             "layout": question.get("found_layout"), "pages": question.get("found_pages") or 0,
-            "fetched": [], "items": [], "replaced_by_hand": False}
+            "designs": question.get("found_designs"), "designs_checked": False,
+            "designs_chosen": False, "fetched": [], "items": [], "replaced_by_hand": False}
 
 
 def _mark_filed(tx: Transaction, job: JobRecord, facts: dict[str, Any], now: datetime, *,
@@ -1804,13 +2320,16 @@ def _mark_filed(tx: Transaction, job: JobRecord, facts: dict[str, Any], now: dat
     set_state(tx, _filed_key(sid), json.dumps(facts))
     clear_state(tx, _ready_key(sid))
     clear_state(tx, _first_key(sid))
-    for card in list_cards(tx, studio_id=sid):
-        if card.kind == "fetch_failed":
-            withdraw_card(tx, card.id)
+    clear_state(tx, _ic_key(sid))
+    clear_state(tx, _designs_key(sid))
+    _withdraw_job_cards(tx, sid, "fetch_failed", "ic_changed", "design_mismatch")
+    for code in CLOSED_BY_FILING:
+        _clear_dev(tx, code, sid)
     for row in _rows_of(tx, sid):
         if row.state != "filed":
             update_fab_row(tx, row.id, now=now, state="filed", reason=None)
             _queue_filed(tx, frozen, row, now)
+    clear_state(tx, _again_key(sid))
     add_pending(tx, REFETCH, due_at=next_at(now, _NIGHT), studio_id=sid)
     words = ("Its folder already holds this IC summary, so nothing was written."
              if no_write else _filed_words(facts))
@@ -1818,11 +2337,16 @@ def _mark_filed(tx: Transaction, job: JobRecord, facts: dict[str, Any], now: dat
 
 
 def _queue_filed(tx: Transaction, job: JobRecord, row: FabRowRecord, now: datetime) -> None:
-    """Barbara's "Filed as <Job>", once per row. A job added by hand has no row, so no email."""
+    """Barbara's "Filed as <Job>", once per row and job, with what a person who knows the job can
+    check: a row linked to another job tells her that job too. A job added by hand has no row, so
+    no email."""
+    facts = filed_facts(tx, job.studio_id) or {}
     message = templates.filed(job.name, row=row.text, designer=row.designer,
-                              install=_install_of(row, now), garage=job.branch == "garage")
+                              install=_install_of(row, now), garage=job.branch == "garage",
+                              designs=facts.get("designs"), pages=facts.get("pages"))
+    again = get_state(tx, _again_key(job.studio_id))
     _queue_tell(tx, TELL_FILED, message, to=BARBARA, fab_row_id=row.id, now=now,
-                ref=f"filed:{row.id}")
+                ref=f"filed:{row.id}:{job.studio_id}" + (f":{again}" if again else ""))
 
 
 def _filed_words(facts: dict[str, Any]) -> str:
@@ -1831,7 +2355,18 @@ def _filed_words(facts: dict[str, Any]) -> str:
     if len(fetched) == 2:
         gap = from_iso(fetched[1]) - from_iso(fetched[0])
         apart = f", checked on two fetches {int(gap.total_seconds() // 60)} minutes apart"
-    return f"Filed the IC summary ({facts['layout']}, {_count(facts['pages'], 'page')}){apart}."
+    counts = (templates.filed_counts(facts.get("designs"), facts.get("pages"))
+              or "its design and page counts could not be read")
+    return f"Filed the IC summary ({facts['layout']}, {counts}){apart}{_designs_words(facts)}."
+
+
+def _designs_words(facts: dict[str, Any]) -> str:
+    """What a filing's words add when Studio's proposal didn't agree with it, or wasn't asked."""
+    if facts.get("designs_checked"):
+        return ""
+    if facts.get("designs_chosen"):
+        return ", and Jim chose to file it as it is, as the report and Studio's proposal differ"
+    return ", designs not cross-checked"
 
 
 def _file_new_one(ctx: Ctx, op: PendingRecord, now: datetime) -> None:
@@ -1840,31 +2375,51 @@ def _file_new_one(ctx: Ctx, op: PendingRecord, now: datetime) -> None:
     store, sid = ctx.store, op.studio_id
     question = None if sid is None else _load(store, _ic_key(sid))
     job = None if sid is None else get_job(store, sid)
-    render = None if question is None else get_render(store, question["render"])
-    data = _cached(render)
-    if job is None or question is None or render is None or data is None:
-        finish_pending(store, op.id, "failed", note="The new IC summary is no longer cached")
+    if job is None or question is None:
+        with store.transaction() as tx:
+            finish_pending(tx, op.id, "failed", note=_NOTHING_NEW)
+            open_dev(tx, at=now, code="file_new_lost", text=_NOTHING_NEW,
+                     studio_id=None if job is None else sid)
         return
-    if question["where"] == "old":
+    cached = _newest_cached(store, sid, question)
+    if cached is None:
+        _fetch_new_again(ctx, op, job, question, now)
+        return
+    render, data = cached
+    folder = question["folder"]
+    where = _where_now(ctx, question["where"], folder)
+    if where == "old":
         _refused(ctx, op, _OLD_REASON, now, retry=_WATCH_AGAIN)
         return
-    folder = question["folder"]
-    place = _dir_of(ctx, question["where"], folder)
-    facts = {"job": job.name, "at": to_iso(now), "folder": folder, "where": question["where"],
+    checked = _checked_for(store, sid, question)
+    if question["where"] == SHADOW and where == "ng_jobs":     # asked aside, and live since
+        try:
+            there = _summary_in_folders(ctx, job, folder)
+        except (OSError, ValueError) as exc:
+            _refused(ctx, op, f"The summary in its folder can't be read ({type(exc).__name__})",
+                     now, retry=_backoff(op.attempts))
+            return
+        if there is not None and there.fingerprint == question["fingerprint"]:
+            _new_one_is_there(ctx, op, job, render, there, question, checked, now)
+            return
+    place = _dir_of(ctx, where, folder)
+    facts = {"job": job.name, "at": to_iso(now), "folder": folder, "where": where,
              "wrote": True, "branch": question["branch"], "sha256": _sha(data),
              "layout": render.layout, "pages": render.page_count or 0,
+             "designs": len(check_summary(data).designs), **checked,
              "fetched": question["fetched"], "items": [], "replaced_by_hand": False}
-    old_log = _read_or_none(place / f"{folder}_NGRunner_log.txt") or b""
-    line = _log_line(now, f"Filed the new IC summary, as Jim chose. {_filed_words(facts)}")
-    files = {f"{folder}_summary.pdf": data, f"{folder}_NGRunner.json": _notes_bytes(facts, []),
-             f"{folder}_NGRunner_log.txt": old_log + line.encode("utf-8")}
-    writes = [FileWrite(place / name, content, _sha_or_none(place / name))
-              for name, content in files.items()]
-    result = ctx.commit(writes)
-    if not result.ok:
-        _refused(ctx, op, result.reason or "The filing was refused", now,
-                 retry=_backoff(op.attempts))
-        return
+    words = f"Filed the new IC summary, as Jim chose. {_filed_words(facts)}"
+    if not _new_one_committed(ctx, place, folder, data, words):
+        old_log = _read_or_none(place / f"{folder}_NGRunner_log.txt") or b""
+        files = {f"{folder}_summary.pdf": data, f"{folder}_NGRunner.json": _notes_bytes(facts, []),
+                 f"{folder}_NGRunner_log.txt": old_log + _log_line(now, words).encode("utf-8")}
+        writes = [FileWrite(place / name, content, _sha_or_none(place / name))
+                  for name, content in files.items()]
+        result = ctx.commit(writes)
+        if not result.ok:
+            _refused(ctx, op, result.reason or "The filing was refused", now,
+                     retry=_backoff(op.attempts))
+            return
     facts |= _stat_of(place / f"{folder}_summary.pdf")
     with store.transaction() as tx:
         finish_pending(tx, op.id, "done")
@@ -1878,6 +2433,99 @@ def _file_new_one(ctx: Ctx, op: PendingRecord, now: datetime) -> None:
                       text="Filed the new IC summary, as Jim chose.")
 
 
+def _checked_for(db: Db, studio_id: str, question: dict[str, Any]) -> dict[str, bool]:
+    """A night's question holds what the proposal said that night; a first filing's check is the
+    job's own, kept until it files."""
+    verdict = question.get("designs")
+    if verdict is not None:
+        return _proposal_facts(verdict)
+    return _designs_facts(db, studio_id, question["fingerprint"])
+
+
+def _new_one_committed(ctx: Ctx, place: Path, folder: str, data: bytes, words: str) -> bool:
+    """Whether a pass that stopped after its commit, before its transaction, already wrote all of
+    this: the summary is these bytes and NG Runner's own, the notes describe it, and the log's last
+    line says so. Committing again would make a second log line and a backup of nothing new."""
+    summary, sha = place / f"{folder}_summary.pdf", _sha(data)
+    if _sha_or_none(summary) != sha or owned_sha(ctx.store, summary) != sha:
+        return False
+    try:
+        notes = json.loads(_read_or_none(place / f"{folder}_NGRunner.json") or b"{}")
+    except ValueError:
+        return False
+    if notes.get("summary", {}).get("sha256") != sha:
+        return False
+    log = (_read_or_none(place / f"{folder}_NGRunner_log.txt") or b"").decode("utf-8", "replace")
+    lines = log.splitlines()
+    return bool(lines) and lines[-1].endswith(words)
+
+
+def _new_one_is_there(ctx: Ctx, op: PendingRecord, job: JobRecord, render: RenderRecord,
+                      there: _Found, question: dict[str, Any], checked: dict[str, bool],
+                      now: datetime) -> None:
+    sid = job.studio_id
+    facts = _facts_of_there(job, there, question, checked, now)
+    with ctx.store.transaction() as tx:
+        finish_pending(tx, op.id, "done")
+        set_governing(tx, render.id)
+        clear_state(tx, _ic_key(sid))
+        if filed_facts(tx, sid) is None:
+            _mark_filed(tx, job, facts, now, no_write=True)
+        else:
+            set_state(tx, _filed_key(sid), json.dumps(facts))
+            log_event(tx, at=now, kind="refiled", lane="ACT", studio_id=sid, text=_ALREADY_THERE)
+
+
+def _newest_cached(db: Db, studio_id: str, question: dict[str, Any]
+                   ) -> tuple[RenderRecord, bytes] | None:
+    """The render Jim chose, or else the newest still cached that holds the same content: two
+    fetches agreed on it, and either serves."""
+    chosen = get_render(db, question["render"])
+    same = [r for r in reversed(list_renders(db, studio_id))
+            if r.check_ok and r.fingerprint == question["fingerprint"]]
+    for render in ([chosen] if chosen is not None else []) + same:
+        data = _cached(render)
+        if data is not None:
+            return render, data
+    return None
+
+
+def _fetch_new_again(ctx: Ctx, op: PendingRecord, job: JobRecord, question: dict[str, Any],
+                     now: datetime) -> None:
+    """No copy of what Jim chose is left. His card goes on being open, and a fresh pair is fetched,
+    which takes the lost one's place in the question. An answered card can't be reopened in the
+    store, so the same question opens again under the next ID. It is never a quiet end."""
+    sid = job.studio_id
+    with ctx.store.transaction() as tx:
+        finish_pending(tx, op.id, "done", note=_NEW_GONE)
+        set_state(tx, _ic_key(sid), json.dumps({**question, "lost": True}))
+        if not _open_card(tx, sid, "ic_changed"):
+            _add_card(tx, _ic_card_again(tx, job, question, now), now, studio_id=sid)
+        if question.get("first"):
+            if not any(list_pending(tx, kind=kind, studio_id=sid) for kind in _FIRST_FETCHES):
+                clear_state(tx, _ready_key(sid))
+                clear_state(tx, _first_key(sid))
+                add_pending(tx, FETCH_1, due_at=now, deadline_at=now + _FETCH_LIMIT, studio_id=sid)
+        elif not list_pending(tx, kind=REFETCH_2, studio_id=sid):
+            clear_state(tx, _first_key(sid))
+            add_pending(tx, REFETCH_2, due_at=now, studio_id=sid)
+        log_event(tx, at=now, kind="fetch_again", lane="ACT", studio_id=sid, text=_NEW_GONE)
+
+
+def _ic_card_again(db: Db, job: JobRecord, question: dict[str, Any], now: datetime) -> Any:
+    render = get_render(db, question["render"])
+    facts = filed_facts(db, job.studio_id)
+    if facts is not None:
+        filed_at, filed_pages = from_iso(facts["at"]), facts["pages"]
+    else:
+        filed_at, filed_pages = from_iso(question["found_at"]), question.get("found_pages") or 0
+    return templates.ic_changed_card(job.name, filed_at=filed_at, filed_pages=filed_pages,
+                                     new_at=render.fetched_at if render is not None else now,
+                                     new_pages=(render.page_count or 0) if render else 0,
+                                     designs=_verdict_words(question.get("designs")),
+                                     changed=question.get("changed", ""))
+
+
 # ----- section 4: keeping the notes in the job folder current
 
 
@@ -1886,6 +2534,7 @@ def _keep_notes_current(ctx: Ctx) -> None:
     whenever a card opens or closes. While paused nothing is written; it catches up after."""
     store = ctx.store
     if is_paused(store):
+        ctx.failed_steps.add(_step_name("_keep_notes_current"))   # no look, so no clean pass
         return
     now = ctx.clock.now()
     by_job: dict[str, list[CardRecord]] = {}
@@ -1896,8 +2545,11 @@ def _keep_notes_current(ctx: Ctx) -> None:
 
     def one(sid: str) -> None:
         facts = filed_facts(store, sid)
-        if facts is None or not facts.get("wrote"):
+        if (facts is None or not facts.get("wrote") or facts.get("left_aside")
+                or _writes_barred(ctx, facts["where"])):
             return
+        if any(op.note is None for op in list_pending(store, kind=FILE_NEW, studio_id=sid)):
+            return                                 # a filing under way writes the notes itself
         items = _items(by_job.get(sid, ()))
         retry_at = facts.get("retry_at")
         if items == facts.get("items", []) or (retry_at and now < from_iso(retry_at)):
@@ -1964,6 +2616,8 @@ def _notes_bytes(facts: dict[str, Any], items: list[dict[str, str]]) -> bytes:
     if facts.get("replaced_by_hand"):
         summary["replaced_by_hand"] = True
     record = {"schema": 1, "job": facts["job"], "branch": facts["branch"], "summary": summary,
+              "designs": facts.get("designs"),
+              "designs_checked": bool(facts.get("designs_checked")),
               "filed_at": facts["at"], "items": items, "note": _NOTE}
     return (json.dumps(record, indent=1, ensure_ascii=False) + "\n").encode("utf-8")
 
@@ -1982,16 +2636,16 @@ def _watch_filed(ctx: Ctx) -> None:
     """A summary replaced by hand (RULES allow it on Jim's word) is logged and never overwritten.
     Its notes are rewritten to describe the file that is there. A stat tells whether to look."""
     store, now = ctx.store, ctx.clock.now()
-    if is_paused(store):
-        return
     last = get_state_time(store, _WATCHED)
-    if last is not None and now - last < _WATCH_EVERY:
+    if is_paused(store) or (last is not None and now - last < _WATCH_EVERY):
+        ctx.failed_steps.add(_step_name("_watch_filed"))          # no look, so no clean pass
         return
     set_state_time(store, _WATCHED, now)
 
     def one(job: JobRecord) -> None:
         facts = filed_facts(store, job.studio_id)
-        if facts is None or not facts.get("wrote") or facts.get("replaced_by_hand"):
+        if (facts is None or not facts.get("wrote") or facts.get("replaced_by_hand")
+                or facts.get("left_aside") or _writes_barred(ctx, facts["where"])):
             return
         path = _dir_of(ctx, facts["where"], facts["folder"]) / f"{facts['folder']}_summary.pdf"
         stat = _stat_of(path)
@@ -2010,7 +2664,8 @@ def _replaced_by_hand(ctx: Ctx, job: JobRecord, facts: dict[str, Any], path: Pat
     check = check_summary(path)
     new = {"sha256": _sha_file(path), "replaced_by_hand": True, "fetched": [], **stat,
            "layout": check.details.get("orientation") or facts["layout"],
-           "pages": check.page_count or facts["pages"]}
+           "pages": check.page_count or facts["pages"], "designs": len(check.designs),
+           "designs_checked": False, "designs_chosen": False}
     if _rewrite_notes(ctx, job.studio_id, facts, facts.get("items", []), now, new_facts=new,
                       line="The IC summary was replaced by hand. NG Runner left it as it is."):
         log_event(ctx.store, at=now, kind="summary_replaced", studio_id=job.studio_id,
@@ -2053,6 +2708,70 @@ def _send_tells(ctx: Ctx) -> None:
     _each(ctx, "send_tells", ops, one)
 
 
+# ----- going live: what the trial run filed aside
+
+
+def go_live(db: Db, now: datetime) -> None:
+    """The switch to live was made (supervisor.set_mode). A job filed during the shadow run is only
+    in control\\shadow, and once hand-filing stops nothing else would ever put it in NG Jobs, so
+    the next tick hands each one back. Noted in the store, so a crash before that tick loses
+    nothing."""
+    set_state(db, _GO_LIVE, to_iso(now))
+
+
+def _bring_shadow_jobs_home(ctx: Ctx) -> None:
+    """Asked for by go_live. While its row is on the sheet, or it was added by hand and has no row,
+    a job goes through the normal route again: a fresh fetch 1, then _file_one, whose
+    _summary_in_folders compares with anything in NG Jobs, so a hand-made folder is never
+    overwritten, and Barbara gets her "Filed as". One whose row has left the sheet stays as it is,
+    and the board and digest say it is not in NG Jobs. Add job, or a new row, brings it back."""
+    store, now = ctx.store, ctx.clock.now()
+    if ctx.mode == SHADOW or get_state(store, _GO_LIVE) is None:
+        return
+    rows, aside = list_fab_rows(store), {
+        sid: facts for sid, facts in all_filed_facts(store).items()
+        if facts.get("where") == SHADOW and not facts.get("left_aside")}
+
+    def one(sid: str) -> None:
+        mine = [row for row in rows if row.studio_id == sid]
+        with store.transaction() as tx:
+            if mine and all(row.state == "gone" for row in mine):
+                _leave_aside(tx, sid, aside[sid], now)
+            else:
+                _file_for_real(tx, sid, now)
+
+    _each(ctx, "bring_shadow_jobs_home", sorted(aside), one)
+    if not _stopping(ctx) and _step_name("bring_shadow_jobs_home") not in ctx.failed_steps:
+        clear_state(store, _GO_LIVE)
+
+
+def _leave_aside(tx: Transaction, sid: str, facts: dict[str, Any], now: datetime) -> None:
+    for kind in (REFETCH, REFETCH_2, FILE_NEW):
+        _finish_ops(tx, kind, "done", studio_id=sid)
+    clear_state(tx, _ic_key(sid))
+    clear_state(tx, _first_key(sid))
+    _withdraw_job_cards(tx, sid, "ic_changed")
+    set_state(tx, _filed_key(sid), json.dumps({**facts, "left_aside": True}))
+    log_event(tx, at=now, kind=TRIAL_ONLY_EVENT, lane="ACT", studio_id=sid, text=_LEFT_ASIDE)
+
+
+def _file_for_real(tx: Transaction, sid: str, now: datetime) -> None:
+    """Not filed any more, as far as all that follows goes: a fresh pair, a filing and an email,
+    whose ref is new as the trial run's copy to Sulaiman holds the old one. A question about what
+    the trial run filed goes with it; what is in control\\shadow stays there."""
+    for kind in (FETCH_1, FETCH_2, FILE, FILE_NEW, REFETCH, REFETCH_2):
+        _finish_ops(tx, kind, "done", studio_id=sid)
+    for key in (_filed_key, _ready_key, _first_key, _ic_key, _designs_key, _declined_key):
+        clear_state(tx, key(sid))
+    _withdraw_job_cards(tx, sid, "fetch_failed", "ic_changed", "design_mismatch")
+    for row in _rows_of(tx, sid):
+        if row.state == "filed":
+            update_fab_row(tx, row.id, now=now, state="matched", reason=None)
+    set_state(tx, _again_key(sid), to_iso(now))
+    add_pending(tx, FETCH_1, due_at=now, deadline_at=now + _FETCH_LIMIT, studio_id=sid)
+    log_event(tx, at=now, kind=TRIAL_ONLY_EVENT, lane="ACT", studio_id=sid, text=_TRIAL_ONLY)
+
+
 # ----- Add job
 
 
@@ -2074,7 +2793,11 @@ def add_job(ctx: Ctx, *, name: str | None = None, studio_id: str | None = None) 
         if job is None:
             mode = "observed" if _found_at_install(tx, opportunity.name) else "auto"
             job = ensure_job(tx, opportunity.studio_id, opportunity.name, now=now, mode=mode)
-        if filed_facts(tx, job.studio_id) is not None:
+        facts = filed_facts(tx, job.studio_id)
+        if facts is not None and facts.get("left_aside"):
+            _file_for_real(tx, job.studio_id, now)
+            words = f"Added {job.name}: fetching its IC summary now."
+        elif facts is not None:
             words = f"{job.name} is already filed."
         else:
             _start_job(tx, job.studio_id, now)
@@ -2113,6 +2836,32 @@ def filed_facts(db: Db, studio_id: str) -> dict[str, Any] | None:
     return _load(db, _filed_key(studio_id))
 
 
+def all_filed_facts(db: Db) -> dict[str, dict[str, Any]]:
+    """Every filed job's filed_facts by Studio ID, in one read: a page or a tick that reads them job
+    by job costs a database connection per job, and jobs only pile up."""
+    prefix = _filed_key("")
+    return {key.removeprefix(prefix): json.loads(value)
+            for key, value in states_under(db, prefix).items()}
+
+
+def filed_note(db: Db, studio_id: str) -> str:
+    """What a filed job's line on the board and in the digest adds after its time: "3 designs, 19
+    pages", and "designs not cross-checked" when they weren't. Counts only, for a person who knows
+    the job to spot a missing room. Empty until it is filed."""
+    facts = filed_facts(db, studio_id)
+    return "" if facts is None else filed_note_of(facts)
+
+
+def filed_note_of(facts: dict[str, Any]) -> str:
+    """filed_note, from facts already read."""
+    words = [templates.filed_counts(facts.get("designs"), facts.get("pages"))]
+    if facts.get("designs_chosen"):
+        words.append("filed as it is, as Jim chose")
+    elif not facts.get("designs_checked"):
+        words.append("designs not cross-checked")
+    return ", ".join(word for word in words if word)
+
+
 def blocked_reason(db: Db, studio_id: str) -> str | None:
     """Why a job's filing was refused, in plain words; None when it wasn't."""
     return next((op.note for kind in (FILE, FILE_NEW)
@@ -2135,6 +2884,14 @@ def _add_card(tx: Transaction, spec: Any, now: datetime, *, studio_id: str | Non
 
 def _open_card(db: Db, studio_id: str, kind: str) -> bool:
     return any(card.kind == kind for card in list_cards(db, studio_id=studio_id))
+
+
+def _withdraw_job_cards(db: Db, studio_id: str, *kinds: str) -> bool:
+    """Withdraw the job's open cards of these kinds. True when there were any."""
+    found = [card for card in list_cards(db, studio_id=studio_id) if card.kind in kinds]
+    for card in found:
+        withdraw_card(db, card.id)
+    return bool(found)
 
 
 def _open_row_card(db: Db, row_id: int, kind: str) -> bool:
@@ -2210,6 +2967,18 @@ def _filed_key(sid: str) -> str:
     return f"job.filed.{sid}"
 
 
+def _again_key(sid: str) -> str:
+    return f"job.again.{sid}"
+
+
+def _designs_key(sid: str) -> str:
+    return f"job.designs.{sid}"
+
+
+def _studio_dev_key(code: str) -> str:
+    return f"studio.dev_day.{code}"
+
+
 def _layout_key(sid: str) -> str:
     return f"job.layout.{sid}"
 
@@ -2226,6 +2995,10 @@ def _declined_key(sid: str) -> str:
     return f"job.declined.{sid}"
 
 
+def _untried_key(op_id: int) -> str:
+    return f"fetch.untried.{op_id}"
+
+
 def _gone_key(row_id: int) -> str:
     return f"fab.gone.{row_id}"
 
@@ -2234,6 +3007,7 @@ def _tell_key(op_id: int) -> str:
     return f"tell.{op_id}"
 
 
-_STEPS = (_take_fetches, _send_tells, _read_fab, _refresh_list, _act_on_answers, _match_rows,
-          _rematch_rows, _raise_deadline_cards, _start_fetches, _take_fetches, _file_ready,
-          _keep_notes_current, _watch_filed, _send_tells)
+_STEPS = (_bring_shadow_jobs_home, _take_fetches, _watch_fetches, _send_tells, _read_fab,
+          _refresh_list, _act_on_answers, _match_rows, _rematch_rows, _raise_deadline_cards,
+          _start_fetches, _take_fetches, _file_ready, _keep_notes_current, _watch_filed,
+          _send_tells)

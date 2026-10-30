@@ -426,6 +426,8 @@ def test_the_app_version_comes_from_pyproject():
 
 def test_the_launcher_command_line_returns_1_when_nothing_can_start(root, paths, monkeypatch):
     monkeypatch.setenv("NGR_APP_DATA", str(paths.app_data))
+    # a real NG Runner on this PC would read as "already running"
+    monkeypatch.setitem(launcher.launch.__kwdefaults__, "running", lambda: False)
     root.mkdir(parents=True)
     assert launcher.main(["--root", str(root), "--ensure"]) == 1
     assert "nothing to start" in (paths.logs / "launcher.log").read_text(encoding="utf-8")

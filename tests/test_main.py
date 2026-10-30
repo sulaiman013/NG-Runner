@@ -256,9 +256,11 @@ def _setup(paths: AppPaths, answers: Answers, secrets: MemorySecrets) -> tuple[i
                  secrets=secrets)
 
 
-def _first_run(folders: dict[str, Path], *, public: str = PUBLIC) -> Answers:
+def _first_run(folders: dict[str, Path], *, public: str = PUBLIC,
+               login: tuple[str, ...] = ("",)) -> Answers:
+    """Enter at Studio's username leaves the login for later, unless a test types one."""
     return Answers(str(folders["ng_jobs"]), str(folders["mozaik_shared"]), str(folders["control"]),
-                   "y", "", "", secrets=(public, SIGNING, EXPORT))
+                   "y", "", "", secrets=(public, SIGNING, EXPORT, *login))
 
 
 def test_setup_writes_the_settings_and_puts_the_keys_in_credential_manager(
@@ -287,16 +289,16 @@ def test_setup_shows_no_secret_and_writes_none_in_the_settings_file(
 def test_setup_asks_for_the_keys_hidden(paths: AppPaths, folders: dict[str, Path]) -> None:
     answers = _first_run(folders)
     _setup(paths, answers, MemorySecrets())
-    hidden = answers.prompts[-3:]
+    hidden = answers.prompts[-4:]
     assert "backup public key" in hidden[0] and "signing key" in hidden[1]
-    assert "export key" in hidden[2]
+    assert "export key" in hidden[2] and "Studio's login" in hidden[3]
 
 
 def test_setup_says_when_a_pc_sleeps_at_night_and_takes_the_hours(
         paths: AppPaths, folders: dict[str, Path]) -> None:
     answers = Answers(str(folders["ng_jobs"]), str(folders["mozaik_shared"]),
                       str(folders["control"]), "n", "07:00", "21:30",
-                      secrets=("", SIGNING, EXPORT))
+                      secrets=("", SIGNING, EXPORT, ""))
     assert _setup(paths, answers, MemorySecrets())[0] == 0
     settings = load_settings(paths)
     assert settings.pc_sleeps_at_night
@@ -309,7 +311,7 @@ def test_setup_asks_again_for_a_folder_that_is_not_there_without_repeating_it(
     pasted = str(tmp_path / SIGNING)
     answers = Answers(pasted, "relative\\path", str(folders["ng_jobs"]),
                       str(folders["mozaik_shared"]), str(folders["control"]), "", "", "",
-                      secrets=("", SIGNING, EXPORT))
+                      secrets=("", SIGNING, EXPORT, ""))
     code, text = _setup(paths, answers, MemorySecrets())
     assert code == 0, text
     assert "There is no folder there" in text and "full path" in text
@@ -321,7 +323,7 @@ def test_setup_asks_about_a_folder_not_called_ng_jobs(
     other = tmp_path / "Somewhere else"
     other.mkdir()
     answers = Answers(str(other), "n", str(other), "y", str(folders["mozaik_shared"]),
-                      str(folders["control"]), "", "", "", secrets=("", SIGNING, EXPORT))
+                      str(folders["control"]), "", "", "", secrets=("", SIGNING, EXPORT, ""))
     assert _setup(paths, answers, MemorySecrets())[0] == 0
     assert load_settings(paths).ng_jobs == other
 
@@ -332,7 +334,7 @@ def test_setup_refuses_folders_that_overlap_and_saves_nothing(
     inside.mkdir()
     secrets = MemorySecrets()
     answers = Answers(str(folders["ng_jobs"]), str(folders["mozaik_shared"]), str(inside), "", "",
-                      "", secrets=("", SIGNING, EXPORT))
+                      "", secrets=("", SIGNING, EXPORT, ""))
     code, text = _setup(paths, answers, secrets)
     assert code == 1 and "overlap" in text and "Nothing was saved" in text
     assert not paths.settings.exists() and secrets.get("signing_key") is None
@@ -343,7 +345,7 @@ def test_setup_asks_again_for_a_bad_signing_key_and_never_repeats_it(
     secrets = MemorySecrets()
     answers = Answers(str(folders["ng_jobs"]), str(folders["mozaik_shared"]),
                       str(folders["control"]), "", "", "",
-                      secrets=("", "too short", "", SIGNING, "", EXPORT))
+                      secrets=("", "too short", "", SIGNING, "", EXPORT, ""))
     code, text = _setup(paths, answers, secrets)
     assert code == 0, text
     assert "too short" not in text and "isn't the signing key" in text
@@ -356,7 +358,7 @@ def test_setup_asks_again_for_a_bad_time_and_a_bad_backup_key(
     private = "ngrbak-private-1-" + "cd" * 32
     answers = Answers(str(folders["ng_jobs"]), str(folders["mozaik_shared"]),
                       str(folders["control"]), "maybe", "y", "seven", "07:00", "",
-                      secrets=(private, PUBLIC, SIGNING, EXPORT))
+                      secrets=(private, PUBLIC, SIGNING, EXPORT, ""))
     code, text = _setup(paths, answers, MemorySecrets())
     assert code == 0, text
     assert "answer y or n" in text and "a time like 06:30" in text
@@ -371,7 +373,7 @@ def test_setting_up_again_keeps_what_enter_keeps(
     raw = json.loads(paths.settings.read_text(encoding="utf-8"))
     raw["a_setting_from_a_newer_version"] = "kept"
     paths.settings.write_text(json.dumps(raw), encoding="utf-8")
-    answers = Answers("", "", "", "", "", "", secrets=("", "", ""))
+    answers = Answers("", "", "", "", "", "", secrets=("", "", "", ""))
     code, text = _setup(paths, answers, secrets)
     assert code == 0, text
     settings = load_settings(paths)
@@ -388,7 +390,7 @@ def test_setup_keeps_a_mode_already_switched_to_live(
     raw = json.loads(paths.settings.read_text(encoding="utf-8"))
     raw["mode"] = "live"
     paths.settings.write_text(json.dumps(raw), encoding="utf-8")
-    answers = Answers("", "", "", "", "", "", secrets=("", "", ""))
+    answers = Answers("", "", "", "", "", "", secrets=("", "", "", ""))
     assert _setup(paths, answers, secrets)[0] == 0
     assert load_settings(paths).mode == "live"
 
@@ -400,6 +402,143 @@ def test_stopping_part_way_saves_nothing(paths: AppPaths, folders: dict[str, Pat
     assert code == 1 and "Nothing was saved" in text
     assert not paths.settings.exists()
     assert secrets.get("signing_key") is None
+
+
+# ----- setup: Studio's login, asked for and never shown
+
+
+USERNAME, PASSWORD = "testerson@example.com", "a studio password"
+LOGIN = (USERNAME, PASSWORD)
+_SESSION = '{"sessionid": "a", "csrftoken": "b"}'
+
+
+def _shows_neither(answers: Answers, text: str, paths: AppPaths) -> None:
+    for shown in (text, paths.settings.read_text(encoding="utf-8"), *answers.prompts):
+        assert USERNAME not in shown and PASSWORD not in shown
+
+
+def _run_again(*login: str) -> Answers:
+    return Answers("", "", "", "", "", "", secrets=("", "", "", *login))
+
+
+def test_setup_saves_studios_login_and_shows_neither_part(
+        paths: AppPaths, folders: dict[str, Path]) -> None:
+    secrets, answers = MemorySecrets(), _first_run(folders, login=LOGIN)
+    code, text = _setup(paths, answers, secrets)
+    assert code == 0, text
+    assert secrets.get("studio_username") == USERNAME and secrets.get("studio_password") == PASSWORD
+    _shows_neither(answers, text, paths)
+    assert "No Studio login" not in text
+    assert "username" in answers.prompts[-2] and "password" in answers.prompts[-1]
+    assert all("it won't show" in prompt for prompt in answers.prompts[-2:])
+
+
+def test_setup_asks_for_studios_login_hidden_never_on_the_open_line(
+        paths: AppPaths, folders: dict[str, Path]) -> None:
+    open_lines: list[str] = []
+    answers = _first_run(folders, login=LOGIN)
+
+    def line(prompt: str) -> str:
+        open_lines.append(prompt)
+        return answers.line(prompt)
+
+    code, _ = _main(paths, "setup", read_line=line, read_secret=answers.secret,
+                    secrets=MemorySecrets())
+    assert code == 0
+    assert not [prompt for prompt in open_lines if "Studio" in prompt]
+
+
+def test_enter_leaves_studios_login_for_later_and_setup_says_what_that_means(
+        paths: AppPaths, folders: dict[str, Path]) -> None:
+    secrets, answers = MemorySecrets(), _first_run(folders)
+    code, text = _setup(paths, answers, secrets)
+    assert code == 0, text
+    assert "for later" in answers.prompts[-1]
+    assert not [prompt for prompt in answers.prompts if "password" in prompt]
+    assert secrets.get("studio_username") is None and secrets.get("studio_password") is None
+    assert "No Studio login yet" in text and "not cross-checked" in text
+
+
+def test_setting_up_again_keeps_studios_login_with_enter_and_never_shows_it(
+        paths: AppPaths, folders: dict[str, Path]) -> None:
+    secrets = MemorySecrets()
+    assert _setup(paths, _first_run(folders, login=LOGIN), secrets)[0] == 0
+    secrets.put("studio_session", _SESSION)
+    answers = _run_again("", "")
+    code, text = _setup(paths, answers, secrets)
+    assert code == 0, text
+    assert secrets.get("studio_username") == USERNAME and secrets.get("studio_password") == PASSWORD
+    assert secrets.get("studio_session") == _SESSION    # nothing changed, so it stays good
+    _shows_neither(answers, text, paths)
+    assert all("keeps the one saved" in prompt for prompt in answers.prompts[-2:])
+
+
+def test_a_new_password_replaces_the_old_and_drops_the_session_it_got(
+        paths: AppPaths, folders: dict[str, Path]) -> None:
+    secrets = MemorySecrets()
+    assert _setup(paths, _first_run(folders, login=LOGIN), secrets)[0] == 0
+    secrets.put("studio_session", _SESSION)
+    code, text = _setup(paths, _run_again("", "a newer password"), secrets)
+    assert code == 0, text
+    assert secrets.get("studio_username") == USERNAME
+    assert secrets.get("studio_password") == "a newer password"
+    assert secrets.get("studio_session") is None
+    assert "a newer password" not in text
+
+
+def test_a_new_username_alone_keeps_the_password_and_drops_the_session(
+        paths: AppPaths, folders: dict[str, Path]) -> None:
+    secrets = MemorySecrets()
+    assert _setup(paths, _first_run(folders, login=LOGIN), secrets)[0] == 0
+    secrets.put("studio_session", _SESSION)
+    code, _ = _setup(paths, _run_again("fakeley@example.com", ""), secrets)
+    assert code == 0
+    assert secrets.get("studio_username") == "fakeley@example.com"
+    assert secrets.get("studio_password") == PASSWORD and secrets.get("studio_session") is None
+
+
+def test_a_username_is_no_login_without_its_password_so_it_is_asked_again(
+        paths: AppPaths, folders: dict[str, Path]) -> None:
+    secrets = MemorySecrets()
+    code, text = _setup(paths, _first_run(folders, login=(USERNAME, "", " ", PASSWORD)), secrets)
+    assert code == 0, text
+    assert "needs its password too" in text and secrets.get("studio_password") == PASSWORD
+    assert USERNAME not in text
+
+
+def test_a_password_is_kept_exactly_as_typed(paths: AppPaths, folders: dict[str, Path]) -> None:
+    secrets = MemorySecrets()
+    answers = _first_run(folders, login=(f"  {USERNAME} ", "  spaces count "))
+    assert _setup(paths, answers, secrets)[0] == 0
+    assert secrets.get("studio_username") == USERNAME
+    assert secrets.get("studio_password") == "  spaces count "
+
+
+def test_stopping_at_studios_password_saves_nothing(
+        paths: AppPaths, folders: dict[str, Path]) -> None:
+    secrets = MemorySecrets()
+    code, text = _setup(paths, _first_run(folders, login=(USERNAME,)), secrets)
+    assert code == 1 and "Nothing was saved" in text and USERNAME not in text
+    assert not paths.settings.exists()
+    assert secrets.get("signing_key") is None and secrets.get("studio_username") is None
+
+
+class NoStudioSecrets(MemorySecrets):
+    """Credential Manager refusing the login, its error naming the secret, as CredentialSecrets'
+    does."""
+
+    def put(self, name: str, value: str) -> None:
+        if name.startswith("studio_"):
+            raise SecretsError(f"Windows Credential Manager could not store the {name} secret")
+        super().put(name, value)
+
+
+def test_a_login_that_cannot_be_stored_leaves_no_settings_and_shows_neither_part(
+        paths: AppPaths, folders: dict[str, Path]) -> None:
+    code, text = _setup(paths, _first_run(folders, login=LOGIN), NoStudioSecrets())
+    assert code == 1 and "could not finish" in text
+    assert USERNAME not in text and PASSWORD not in text
+    assert not paths.settings.exists()
 
 
 class BrokenSecrets(MemorySecrets):
@@ -419,3 +558,42 @@ def test_settings_that_cannot_be_read_are_not_a_dead_end(
     paths.settings.write_text("not json", encoding="utf-8")
     code, text = _setup(paths, _first_run(folders), MemorySecrets())
     assert code == 0 and "starts afresh" in text
+
+
+# ----- dev-close
+
+
+def test_dev_close_lists_what_is_open_and_closes_one_by_its_number(paths: AppPaths) -> None:
+    from datetime import UTC, datetime
+
+    from ngrunner.store import list_dev, list_events, open_dev, open_store
+
+    store = open_store(paths.db)
+    now = datetime(2026, 10, 30, 12, tzinfo=UTC)
+    first = open_dev(store, at=now, code="too_big", text="A report was too big.")
+    second = open_dev(store, at=now, code="layouts_differ", text="They differ.")
+    code, text = _main(paths, "dev-close")
+    assert code == 0 and "too_big" in text and "A report was too big." in text
+    assert f"{first.id} " in text and f"{second.id} " in text
+    code, text = _main(paths, "dev-close", str(first.id))
+    assert code == 0 and "closed" in text.casefold()
+    assert [item.id for item in list_dev(store)] == [second.id]
+    assert [e.lane for e in list_events(store) if e.kind == "dev_closed"] == ["DEV"]
+    code, text = _main(paths, "dev-close", str(first.id))
+    assert code == 0 and "already" in text
+    assert _main(paths, "dev-close", str(second.id))[0] == 0
+    assert "No DEV items" in _main(paths, "dev-close")[1]
+
+
+def test_dev_close_says_when_there_is_no_such_item_or_no_database(paths: AppPaths) -> None:
+    from ngrunner.store import open_store
+
+    code, text = _main(paths, "dev-close", "7")
+    assert code == 1 and "database" in text and not paths.db.exists()
+    open_store(paths.db)
+    code, text = _main(paths, "dev-close", "7")
+    assert code == 1 and "no DEV item 7" in text
+
+
+def test_dev_close_wants_a_number(paths: AppPaths) -> None:
+    assert _main(paths, "dev-close", "seven")[0] == 2

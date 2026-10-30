@@ -65,9 +65,13 @@ app = Analysis(
     pathex=[str(REPO)],
     # The self-test imports every P1a module and library by name (so PyInstaller can't see
     # those imports itself), and pystray picks its backend by name.
+    # Studio's sign-in imports playwright only when it runs, and playwright starts its own driver
+    # from a data folder, so both have to be named here.
     hiddenimports=collect_submodules("ngrunner") + ["pystray._win32"]
+                  + collect_submodules("playwright")
                   + [name for name in P1A_MODULES if not name.startswith("ngrunner")],
     datas=[(str(version_file), ".")] + collect_data_files("ngrunner")
+          + collect_data_files("playwright", include_py_files=False)
           + [entry for name in DISTRIBUTIONS for entry in copy_metadata(name)],
     excludes=LEFT_OUT,
     noarchive=False,

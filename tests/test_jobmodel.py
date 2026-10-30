@@ -2,6 +2,7 @@
 the tray and the digest (integration spec section 5). Synthetic names only."""
 from __future__ import annotations
 
+import json
 from datetime import date, datetime, timedelta, timezone
 
 import pytest
@@ -14,9 +15,9 @@ from ngrunner.messages import templates
 from ngrunner.messages.lint import check_line, lint
 from ngrunner.store import (
     add_card, add_fab_row, add_outbox, add_pending, add_render, answer_card, close_dev, ensure_job,
-    finish_pending, log_event, mark_dev_told_jim, mark_outbox_written, open_dev, open_store,
-    record_receipt, record_reminder, replace_opportunities, retry_pending, set_governing,
-    set_state, set_state_time, update_fab_row, update_job, withdraw_card,
+    finish_pending, list_pending, log_event, mark_dev_told_jim, mark_outbox_written, open_dev,
+    open_store, record_receipt, record_reminder, replace_opportunities, retry_pending,
+    set_governing, set_state, set_state_time, update_fab_row, update_job, withdraw_card,
 )
 
 NOW = datetime(2026, 10, 30, 22, 5, tzinfo=timezone.utc)   # Fri 10/30 3:05 PM Pacific
@@ -314,10 +315,20 @@ def test_an_ic_changed_card_on_a_filed_job_shows_and_keeps_its_filed_tick(store,
 def test_the_remake_card_asks_about_a_remake(store, clock):
     sid = a_job(store)
     a_row(store, state="filed", sid=sid)
-    a_card(store, "row_changed", sid=sid, choices=templates.REMAKE_CHOICES)
+    a_card(store, "remake", sid=sid, choices=templates.REMAKE_CHOICES)
     row = row_named(view_of(store, clock))
     assert row.next_step == "Card TES-1: is this a remake?"
     assert view_of(store, clock).your_list[0].text == f"{JOB}: is this a remake? Card TES-1."
+
+
+def test_the_design_card_says_the_two_lists_differ_and_holds_the_summary_tick(store, clock):
+    a_card(store, "design_mismatch", sid=a_job(store), choices=templates.DESIGN_MISMATCH_CHOICES)
+    row = row_named(view_of(store, clock))
+    assert row.next_step == "Card TES-1: the report and Studio's proposal differ"
+    assert ticks(row)["summary"] == "blocked"
+    item = view_of(store, clock).your_list[0]
+    assert item.text == f"{JOB}: the report and Studio's proposal differ. Card TES-1."
+    assert not check_line(item.text)
 
 
 def test_a_row_answered_with_a_job_that_left_the_list_says_so(store, clock):
@@ -413,6 +424,185 @@ def test_a_refused_refiling_shows_on_a_filed_job(store, clock):
     a_row(store, state="filed", sid=sid)
     refused(store, "NG Jobs is not reachable right now", sid=sid)
     assert row_named(view_of(store, clock)).overlay == "BLOCKED"
+
+
+# ----- a filed job's line: the counts a person who knows the job can check
+
+
+def filed_job(store, facts, *, at=NOW - HOUR):
+    from ngrunner.intake import pipeline
+
+    sid = a_job(store)
+    log_event(store, at=at, kind="filed", text="Filed.", studio_id=sid)
+    set_state(store, pipeline._filed_key(sid), json.dumps(facts))
+    return sid
+
+
+@pytest.mark.parametrize("facts, words", [
+    ({"designs": 3, "pages": 19, "designs_checked": True}, ", 3 designs, 19 pages"),
+    ({"designs": 1, "pages": 1, "designs_checked": True}, ", 1 design, 1 page"),
+    ({"designs": 3, "pages": 19, "designs_checked": False},
+     ", 3 designs, 19 pages, designs not cross-checked"),
+    ({"designs": 3, "pages": 19, "designs_checked": False, "designs_chosen": True},
+     ", 3 designs, 19 pages, filed as it is, as Jim chose"),
+    ({"designs": None, "pages": 19, "designs_checked": False}, ", designs not cross-checked"),
+])
+def test_a_filed_jobs_line_says_its_counts_and_if_they_were_not_cross_checked(
+        store, clock, facts, words):
+    filed_job(store, facts)
+    step = row_named(view_of(store, clock)).next_step
+    assert step == f"Filed 10/30 2:05 PM{words}"
+    assert not check_line(step)
+    day = jobmodel.digest_view(store, None, clock)
+    assert [(line.job, line.text) for line in day.jobs] == [(JOB, f"filed 10/30 2:05 PM{words}")]
+    assert not lint(compose(day))
+
+
+def test_a_filed_job_with_no_facts_says_only_when(store, clock):
+    sid = a_job(store)
+    log_event(store, at=NOW - HOUR, kind="filed", text="Filed.", studio_id=sid)
+    assert row_named(view_of(store, clock)).next_step == "Filed 10/30 2:05 PM"
+
+
+def test_the_filed_line_and_the_pipeline_agree_on_the_words(store, clock):
+    from ngrunner.intake import pipeline
+
+    sid = filed_job(store, {"designs": 2, "pages": 7, "designs_checked": False})
+    assert pipeline.filed_note(store, sid) == "2 designs, 7 pages, designs not cross-checked"
+    assert jobmodel.filed_note_of is pipeline.filed_note_of
+
+
+# ----- BLOCKED on Your list, once it has lasted over an hour
+
+
+REACH = "NG Jobs is not reachable right now"
+MINUTE = timedelta(minutes=1)
+
+
+def blocked_since(store, since, note=REACH, *, sid=None):
+    """A refused filing as the pipeline leaves one: the note, and an event from when it began."""
+    sid = refused(store, note, sid=sid)
+    log_event(store, at=since, kind="blocked", studio_id=sid, text=note)
+    return sid
+
+
+@pytest.mark.parametrize("lasted", [MINUTE, HOUR - MINUTE, HOUR])
+def test_a_job_blocked_for_up_to_an_hour_stays_off_your_list(store, clock, lasted):
+    blocked_since(store, NOW - lasted)
+    view = view_of(store, clock)
+    assert row_named(view).overlay == "BLOCKED"
+    assert view.your_list == ()
+    assert tray(store, clock).colour == "green"
+
+
+def test_a_job_blocked_for_over_an_hour_joins_your_list_and_the_tray_goes_amber(store, clock):
+    blocked_since(store, NOW - HOUR - MINUTE)
+    item, = view_of(store, clock).your_list
+    assert item.text == (f"{JOB}: Blocked: {REACH}. Fix: check that this PC can reach the NG Jobs"
+                         " folder.")
+    assert (item.job, item.age_days, item.card_id) == (JOB, 0, None)
+    assert not check_line(item.text)
+    assert (tray(store, clock).colour, tray(store, clock).count) == ("amber", 1)
+    digest = jobmodel.digest_view(store, None, clock)
+    assert (digest.open_items, digest.oldest_item) == (1, NOW - HOUR - MINUTE)
+
+
+def test_a_refusal_in_words_not_fit_to_show_joins_your_list_in_fixed_words(store, clock):
+    blocked_since(store, NOW - 2 * HOUR, r"Not written: C:\x\y refused by something else")
+    item, = view_of(store, clock).your_list
+    assert "NG Runner's safety check refused to file it" in item.text
+    assert "C:" not in item.text and not check_line(item.text)
+
+
+def test_blocked_jobs_take_their_place_on_your_list_by_how_long_they_have_waited(store, clock):
+    a_card(store, sid=a_job(store), at=NOW - 2 * HOUR)
+    blocked_since(store, NOW - 3 * HOUR, sid=a_job(store, OTHER, "102"))
+    assert [item.job for item in view_of(store, clock).your_list] == [OTHER, JOB]
+    assert tray(store, clock).count == 2
+
+
+def test_a_pause_keeps_a_blocked_job_off_your_list_since_the_tray_is_grey(store, clock):
+    blocked_since(store, NOW - 3 * HOUR)
+    assert view_of(store, clock, paused=True).your_list == ()
+    assert row_named(view_of(store, clock, paused=True)).overlay == "PAUSED"
+    assert (tray(store, clock, paused=True).colour, tray(store, clock, paused=True).count) == (
+        "grey", 0)
+    set_state(store, "paused", "yes")
+    assert jobmodel.digest_view(store, None, clock).open_items == 0
+    set_state(store, "paused", "no")
+    assert jobmodel.digest_view(store, None, clock).open_items == 1
+
+
+def test_a_refusal_only_the_pause_caused_never_counts(store, clock):
+    blocked_since(store, NOW - 5 * HOUR, "Not written: NG Runner is paused")
+    assert row_named(view_of(store, clock)).overlay == "BLOCKED"
+    assert view_of(store, clock).your_list == ()
+    assert tray(store, clock).colour == "green"
+
+
+def test_the_hour_starts_from_the_refusal_after_the_pause(store, clock):
+    sid = a_job(store)
+    log_event(store, at=NOW - 5 * HOUR, kind="blocked", studio_id=sid, text="NG Runner is paused")
+    blocked_since(store, NOW - 10 * MINUTE, sid=sid)
+    assert view_of(store, clock).your_list == ()
+    clock.advance(HOUR)
+    assert [item.job for item in view_of(store, clock).your_list] == [JOB]
+
+
+def test_a_reason_that_changes_does_not_restart_the_hour(store, clock):
+    sid = a_job(store)
+    log_event(store, at=NOW - 2 * HOUR, kind="blocked", studio_id=sid, text=REACH)
+    blocked_since(store, NOW - MINUTE, "Its folder has changed", sid=sid)
+    item, = view_of(store, clock).your_list
+    assert "Its folder has changed" in item.text
+    assert jobmodel.digest_view(store, None, clock).oldest_item == NOW - 2 * HOUR
+
+
+def test_a_filing_ends_the_refusals_before_it(store, clock):
+    sid = a_job(store)
+    log_event(store, at=NOW - 72 * HOUR, kind="blocked", studio_id=sid, text=REACH)
+    log_event(store, at=NOW - 48 * HOUR, kind="filed", studio_id=sid, text="Filed.")
+    blocked_since(store, NOW - 10 * MINUTE, sid=sid)
+    assert row_named(view_of(store, clock)).overlay == "BLOCKED"
+    assert view_of(store, clock).your_list == ()
+
+
+def test_an_old_folder_and_an_observed_job_never_count(store, clock):
+    blocked_since(store, NOW - 5 * HOUR,
+                  "Its folder is in the Old folder of NG Jobs, so NG Runner wrote nothing")
+    blocked_since(store, NOW - 5 * HOUR, sid=a_job(store, OTHER, "102", mode="observed"))
+    assert view_of(store, clock).your_list == ()
+    assert tray(store, clock).colour == "green"
+
+
+def test_a_refusal_with_no_event_to_date_it_counts_at_once(store, clock):
+    refused(store, REACH)
+    item, = view_of(store, clock).your_list
+    assert (item.job, item.age_days) == (JOB, 0)
+    assert tray(store, clock).colour == "amber"
+
+
+def test_the_pipelines_own_refusal_starts_the_hour_once(store, clock):
+    from types import SimpleNamespace
+
+    from ngrunner.intake import pipeline
+
+    ctx = SimpleNamespace(store=store)
+    op = add_pending(store, pipeline.FILE, due_at=NOW, studio_id=a_job(store))
+    pipeline._refused(ctx, op, pipeline._NOT_REACHABLE, NOW)
+    assert view_of(store, clock).your_list == ()
+    clock.advance(HOUR + MINUTE)
+    op, = list_pending(store, kind=pipeline.FILE)
+    pipeline._refused(ctx, op, pipeline._NOT_REACHABLE, clock.now())     # tried again: no new event
+    assert [item.job for item in view_of(store, clock).your_list] == [JOB]
+    assert tray(store, clock).colour == "amber"
+
+
+def test_a_job_no_longer_refused_leaves_your_list(store, clock):
+    blocked_since(store, NOW - 2 * HOUR)
+    op, = list_pending(store, kind="file")
+    retry_pending(store, op.id, due_at=NOW, note=None)
+    assert view_of(store, clock).your_list == ()
 
 
 # ----- NOT_RUN, with a reason and a retry
@@ -1072,3 +1262,141 @@ def test_an_empty_store_gives_an_empty_board_and_settings_arent_needed(store, cl
     assert view.jobs == () and view.your_list == () and view.cards == ()
     assert view.health.alarms == () and view.tray.colour == "green"
     assert jobmodel.history(store) == []
+
+
+# ----- the second round: what the board and the tray say
+
+
+def test_a_design_mismatch_blocks_the_summary_tick_even_once_two_fetches_agree(store, clock):
+    sid = a_job(store)
+    add_render(store, studio_id=sid, fetched_at=NOW, check_ok=True, sha256="a" * 64,
+               fingerprint="same")
+    add_render(store, studio_id=sid, fetched_at=NOW, check_ok=True, sha256="b" * 64,
+               fingerprint="same")
+    a_card(store, "design_mismatch", sid=sid)
+    assert ticks(row_named(view_of(store, clock)))["summary"] == "blocked"
+
+
+def test_a_job_filed_again_shows_the_new_time(store, clock):
+    sid = a_job(store)
+    log_event(store, at=NOW - 3 * HOUR, kind="filed", text="Filed.", studio_id=sid)
+    log_event(store, at=NOW - HOUR, kind="refiled", text="Filed the new one.", lane="ACT",
+              studio_id=sid)
+    assert row_named(view_of(store, clock)).next_step == "Filed 10/30 2:05 PM"
+
+
+@pytest.mark.parametrize("code", ["fab_export_stale", "job_list_stale"])
+def test_a_standing_alarm_turns_the_tray_amber_in_its_own_words(store, clock, code):
+    if code == "fab_export_stale":
+        set_state_time(store, "fab_exported_at", NOW - 3 * HOUR)
+    else:
+        a_row(store, state="waiting_list", at=NOW - 3 * HOUR)
+    state = tray(store, clock)
+    assert state.colour == "amber" and state.count == 0
+    assert templates.ALARMS[code] in state.tooltip and "nothing is waiting" not in state.tooltip
+
+
+def test_a_standing_alarm_goes_beside_the_count_and_a_pause_still_wins(store, clock):
+    set_state_time(store, "fab_exported_at", NOW - 3 * HOUR)
+    a_card(store, sid=a_job(store))
+    state = tray(store, clock)
+    assert state.colour == "amber" and state.count == 1
+    assert "1 item" in state.tooltip and templates.ALARMS["fab_export_stale"] in state.tooltip
+    assert tray(store, clock, paused=True).colour == "grey"
+
+
+def test_ng_jobs_out_of_reach_counts_on_your_list_after_an_hour(store, clock):
+    alarm = templates.ALARMS["ng_jobs_unreachable"]
+    item = open_dev(store, at=NOW - HOUR / 2, code="ng_jobs_unreachable", text="Can't be read.")
+    row = a_row(store, "Testerson")
+    assert alarm in jobmodel.alarms(store, clock)
+    assert tray(store, clock).colour == "green" and view_of(store, clock).your_list == ()
+    assert "NG Jobs can't be read" in row_named(view_of(store, clock), row.text).next_step
+    clock.advance(HOUR)
+    state, view = tray(store, clock), view_of(store, clock)
+    assert state.colour == "amber" and state.count == 1
+    assert view.your_list[0].text == f"{alarm}."
+    close_dev(store, item.id)
+    assert tray(store, clock).colour == "green"
+    assert "NG Jobs" not in row_named(view_of(store, clock), row.text).next_step
+
+
+def _filed_then_trial_only(store, install=None):
+    sid = a_job(store, install=install)
+    log_event(store, at=NOW - 3 * HOUR, kind="filed", text="Filed aside.", studio_id=sid)
+    log_event(store, at=NOW - HOUR, kind="trial_only", text="Trial run only.", lane="ACT",
+              studio_id=sid)
+    return sid
+
+
+def test_a_job_filed_only_in_the_trial_run_says_so_until_it_is_filed_for_real(store, clock):
+    sid = _filed_then_trial_only(store)
+    add_pending(store, "fetch_1", due_at=NOW, studio_id=sid)
+    row = row_named(view_of(store, clock))
+    assert row.next_step == "Trial run only, not in NG Jobs. First fetch now"
+    assert ticks(row)["filed"] == "todo" and ticks(row)["summary"] == "todo"
+    line = jobmodel.digest_view(store, None, clock).jobs[0]
+    assert line.job == JOB and line.text.startswith("trial run only, not in NG Jobs")
+    finish_pending(store, list_pending(store)[0].id, "done")
+    log_event(store, at=NOW, kind="filed", text="Filed.", studio_id=sid)
+    row = row_named(view_of(store, clock))
+    assert row.next_step.startswith("Filed 10/30") and ticks(row)["filed"] == "done"
+
+
+def test_a_job_left_aside_says_how_to_file_it(store, clock):
+    _filed_then_trial_only(store)
+    row = row_named(view_of(store, clock))
+    assert row.overlay == "NOT_RUN" and row.next_step.startswith("Trial run only, not in NG Jobs.")
+    assert f"add job {JOB}" in row.next_step
+
+
+def test_a_job_filed_only_in_the_trial_run_still_warns_of_its_install(store, clock):
+    _filed_then_trial_only(store, install=("", "11/2/26"))
+    owner = jobmodel.digest_view(store, None, clock).owner
+    assert templates.install_soon(JOB, date(2026, 11, 2)) in owner
+
+
+def test_a_dev_item_on_a_filed_job_does_not_say_it_waits(store, clock):
+    sid = a_job(store)
+    open_dev(store, at=NOW - 49 * HOUR, code="layouts_differ", text="They differ.", studio_id=sid)
+    log_event(store, at=NOW - 60 * HOUR, kind="filed", text="Filed.", studio_id=sid)
+    assert view_of(store, clock).your_list == () and tray(store, clock).colour == "green"
+
+
+def test_a_job_filed_long_ago_leaves_the_board_unless_something_is_open(store, clock):
+    gone = a_job(store, "Dummitt_081426", "1", at=NOW - 60 * 24 * HOUR)
+    log_event(store, at=NOW - 45 * 24 * HOUR, kind="filed", text="Filed.", studio_id=gone)
+    asking = a_job(store, "Mockford_081426", "2", at=NOW - 60 * 24 * HOUR)
+    log_event(store, at=NOW - 45 * 24 * HOUR, kind="filed", text="Filed.", studio_id=asking)
+    a_card(store, "ic_changed", sid=asking, prefix="MOC")
+    recent = a_job(store, "Fakeley_101426", "3")
+    log_event(store, at=NOW - 2 * 24 * HOUR, kind="filed", text="Filed.", studio_id=recent)
+    moving = a_job(store, "Testerson_101426", "4", at=NOW - 60 * 24 * HOUR)
+    a_row(store, "Testerson", state="matched", sid=moving, at=NOW - 60 * 24 * HOUR)
+    names = {row.name for row in view_of(store, clock).jobs}
+    assert names == {"Mockford_081426", "Fakeley_101426", "Testerson_101426"}
+
+
+def test_the_board_reads_filed_facts_in_one_query_however_many_jobs(store, clock, monkeypatch):
+    from ngrunner.store import db
+
+    def fill(start, count):
+        for n in range(start, start + count):
+            sid = a_job(store, f"Testerson_{n}", str(n))
+            set_state(store, f"job.filed.{sid}", json.dumps({"designs": 3, "pages": 19}))
+            log_event(store, at=NOW, kind="filed", text="Filed.", studio_id=sid)
+
+    def connections():
+        made = []
+        real = db._connect
+        monkeypatch.setattr(db, "_connect", lambda path: made.append(path) or real(path))
+        view = view_of(store, clock)
+        monkeypatch.setattr(db, "_connect", real)
+        return len(made), view
+
+    fill(1, 3)
+    few, _ = connections()
+    fill(100, 30)
+    many, view = connections()
+    assert few == many
+    assert "3 designs, 19 pages" in view.jobs[0].next_step

@@ -40,6 +40,39 @@ def test_every_check_passes_on_a_plain_folder_and_all_it_made_is_gone(
     assert list((tmp_path / "scratch").iterdir()) == []
 
 
+def _a_made_folder(tmp_path: Path) -> tuple[canary._Made, Path]:
+    made = canary._Made()
+    folder = tmp_path / "made by the canary"
+    folder.mkdir()
+    made.note(folder)
+    return made, folder
+
+
+def test_drives_own_desktop_ini_goes_with_a_folder_the_canary_made(tmp_path: Path) -> None:
+    """Measured 2026-10-30: Drive for desktop adds a hidden desktop.ini to a folder a little while
+    after it is made, which kept the canary from removing its own folders."""
+    made, folder = _a_made_folder(tmp_path)
+    (folder / "desktop.ini").write_text("[.ShellClassInfo]", encoding="utf-8")
+    removed, kept = made.remove_all()
+    assert (removed, kept) == (1, []) and not folder.exists()
+
+
+def test_anything_else_in_a_made_folder_stays_and_is_named(tmp_path: Path) -> None:
+    made, folder = _a_made_folder(tmp_path)
+    (folder / "desktop.ini").write_text("[.ShellClassInfo]", encoding="utf-8")
+    (folder / "Jim's file.txt").write_text("stay", encoding="utf-8")
+    removed, kept = made.remove_all()
+    assert removed == 0 and len(kept) == 1 and "made by the canary" in kept[0]
+    assert (folder / "Jim's file.txt").read_text(encoding="utf-8") == "stay"
+
+
+def test_a_folder_named_desktop_ini_is_not_taken_for_drives_file(tmp_path: Path) -> None:
+    made, folder = _a_made_folder(tmp_path)
+    (folder / "desktop.ini").mkdir()
+    removed, kept = made.remove_all()
+    assert removed == 0 and len(kept) == 1 and (folder / "desktop.ini").is_dir()
+
+
 @pytest.mark.parametrize("line", [
     "The no-follow create makes a new file",
     "The no-follow create refuses a name already there",
@@ -210,14 +243,14 @@ def _during_the_run(place: Path, act):
 def test_a_file_someone_else_drops_in_stays_and_fails_the_last_check(
         place: Path, tmp_path: Path) -> None:
     def drop(run: Path) -> None:
-        (run / "files" / "desktop.ini").write_bytes(b"not the canary's")
+        (run / "files" / "Jim's notes.txt").write_bytes(b"not the canary's")
 
     code, text = _run(place, tmp_path, sleep=_during_the_run(place, drop))
     assert code == 1
     assert "FAIL  Everything the canary made was removed again" in text
     run = next(place.glob("ngrunner-canary-*"))
-    assert (run / "files" / "desktop.ini").read_bytes() == b"not the canary's"
-    assert [p.name for p in (run / "files").iterdir()] == ["desktop.ini"]
+    assert (run / "files" / "Jim's notes.txt").read_bytes() == b"not the canary's"
+    assert [p.name for p in (run / "files").iterdir()] == ["Jim's notes.txt"]
 
 
 def test_a_file_swapped_under_its_name_is_not_the_one_it_made_and_stays(
@@ -232,6 +265,21 @@ def test_a_file_swapped_under_its_name_is_not_the_one_it_made_and_stays(
     assert "a.txt (it is not what the canary made)" in text
     run = next(place.glob("ngrunner-canary-*"))
     assert (run / "files" / "a.txt").read_bytes() == b"not the canary's"
+
+
+def test_the_folder_a_refused_junction_leaves_is_removed(place: Path, tmp_path: Path,
+                                                         monkeypatch: pytest.MonkeyPatch) -> None:
+    """Measured on Drive for desktop, 2026-10-30: CreateJunction makes the folder first, and the
+    folder stays when the link is refused."""
+    def refuse(target: str, link: str) -> None:
+        os.mkdir(link)
+        raise OSError("Drive refuses a link")
+
+    monkeypatch.setattr(canary._winapi, "CreateJunction", refuse)
+    code, text = _run(place, tmp_path)
+    assert code == 0, text
+    assert "NOTE  A junction can't be made here" in text
+    assert list(place.iterdir()) == []
 
 
 def test_its_own_junction_goes_as_a_link_and_is_only_a_note(place: Path, tmp_path: Path) -> None:

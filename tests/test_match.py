@@ -28,6 +28,7 @@ from ngrunner.match import (
     match_file_to_job,
     normalize_job_file,
     room_words,
+    typed_variant,
 )
 
 
@@ -1805,3 +1806,13 @@ def test_real_ng_jobs_folders_belong_to_at_most_one_archived_job(summaries_dir, 
               if j.name.casefold() in own_folder and own_folder[j.name.casefold()].job is not j]
     assert not ambiguous, f"folders {ambiguous} are ambiguous"
     assert not missed, f"archived jobs {missed} do not match their own folder"
+
+
+@pytest.mark.parametrize("text, variant", [
+    ("Testerson", None),
+    ("Testerson_101426_Gar", "gar"),
+    ("Testerson closet remake", "remake"),
+    ("Testerson remake 101426 gar", "remake+gar"),
+])
+def test_a_rows_variant_has_a_public_name(text, variant):
+    assert typed_variant(text) == variant

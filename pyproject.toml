@@ -24,6 +24,9 @@ dependencies = [
     "windows-toasts==1.3.1",
     "cryptography==50.0.2",
     "tzdata==2026.6",
+    # Signs in to Studio through the community site, which needs a real browser. It drives the
+    # Edge that Windows already has, so no browser ships with NG Runner.
+    "playwright==1.60.0",
 ]
 
 [project.optional-dependencies]

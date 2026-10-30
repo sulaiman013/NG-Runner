@@ -24,6 +24,15 @@ def get_state(db: Db, key: str, default: str | None = None) -> str | None:
     return default if row is None else row["value"]
 
 
+def states_under(db: Db, prefix: str) -> dict[str, str]:
+    """Every value whose key starts with prefix, in one read: reading them key by key costs a
+    connection each, and a prefix like "filed." grows with the jobs."""
+    with session(db, write=False) as conn:
+        rows = conn.execute("SELECT key, value FROM state WHERE substr(key, 1, ?) = ?",
+                            (len(prefix), prefix)).fetchall()
+    return {row["key"]: row["value"] for row in rows}
+
+
 def set_state(db: Db, key: str, value: str) -> None:
     """Store value under key, replacing what was there."""
     value = text_value(value, "a state value", empty=True)

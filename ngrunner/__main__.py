@@ -18,11 +18,15 @@ Commands:
     release-all                        hand every job back to Jim's chat (uninstall); P1a has no
                                        leases, so there is nothing to hand back yet
     canary --folder PATH               prove a drive does what commit_write relies on
-    setup                              settings.json and the two keys, asked for in plain words
+    setup                              settings.json, the two keys and Studio's login, asked for
+                                       in plain words
     restore BACKUP [--install]         the restore drill; --install then puts the database in
                                        place on a new PC
     support-bundle                     a support bundle in the data folder, for Sulaiman
     keygen                             a new backup key pair
+    dev-close [ID]                     the open DEV items, or close the one with this number, for
+                                       Sulaiman: the runbook's way to close an item nothing else
+                                       closes
 
 Modules are imported inside each command, so a module that fails to load breaks only the
 commands that need it, and --self-test can still name it.
@@ -114,6 +118,8 @@ def main(
         return _setup(paths, read_line, read_secret, secrets, say)
     if command == "restore":
         return _restore(Path(args.backup), args.install, paths, read_secret, running, say)
+    if command == "dev-close":
+        return _dev_close(paths, args.id, clock, say)
     return _support_bundle(paths, clock, say)
 
 
@@ -133,13 +139,15 @@ def _parser() -> _Parser:
     canary = commands.add_parser("canary", help="prove a drive does what commit_write relies on")
     canary.add_argument("--folder", required=True,
                         help="a test folder of your own, as a full path; never in NG Jobs")
-    commands.add_parser("setup", help="settings.json and the keys, asked for in plain words")
+    commands.add_parser("setup", help="settings.json, the keys and Studio's login, asked plainly")
     restore = commands.add_parser("restore", help="the restore drill (and a restore onto a new PC)")
     restore.add_argument("backup", help="a <YYYYMMDD>.ngrbak file from the control folder")
     restore.add_argument("--install", action="store_true",
                          help="then put the database in place (only where NG Runner has none)")
     commands.add_parser("support-bundle", help="write a support bundle into the data folder")
     commands.add_parser("keygen", help="print a new backup key pair")
+    dev_close = commands.add_parser("dev-close", help="list the open DEV items, or close one")
+    dev_close.add_argument("id", nargs="?", type=int, help="the number of the item to close")
     return parser
 
 
@@ -333,6 +341,44 @@ def _put_in_place(database: bytes, paths: AppPaths, running: Callable[[], bool] 
     return 0
 
 
+def _dev_close(paths: AppPaths, dev_id: int | None, clock: Clock, say: _Say) -> int:
+    """For Sulaiman, once the cause is fixed: most DEV items close by themselves, and one that
+    can't (no later event says it cleared) would stand for good and hide the next. With NG Runner
+    running too: the database takes a second reader and writer."""
+    from ngrunner.clock import fmt_clock, fmt_date
+    from ngrunner.store import (
+        StoreError, close_dev, get_dev, list_dev, log_event, open_store,
+    )
+
+    if not paths.db.exists():
+        say("NG Runner has no database here yet, so it has no DEV items.")
+        return 1
+    try:
+        store = open_store(paths.db)
+        if dev_id is None:
+            items = list_dev(store)
+            for item in items:
+                when = f"{fmt_date(item.at)} {fmt_clock(item.at)}"
+                say(f"{item.id}  {when}  {item.code}  {item.text}")
+            if not items:
+                say("No DEV items are open.")
+            return 0
+        item = get_dev(store, dev_id)
+        if item is None:
+            say(f"There is no DEV item {dev_id}.")
+            return 1
+        if not close_dev(store, dev_id):
+            say(f"DEV item {dev_id} was already closed.")
+            return 0
+        log_event(store, at=clock.now(), kind="dev_closed", lane="DEV",
+                  text=f"DEV item {dev_id} ({item.code}) was closed by hand.")
+    except StoreError as exc:
+        say(f"{exc}.")
+        return 1
+    say(f"DEV item {dev_id} closed.")
+    return 0
+
+
 def _support_bundle(paths: AppPaths, clock: Clock, say: _Say) -> int:
     from ngrunner import support
 
@@ -353,7 +399,7 @@ def _support_bundle(paths: AppPaths, clock: Clock, say: _Say) -> int:
     return 1
 
 
-# ----- setup: settings.json and the keys, asked for in plain words
+# ----- setup: settings.json, the keys and Studio's login, asked for in plain words
 
 
 def _setup(paths: AppPaths, read_line: Callable[[str], str], read_secret: Callable[[str], str],
@@ -369,6 +415,7 @@ def _setup(paths: AppPaths, read_line: Callable[[str], str], read_secret: Callab
     try:
         answers = _ask_settings(before, read_line, read_secret, say)
         keys = {name: _ask_key(name, secrets, read_secret, say) for name in _KEYS}
+        login = _ask_studio_login(secrets, read_secret, say)
     except (EOFError, KeyboardInterrupt):
         say("Setup stopped. Nothing was saved.")
         return 1
@@ -388,14 +435,17 @@ def _setup(paths: AppPaths, read_line: Callable[[str], str], read_secret: Callab
     if before is not None:
         settings = replace(settings, set_aside=before.set_aside)
     try:
-        for name, value in keys.items():
+        for name, value in {**keys, **login}.items():
             if value is not None:
                 secrets.put(name, value)
+        if any(login.values()):  # the cookies of the login it replaces
+            secrets.remove("studio_session")
+        has_login = all(secrets.get(name) for name in login)
         save_settings(paths, settings)
     except (SecretsError, OSError) as exc:
         say(f"Setup could not finish ({exc}). Run it again.")
         return 1
-    _say_saved(settings, say)
+    _say_saved(settings, has_login, say)
     return 0
 
 
@@ -514,6 +564,28 @@ def _ask_key(name: str, secrets: Secrets, read_secret: Callable[[str], str],
                 say("That isn't the signing key: it is 64 characters, 0-9 and a-f.")
 
 
+def _ask_studio_login(secrets: Secrets, read_secret: Callable[[str], str],
+                      say: _Say) -> dict[str, str | None]:
+    """Studio's login: each secret's new value, or None to keep what is saved. Both are hidden, and
+    nothing repeats them. NG Runner files without it, marking each report "designs not
+    cross-checked", so Enter leaves it for later; but a username is no login without its password.
+    A password is kept as typed, since a space can be part of one."""
+    saved_username, saved_password = secrets.get("studio_username"), secrets.get("studio_password")
+    keeps = "it won't show; Enter keeps the one saved"
+    hint = keeps if saved_username else "it won't show; Enter to leave it for later"
+    username = read_secret(f"Studio's login, its username ({hint}): ").strip() or None
+    if not (username or saved_username):
+        return {"studio_username": None, "studio_password": None}
+    hint = keeps if saved_password else "it won't show"
+    while True:
+        password = read_secret(f"Studio's login, its password ({hint}): ")
+        if password.strip():
+            return {"studio_username": username, "studio_password": password}
+        if saved_password:
+            return {"studio_username": username, "studio_password": None}
+        say("A Studio login needs its password too. Press Ctrl+C to stop for now.")
+
+
 def _overlap(answers: Mapping[str, Any], paths: AppPaths) -> str | None:
     folders = {name: Path(os.path.realpath(answers[name]))
                for name in ("ng_jobs", "mozaik_shared", "control")}
@@ -524,7 +596,7 @@ def _overlap(answers: Mapping[str, Any], paths: AppPaths) -> str | None:
     return None
 
 
-def _say_saved(settings: Settings, say: _Say) -> None:
+def _say_saved(settings: Settings, has_login: bool, say: _Say) -> None:
     say("Saved. The folders are there, and the keys are in Windows Credential Manager.")
     say(f"NG Jobs: {settings.ng_jobs}")
     say(f"Mozaik Shared: {settings.mozaik_shared}")
@@ -533,6 +605,9 @@ def _say_saved(settings: Settings, say: _Say) -> None:
         f" and {'off' if settings.pc_sleeps_at_night else 'on'} overnight.")
     if not settings.backup_public_key:
         say("No backup key yet: the board will say the nightly backup is waiting for one.")
+    if not has_login:
+        say("No Studio login yet: reports are filed marked designs not cross-checked, and the board"
+            " says so.")
     say(f"Mode: {settings.mode}.")
     say("Quit NG Runner from the tray and start it from the Start Menu, so it reads them.")
 

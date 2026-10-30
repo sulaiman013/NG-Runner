@@ -21,6 +21,7 @@ import pytest
 from ngrunner import __main__ as cli
 from ngrunner import launcher, selftest
 from ngrunner.cards import CARD_KINDS
+from ngrunner.secrets import SecretsUnavailable
 from ngrunner.config import AppPaths
 from ngrunner.messages import templates
 from ngrunner.messages.lint import lint as real_lint
@@ -118,10 +119,16 @@ def test_the_p1a_module_list_covers_every_slice():
                  "ngrunner.toasts", "ngrunner.launcher", "ngrunner.single", "ngrunner.backup",
                  "ngrunner.support", "ngrunner.selftest", "ngrunner.intake.pipeline",
                  "ngrunner.interlock", "ngrunner.jobmodel", "ngrunner.messenger",
-                 "ngrunner.supervisor", "ngrunner.canary"):
+                 "ngrunner.supervisor", "ngrunner.canary", "ngrunner.intake.studio_designs"):
         assert name in listed
     assert {"flask", "waitress", "pystray", "windows_toasts", "cryptography", "pypdf",
-            "pythoncom", "win32com", "win32cred"} <= listed
+            "pythoncom", "win32com", "win32com.shell", "win32com.propsys", "win32cred",
+            "playwright.sync_api"} <= listed
+
+
+def test_what_install_shortcut_and_studios_sign_in_import_is_there_to_import():
+    assert selftest.import_problems(("win32com.shell", "win32com.propsys", "playwright.sync_api",
+                                     "ngrunner.intake.studio_designs")) == []
 
 
 # ----- the migration, on a copy only
@@ -135,6 +142,62 @@ def _live_database(paths: AppPaths) -> bytes:
         con.execute("PRAGMA user_version = 1")
     con.close()
     return paths.db.read_bytes()
+
+
+# ----- Credential Manager, for real
+
+
+class _Keeps:
+    """Secrets that keep one value, and can be told how to fail."""
+
+    def __init__(self, *, reads: str | None = None, fails: Exception | None = None) -> None:
+        self.value, self.reads, self.fails, self.removed = None, reads, fails, 0
+
+    def put(self, name: str, value: str) -> None:
+        self.value = value
+
+    def get(self, name: str) -> str | None:
+        if self.fails is not None:
+            raise self.fails
+        return self.value if self.reads is None else self.reads
+
+    def remove(self, name: str) -> None:
+        self.removed += 1
+
+
+def test_the_build_includes_what_reading_a_credential_imports_by_name():
+    """Found by the first real run of the built app, 2026-10-30: win32cred imports win32timezone at
+    run time, so the build could read no key at all, and importing win32cred showed nothing."""
+    assert "win32timezone" in selftest.P1A_MODULES
+
+
+def test_a_credential_round_trip_passes_and_leaves_nothing():
+    kept = _Keeps()
+    assert selftest.credential_problems(lambda: kept) == []
+    assert kept.value and kept.removed == 1
+
+
+def test_a_build_that_cannot_read_a_credential_fails_the_self_test():
+    kept = _Keeps(fails=ModuleNotFoundError("No module named 'win32timezone'"))
+    problems = selftest.credential_problems(lambda: kept)
+    assert len(problems) == 1 and "win32timezone" in problems[0]
+    assert kept.removed == 1
+
+
+def test_a_credential_that_reads_back_wrong_is_caught():
+    assert selftest.credential_problems(lambda: _Keeps(reads="something else")) == [
+        "Windows Credential Manager gave back something other than what was stored."]
+
+
+def test_no_credential_manager_here_is_not_a_broken_build():
+    kept = _Keeps(fails=SecretsUnavailable("no logon session"))
+    assert selftest.credential_problems(lambda: kept) == []
+
+
+def test_the_real_round_trip_works_and_never_touches_ng_runners_own_keys():
+    selftest_prefix = selftest._selftest_secrets()
+    assert "NGRunner-selftest" in repr(selftest_prefix)
+    assert selftest.credential_problems() == []
 
 
 def test_the_migration_runs_on_a_copy_and_never_on_the_live_database(paths):

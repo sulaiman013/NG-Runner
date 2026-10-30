@@ -91,6 +91,8 @@ Switch shadow off, in both places:
 1. On the board's Health page, switch to live. The switch is logged as an event.
 2. In the Apps Script project, clear the `SHADOW` Script Property and run `checkSetup`, which now asks for Jim's channel. Left set, it would count no digest to Jim, so the next morning would show it.
 
+**Jobs filed during the shadow run:** the next pass takes each one whose row is still on the sheet, or that has no row, through a fresh fetch and files it in NG Jobs, and Barbara gets her "Filed as" then. A folder Jim made himself is compared and never overwritten. A job whose rows have left the sheet stays aside, reading "Trial run only, not in NG Jobs", until `add job` or a new row brings it back.
+
 Barbara's emails and Jim's digest go to them, and his toasts show. The design's P1a exit criteria then run for 10 working days:
 - every new row filed within 45 minutes or carded;
 - 0 summaries filed to the wrong job;
