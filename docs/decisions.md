@@ -151,7 +151,7 @@ An independent fit check read the eight parts of Phase 1a together and found 28 
 | Room words in `branch.py` | `room_words(text)` gives one spelling each, so `branch.py`'s message says "cabinet" and `tests/test_branch.py` must expect it. The `_Gar` flag isn't in it, so keep that check. `branch.py`'s `("Master", ...)` case no longer tests a surname that is a room word; use "Closet" | One reading of a row, in `match.py`, instead of a copy in `branch.py` |
 | `guest` and `master` | No longer room words | Both are plausible surnames, so a double-barrelled family could read as a surname plus a room word, and lose to a newer sold job |
 | What blocks a surname match | A newer sale named with a first name or a second surname, or opened the same day, blocks a match, and so do shared initials or a sale with no owner | Salesforce can lag behind the sale. Initials that fit two owners, or a sale with no owner, rule nobody out |
-| `match_fab_row`'s parameter (M6) | `list_fetched_at` becomes `list_synced_at` once the last fix round closes: the orchestrator does that rename | It must get `synced_at`, but both records have a `fetched_at`, which is always newer than the row, so passing that would let a stale list auto-match with no error |
+| `match_fab_row`'s parameter (M6) | `list_synced_at`, renamed from `list_fetched_at` | It must get `synced_at`, but both records have a `fetched_at`, which is always newer than the row, so passing that would let a stale list auto-match with no error |
 
 ## Measured on real data, 2026-10-30
 

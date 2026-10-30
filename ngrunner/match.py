@@ -115,8 +115,8 @@ class MatchResult[T]:
 
 @dataclass(frozen=True)
 class FabRow:
-    """A Fab Schedule row as NG Runner first saw it. first_seen is timezone-aware and stays
-    the same when Barbara later edits the row."""
+    """A Fab Schedule row as the matcher reads it. first_seen is timezone-aware: the time the
+    job list must be newer than, which the store moves forward when Barbara corrects the text."""
 
     text: str
     designer: str
@@ -658,7 +658,7 @@ def match_fab_row(
     row: FabRow,
     opportunities: Sequence[Opportunity],
     ng_jobs: Iterable[str],
-    list_fetched_at: datetime | None,
+    list_synced_at: datetime | None,
     *,
     sold_stages: Iterable[str] = SOLD_STAGES,
 ) -> MatchResult[Opportunity]:
@@ -683,7 +683,7 @@ def match_fab_row(
 
     ng_jobs holds the Studio project IDs NG Runner already has, and may also hold NG Jobs
     folder names; a folder that only starts with an Opportunity's Name_MMDDYY may be its job,
-    so that Opportunity is never matched by (b) and still counts as a rival. list_fetched_at is
+    so that Opportunity is never matched by (b) and still counts as a rival. list_synced_at is
     when the list was read from Salesforce; a list older than the row is never used
     ("stale_list": ask for a fresh push). A row over 200 characters is not read at all:
     "none", "row_too_long", with nothing to offer and no list needed. One ID as a str for ng_jobs,
@@ -691,13 +691,13 @@ def match_fab_row(
     """
     if row.first_seen is None or row.first_seen.utcoffset() is None:
         raise ValueError("row.first_seen must be a timezone-aware time")
-    if list_fetched_at is not None and list_fetched_at.utcoffset() is None:
-        raise ValueError("list_fetched_at must be timezone-aware")
+    if list_synced_at is not None and list_synced_at.utcoffset() is None:
+        raise ValueError("list_synced_at must be timezone-aware")
     ng_ids, sold = _read_names(ng_jobs, "ng_jobs"), _read_names(sold_stages, "sold_stages")
     if _too_long(row.text):
         unread = NormalizedName("", None, "text")
         return MatchResult("none", reason="row_too_long", normalized=unread)
-    if list_fetched_at is None or list_fetched_at < row.first_seen:
+    if list_synced_at is None or list_synced_at < row.first_seen:
         return MatchResult("stale_list", reason="stale_list")
     typed = _normalize_name(row.text)
     rules = _RowRules.make(row.designer, ng_ids, sold, opportunities)

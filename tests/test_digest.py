@@ -5,6 +5,8 @@ from __future__ import annotations
 import dataclasses
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from ngrunner.cards import CardSpec, new_card
 from ngrunner.digest import DigestView, JobLine, compose, reminders
 from ngrunner.messages import templates
@@ -165,3 +167,43 @@ def test_a_job_line_naming_a_longer_card_id_does_not_hide_this_card():
                       cards=(garage,), open_items=1, oldest_item=garage.created_at)
     assert "2. Card MOC-1, open 1 day: is Mockford_101426 a closet or a garage?" in (
         compose(view).lines)
+
+
+# ----- a row that can't be quoted costs its own line, never Jim's whole list
+
+WITHHELD = "could not be shown in this list; it is on the board."
+
+
+@pytest.mark.parametrize("row", [
+    "Testerson barbara@example.com", "Testerson 310-555-0123", r"Testerson G:\NG Jobs\x",
+    "Testerson " + "3f" * 32, "Testerson k3Yv9QzR7mT2wX8pL4nB6cD1fG5hJ0",
+], ids=["address", "phone", "path", "hash", "key"])
+def test_a_row_the_lint_would_stop_costs_only_its_own_card_line(row):
+    cards = (open_card("which_job", row=row, age=timedelta(days=3), number=2),
+             open_card("row_changed", job="Fakeley_102226", row=row, age=timedelta(days=1)),
+             open_card("closet_or_garage", job="Mockford_101426", age=timedelta(days=7)))
+    view = DigestView(now=NOW, owner=("Paused",),
+                      jobs=(JobLine("Dummitt_102826", "filed 10/29 3:05 PM"),), cards=cards,
+                      open_items=3)
+    message = compose(view)
+    assert message.lines == (
+        "For you: Paused.",
+        "1. Dummitt_102826: filed 10/29 3:05 PM.",
+        f"2. Card TES-2, open 3 days: {WITHHELD}",
+        f"3. Card FAK-1, open 1 day: {WITHHELD}",
+        "4. Card MOC-1, open 7 days: is Mockford_101426 a closet or a garage?",
+        "Your list: 3 open.",
+    )
+    assert templates.vetted(message, now=NOW) == templates.Vetted(message, ())
+    assert row not in message.text
+    assert [card.id for card in reminders(view)] == ["TES-2", "FAK-1", "MOC-1"]   # all came back
+
+
+def test_a_job_name_the_lint_would_stop_costs_only_its_own_card_line_too():
+    cards = (open_card("fetch_failed", job="Testerson_Prj1", age=timedelta(days=1)),
+             open_card("fetch_failed", job="Fakeley_102826", age=timedelta(days=1)))
+    message = compose(DigestView(now=NOW, cards=cards, open_items=2))
+    assert message.lines[:2] == (
+        f"1. Card TES-1, open 1 day: {WITHHELD}",
+        "2. Card FAK-1, open 1 day: still no complete IC summary for Fakeley_102826.")
+    assert templates.vetted(message, now=NOW) == templates.Vetted(message, ())

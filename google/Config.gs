@@ -184,10 +184,10 @@ var TRIGGER_HANDLERS = ['exportFab', 'processOutbox', 'runWatchdog', 'pruneContr
 /**
  * Makes this project's triggers, replacing its own (any others are left alone): the Fab export
  * and the watchdog every 5 minutes, the outbox every minute, pruning daily at 3 AM Pacific, and
- * the edit log on the workbook's edits. Refuses while checkSetup finds a problem.
+ * the edit log on the workbook's edits. Refuses while the setup has a problem.
  */
 function installTriggers() {
-  var problems = checkSetup();
+  var problems = setupProblems_();
   if (problems.length) throw new Error('fix the setup first: ' + problems.join('; '));
   ScriptApp.getProjectTriggers().forEach(function (trigger) {
     if (TRIGGER_HANDLERS.indexOf(trigger.getHandlerFunction()) >= 0) ScriptApp.deleteTrigger(trigger);
@@ -201,8 +201,20 @@ function installTriggers() {
   return TRIGGER_HANDLERS.length;
 }
 
-/** What is missing or wrong, one plain line each (never a value); empty when all is set. */
+/**
+ * What is missing or wrong, one plain line each (never a value); empty when all is set. It also
+ * says what Google refused to trash on the last prune, which never holds up installTriggers:
+ * pruning carries on around a refusal, and only a later prune can clear the line.
+ */
 function checkSetup() {
+  var problems = setupProblems_().concat(pruneProblems_());
+  problems.forEach(function (p) { log_('warn', 'setup: ' + p); });
+  if (!problems.length) log_('info', 'setup: everything NG Runner needs is set');
+  return problems;
+}
+
+/** What must be right before the triggers can run. */
+function setupProblems_() {
   var problems = [];
   if (Session.getScriptTimeZone() !== TIME_ZONE) {
     problems.push('the project time zone is ' + Session.getScriptTimeZone() + ', not ' + TIME_ZONE + ' (see appsscript.json)');
@@ -217,10 +229,7 @@ function checkSetup() {
   } catch (err) {
     problems.push('the control folder could not be opened: ' + err.message);
   }
-  problems = problems.concat(sheetProblems_(), channelProblems_(), hoursProblems_());
-  problems.forEach(function (p) { log_('warn', 'setup: ' + p); });
-  if (!problems.length) log_('info', 'setup: everything NG Runner needs is set');
-  return problems;
+  return problems.concat(sheetProblems_(), channelProblems_(), hoursProblems_());
 }
 
 function sheetProblems_() {

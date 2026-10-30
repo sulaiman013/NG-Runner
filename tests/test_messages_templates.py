@@ -13,7 +13,7 @@ from ngrunner.digest import DigestView, compose
 from ngrunner.match import Opportunity
 from ngrunner.messages import Message
 from ngrunner.messages import templates as t
-from ngrunner.messages.lint import check_line, lint
+from ngrunner.messages.lint import SUBJECT_LIMIT, check_line, lint
 
 NOW = datetime(2026, 10, 30, 22, 5, tzinfo=timezone.utc)        # Fri 10/30 3:05 PM Pacific
 INSTALL = date(2026, 11, 6)                                      # Fri 11/6
@@ -65,6 +65,64 @@ def test_which_job_email_with_no_candidates_asks_for_the_full_name():
     assert message.lines == (
         'Fab row "Dummitt" (designer PE) matches no job in Salesforce, so nothing is filed yet.'
         " Type the full job name in the row, as Salesforce spells it.",)
+
+
+# A candidate as Salesforce spells it, with no date in its name, however it is written.
+UNDATED = (
+    Opportunity("Dummitt", "201", "Pat Example", "Ready to Install"),
+    Opportunity("Dummitt closet", "202", "Pat Example", "Ready to Order"),
+    Opportunity("Dummitt_Prj1", "203", "", ""),
+    Opportunity("Dummitt 10/14/26", "204", "Quinn Sample", "Ready to Order"),
+)
+
+
+def test_a_candidate_with_no_date_in_its_name_still_reaches_barbara():
+    message = t.which_job_email("Dummitt", designer="PE", candidates=UNDATED)
+    assert t.vetted(message, now=NOW) == t.Vetted(message, ())
+    assert message.lines[1:] == (
+        "1. Dummitt (Pat Example, Ready to Install)",
+        "2. Dummitt closet (Pat Example, Ready to Order)",
+        "3. Dummitt_Prj1",
+        "4. Dummitt 10/14/26 (Quinn Sample, Ready to Order)",
+    )
+    # The same when a queued row is written again, with no kind but its title and lines.
+    assert lint(Message("outbox", message.title, message.lines)) == []
+
+
+@pytest.mark.parametrize("name", [
+    "Dummitt barbara@example.com", "Dummitt 310-555-0123", r"Dummitt G:\NG Jobs\x",
+    "Dummitt " + "3f" * 32, "Dummitt k3Yv9QzR7mT2wX8pL4nB6cD1fG5hJ0",
+], ids=["address", "phone", "path", "hash", "key"])
+def test_a_candidate_is_still_never_passed_on_with_an_address_or_a_path(name):
+    message = t.which_job_email("Dummitt", candidates=(Opportunity(name, "201", "", ""),))
+    vetted = t.vetted(message, now=NOW)
+    assert vetted.replaced and name not in vetted.message.text
+
+
+@pytest.mark.parametrize("cell", ["N/A", "n/a", "TBD", "tbd", "None", "  N/A  ", "Unknown", "??"])
+def test_a_designer_cell_that_says_nothing_is_left_out_so_the_email_goes_as_written(cell):
+    listing = t.which_job_email("Dummitt", designer=cell, install=INSTALL, candidates=CANDIDATES)
+    assert t.vetted(listing, now=NOW) == t.Vetted(listing, ())
+    assert listing.lines[0].startswith(
+        'Fab row "Dummitt" (installs Fri 11/6) could be more than one job')
+    no_match = t.which_job_email("Dummitt", designer=cell)
+    assert t.vetted(no_match, now=NOW) == t.Vetted(no_match, ())
+    assert no_match.lines[0].startswith('Fab row "Dummitt" matches no job in Salesforce')
+    filed = t.filed("Testerson_101426", row="Testerson", designer=cell)
+    assert filed.lines == ('Fab row "Testerson" is filed as Testerson_101426.',)
+    assert t.vetted(filed, now=NOW) == t.Vetted(filed, ())
+
+
+def test_a_long_row_makes_a_subject_cut_at_a_word_and_the_body_keeps_it_all():
+    row = "Testerson " + "closet and pantry " * 16
+    assert len(row) > 290
+    message = t.which_job_email(row, candidates=CANDIDATES)
+    assert t.vetted(message, now=NOW) == t.Vetted(message, ())
+    assert len(message.title) <= SUBJECT_LIMIT
+    assert message.title.startswith('Which job is Fab row "Testerson closet and pantry')
+    assert message.title.endswith('…"?')
+    assert message.title.removesuffix('…"?').rsplit(" ", 1)[-1] in ("closet", "and", "pantry")
+    assert f'"{" ".join(row.split())}"' in message.lines[0]
 
 
 # ----- Jim's cards
@@ -535,7 +593,8 @@ def test_every_row_form_goes_through_every_template_as_barbara_typed_it(row):
 def test_a_row_that_carries_an_address_or_a_path_is_never_passed_on(row):
     for name, message in row_messages(row):
         vetted = t.vetted(message, now=NOW)
-        assert vetted.replaced, name
+        # A digest keeps its list: only the card's own line changes (tests/test_digest.py).
+        assert vetted.replaced is ("digest" not in name), name
         assert "Testerson " not in vetted.message.text and row not in vetted.message.text, name
         assert lint(vetted.message) == [], name
 

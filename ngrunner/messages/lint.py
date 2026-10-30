@@ -12,6 +12,8 @@ open a DEV item, so nothing waits on Sulaiman.
 What Barbara typed comes back quoted, as she typed it (Fab row "Testerson 10/14/26"), so that she
 can find her row. Those words are hers, so the rules on how NG Runner writes don't judge them; the
 rules that keep addresses, phone numbers, paths, hashes and keys out of every message still do.
+The same goes for the numbered items under a title that quotes a Fab row: they are the jobs that
+row could be, as Salesforce spells them, so a name with no date in it still names its job.
 
 A problem names the rule and the place ("line 2: has a path"), never the offending text: the
 text may be an address or a key, and problems go to the DEV lane and the logs. redact() makes
@@ -84,8 +86,10 @@ def check(message: Message) -> list[Problem]:
         problems.append(Problem("structure", "message", "has no lines under its title"))
     problems += _layout(message.lines)
     problems += _naming(message)
+    about_a_row = _QUOTED_ROW.search(message.title) is not None
     for number, line in enumerate(message.lines, start=1):
-        problems += check_line(line, f"line {number}")
+        problems += check_line(line, f"line {number}",
+                               candidate=about_a_row and _ITEM.match(line) is not None)
     return problems
 
 
@@ -192,9 +196,10 @@ def _names_a_subject(text: str) -> bool:
 
 
 def _naming(message: Message) -> list[Problem]:
-    """A title that names a job or a card covers every item under it; otherwise each item
-    names its own job or card, or starts with "NG Runner" (a line about the app itself)."""
-    if _names_a_subject(message.title):
+    """A title that names a job or a card covers every item under it, and so does one that
+    quotes a Fab row, whose items are the jobs it could be; otherwise each item names its own job
+    or card, or starts with "NG Runner" (a line about the app itself)."""
+    if _names_a_subject(message.title) or _QUOTED_ROW.search(message.title):
         return []
     problems = []
     for number, line in enumerate(message.lines, start=1):
@@ -210,21 +215,22 @@ def _naming(message: Message) -> list[Problem]:
 # ----- one line of text
 
 
-def check_line(text: str, where: str = "line") -> list[Problem]:
+def check_line(text: str, where: str = "line", *, candidate: bool = False) -> list[Problem]:
     """The rules for one line a person reads (a title, a line, a board string): its shape,
-    then what it holds."""
+    then what it holds. A candidate is a job as Salesforce spells it, so like Barbara's quoted
+    words it answers only to the rules kept for the whole text."""
     shape = _shape(text)
     if shape:
         return [Problem("structure", where, shape)]
     whole = JOB_NAME.sub("Job", text)  # a job name's date and underscores are not an ID
-    ours = _QUOTED_ROW.sub(r'\1 "Row"', whole)
+    ours = "Row" if candidate else _QUOTED_ROW.sub(r'\1 "Row"', whole)
     return [Problem(code, where, phrase) for code, test, phrase in _CONTENT_RULES
             if test(whole if code in _ON_THE_WHOLE_TEXT else ours)]
 
 
 # Barbara's words as the templates quote them (they turn any quote of hers into a curly one, so
 # the first quote here is the end of her words), and the rules her words are still held to.
-_QUOTED_ROW = re.compile(r'\b(Fab row|now reads) "[^"]*"')
+_QUOTED_ROW = re.compile(r'\b(Fab row|now reads) "([^"]*)"')
 _ON_THE_WHOLE_TEXT = frozenset({"path", "hash", "key", "email", "phone"})
 
 _LINE_BREAKS = frozenset("\n\r\v\f\x1c\x1d\x1e\x85\N{LINE SEPARATOR}\N{PARAGRAPH SEPARATOR}")
@@ -468,6 +474,33 @@ _CONTENT_RULES: tuple[tuple[str, Callable[[str], bool], str], ...] = (
      "says unknown, N/A or nothing is lost; say what could not be verified"),
     ("leak", _search(_LEAK), "has program text (None, null, an error name, code or JSON)"),
 )
+
+
+# ----- a subject: short enough for MailApp whatever a row holds, and for a phone to show
+
+SUBJECT_LIMIT = 100
+
+
+def subject_line(title: str) -> str:
+    """title as a subject: at most SUBJECT_LIMIT characters, cut at a word. Where it quotes a Fab
+    row, only her words are cut: the lint reads a quote only once it is closed, and what follows
+    the quote says what is being asked. Cutting one that fits changes nothing."""
+    if len(title) <= SUBJECT_LIMIT:
+        return title
+    row = _QUOTED_ROW.search(title)
+    room = 0 if row is None else SUBJECT_LIMIT - (len(title) - len(row[2]))
+    if room < 1:
+        return _cut(title, SUBJECT_LIMIT)
+    return f"{title[:row.start(2)]}{_cut(row[2], room)}{title[row.end(2):]}"
+
+
+def _cut(text: str, room: int) -> str:
+    """text in room characters, an ellipsis last: its whole words, or with none to keep, as much
+    of its first word as fits."""
+    if len(text) <= room:
+        return text
+    space = text.rfind(" ", 0, room)
+    return f"{text[:space if space > 0 else room - 1].rstrip()}…"
 
 
 # ----- outside text, made safe to log

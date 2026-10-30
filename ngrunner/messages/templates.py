@@ -18,7 +18,7 @@ from ngrunner.cards import Card, CardSpec, Command
 from ngrunner.clock import fmt_clock, fmt_day, pacific_day
 from ngrunner.match import Opportunity
 from ngrunner.messages import Message
-from ngrunner.messages.lint import ABOUT_ITSELF, lint, redact
+from ngrunner.messages.lint import ABOUT_ITSELF, check_line, lint, redact, subject_line
 
 NONE_OF_THESE = "None of these"
 
@@ -112,8 +112,15 @@ _CARD_BACK = {   # an open card, as it comes back in the digest
 }
 
 
+_CARD_BACK_WITHHELD = "could not be shown in this list; it is on the board."
+
+
 def _card_back(card: Card) -> str:
-    return _CARD_BACK[card.kind].format(row=_fab_row(card.row or ""), job=card.job)
+    """What follows "Card <ID>, open <age>: " in the digest. A row or a job the lint would stop
+    (an address, a phone number, a path, a hash, a key) would cost Jim the whole list through
+    vetted(), so that one card is shown by its ID alone, in fixed words."""
+    line = _CARD_BACK[card.kind].format(row=_fab_row(card.row or ""), job=card.job)
+    return _CARD_BACK_WITHHELD if check_line(line) else line
 
 
 # ----- Barbara's emails
@@ -130,8 +137,10 @@ def filed(job: str, *, row: str, designer: str = "", install: date | None = None
 def which_job_email(row: str, *, designer: str = "", install: date | None = None,
                     candidates: Sequence[Opportunity] = ()) -> Message:
     """Barbara's "Which job is this row?": she corrects the name in her own cell. The subject
-    names the row, so two rows' emails never thread together."""
-    about, subject = _row(row, designer, install), f"Which job is {_fab_row(row)}?"
+    names the row, so two rows' emails never thread together; a very long row is cut there, and
+    kept whole in the body."""
+    about = _row(row, designer, install)
+    subject = subject_line(f"Which job is {_fab_row(row)}?")
     if not candidates:
         return Message("which_job_email", subject, (
             f"{about} matches no job in Salesforce, so nothing is filed yet. Type the full job"
@@ -381,8 +390,10 @@ def _clock_on(at: datetime, day: date) -> str:
 
 def _row(text: str, designer: str, install: date | None) -> str:
     """Fab row "Testerson" (designer PE, installs Fri 11/6): what Barbara typed, and how she
-    would find it again. Unknown parts are left out, never guessed."""
-    details = [f"designer {designer.strip()}"] if designer.strip() else []
+    would find it again. Unknown parts are left out, never guessed, and so is a designer cell the
+    lint would stop (N/A, TBD, None), which would cost her the whole email."""
+    cell = _spaced(designer)
+    details = [f"designer {cell}"] if cell and not check_line(f"designer {cell}") else []
     if install is not None:
         details.append(f"installs {fmt_day(install)}")
     shown = _fab_row(text)

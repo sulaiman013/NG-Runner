@@ -143,6 +143,11 @@ class FakeItem {
   getName() { return this.name; }
   isTrashed() { return this.trashed; }
   setTrashed(trashed) {
+    const refusal = this.drive.refuseTrash && this.drive.refuseTrash(this);
+    if (refusal) {
+      this.drive.log.push(`refused ${this.path()}`);
+      throw new Error(refusal);
+    }
     this.trashed = Boolean(trashed);
     this.drive.log.push(`${trashed ? 'trash' : 'untrash'} ${this.path()}`);
     return this;
@@ -209,6 +214,8 @@ class FakeDrive {
     this.count = 0;
     this.byId = new Map();
     this.log = [];
+    // (item) => the words Google refuses to trash it with, or nothing: "Only the owner may trash the File".
+    this.refuseTrash = null;
     this.root = new FakeFolder(this, null, 'My Drive');
   }
   getFolderById(id) {

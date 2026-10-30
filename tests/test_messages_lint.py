@@ -5,10 +5,14 @@ and each violation in the table must fail for its stated reason.
 """
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from ngrunner.messages import Message
-from ngrunner.messages.lint import JOB_NAME, check, lint, redact
+from ngrunner.messages.lint import (
+    JOB_NAME, SUBJECT_LIMIT, check, lint, redact, subject_line,
+)
 
 
 def msg(text: str, *, kind: str = "test") -> Message:
@@ -373,6 +377,87 @@ def test_quoted_row_text_still_carries_no_address_phone_path_hash_or_key(typed, 
 def test_only_the_quoted_row_itself_is_let_off(line, code):
     problems = check(msg(f"Filed as Testerson_101426\n{line}"))
     assert code in {p.code for p in problems}, [str(p) for p in problems]
+
+
+# ----- under a title that quotes a Fab row, each item is a job that row could be, as Salesforce
+# spells it, dated or not; it still can't carry an address, a phone number, a path, a hash or a key
+
+
+ASKS_ABOUT_A_ROW = 'Which job is Fab row "Dummitt"?\nFab row "Dummitt" could be more than one job.'
+
+
+@pytest.mark.parametrize("item", [
+    "Dummitt", "Dummitt closet", "Dummitt_Prj1", "Dummitt 10/14/26", "Dummitt 84213",
+    "Dummitt_Prj1 (Pat Example, Ready to Order)",
+])
+def test_an_item_under_a_quoted_fab_row_names_its_job_however_salesforce_spells_it(item):
+    assert lint(msg(f"{ASKS_ABOUT_A_ROW}\n1. {item}")) == []
+
+
+@pytest.mark.parametrize("item, code", [
+    ("Dummitt barbara@example.com", "email"),
+    ("Dummitt 310-555-0123", "phone"),
+    (r"Dummitt G:\NG Jobs\x", "path"),
+    ("Dummitt " + "3f" * 32, "hash"),
+    ("Dummitt k3Yv9QzR7mT2wX8pL4nB6cD1fG5hJ0", "key"),
+])
+def test_an_item_under_a_quoted_fab_row_still_carries_no_address_phone_path_hash_or_key(item, code):
+    assert code in {p.code for p in check(msg(f"{ASKS_ABOUT_A_ROW}\n1. {item}"))}
+
+
+@pytest.mark.parametrize("text, code", [
+    ('Which job is Fab row "Dummitt"?\nFab row "Dummitt" (designer N/A) is new.\n1. Dummitt',
+     "verify"),                                                           # the line above the items
+    ("Which job is this row?\n1. Dummitt", "job"),                        # no row quoted
+    ('The row "Dummitt" is which job?\n1. Dummitt', "job"),               # not how a row is quoted
+    ('Which job is Fab row "Dummitt?\n1. Dummitt', "job"),                # never closed
+    ('Which job is Fab row "Dummitt?\n1. Dummitt_Prj1', "attribute"),
+    ("NG Runner · Fri 10/30\n1. Card DUM-1: Dummitt_Prj1.", "attribute"),  # a digest item
+])
+def test_only_the_items_under_a_quoted_fab_row_are_let_off(text, code):
+    assert code in {p.code for p in check(msg(text))}
+
+
+# ----- a subject: about 100 characters, cut at a word, whatever a row holds
+
+
+@pytest.mark.parametrize("title", ["Filed as Testerson_101426", "x" * SUBJECT_LIMIT])
+def test_a_subject_that_fits_is_left_as_it_is(title):
+    assert subject_line(title) == title
+
+
+def test_a_subject_is_cut_at_a_word():
+    subject = subject_line("Filed as " + "pantry " * 40)
+    assert subject == ("Filed as " + "pantry " * 13).rstrip() + "…"
+    assert len(subject) <= SUBJECT_LIMIT
+
+
+def test_a_subject_with_no_word_to_cut_at_is_cut_at_the_limit():
+    assert subject_line("x" * 300) == "x" * (SUBJECT_LIMIT - 1) + "…"
+
+
+def test_a_cut_subject_is_not_cut_again():
+    subject = subject_line("Filed as " + "pantry " * 40)
+    assert subject_line(subject) == subject
+
+
+@pytest.mark.parametrize("before, after", [
+    ("Which job is ", "?"),
+    ("TES-2 · ", " · Which job is this row?"),
+    ("SHADOW TES-2 · ", " · Which job is this row?"),
+])
+@pytest.mark.parametrize("typed, kept", [
+    ("Dummitt " + "pantry " * 40, r"Dummitt( pantry)+"),     # whole words
+    ("Dummitt " + "x" * 300, "Dummitt"),                     # the long word goes whole
+    ("x" * 300, "x+"),                                       # no word to keep: cut at the limit
+])
+def test_a_quoted_row_is_cut_alone_and_its_quote_stays_closed(before, after, typed, kept):
+    title = f'{before}Fab row "{typed.strip()}"{after}'
+    subject = subject_line(title)
+    assert len(subject) <= SUBJECT_LIMIT
+    assert re.fullmatch(f'{re.escape(before)}Fab row "{kept}…"{re.escape(after)}', subject), subject
+    assert lint(Message("outbox", subject, ("Fab row is new.",))) == []
+    assert subject_line(subject) == subject
 
 
 # ----- job names: the shapes found in the NG Jobs folder, and what must not pass for one

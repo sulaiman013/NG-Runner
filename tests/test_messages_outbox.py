@@ -12,9 +12,12 @@ from pathlib import Path
 import pytest
 
 from ngrunner import heartbeat
+from ngrunner.cards import new_card
 from ngrunner.digest import DigestView, JobLine, compose
+from ngrunner.match import Opportunity
 from ngrunner.messages import Message
 from ngrunner.messages import templates as t
+from ngrunner.messages.lint import SUBJECT_LIMIT
 from ngrunner.messages.outbox import (
     CHANNELS, OutboxError, Receipt, ReceiptError, outbox_file, read_receipt,
 )
@@ -24,6 +27,10 @@ from ngrunner.store import add_outbox, open_store
 KEY = key_from_text("00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff")
 NOW = datetime(2026, 10, 30, 22, 5, tzinfo=timezone.utc)
 FILED = t.filed("Testerson_101426", row="Testerson", designer="PE")
+LONG_ROW = "Testerson " + "closet and pantry " * 16   # about 300 characters
+UNDATED = (Opportunity("Testerson", "201", "Pat Example", "Ready to Order"),)
+LONG_CARD = t.card_message(new_card(t.which_job_card(LONG_ROW, candidates=UNDATED), created_at=NOW,
+                                    allocate=lambda prefix: 2))
 
 
 # ----- outbox files
@@ -99,8 +106,10 @@ def test_no_address_is_ever_written_into_a_file():
 # crash its file is rebuilt from the row, with no new id and no gap in the numbers
 
 
-@pytest.mark.parametrize("message", [FILED, t.quiet_digest(date(2026, 10, 30))],
-                         ids=["a filed email", "a digest"])
+@pytest.mark.parametrize("message", [
+    FILED, t.quiet_digest(date(2026, 10, 30)), t.which_job_email(LONG_ROW, candidates=UNDATED),
+    LONG_CARD,
+], ids=["a filed email", "a digest", "a long row with an undated candidate", "a long row's card"])
 def test_a_queued_row_is_written_again_with_its_own_id_seq_and_ref(message, tmp_path):
     first = outbox_file(message, to="jim", channel="email", key=KEY, seq=7, now=NOW)
     row = add_outbox(open_store(tmp_path / "ngrunner.db"), id=first.id, seq=7, channel="email",
@@ -125,6 +134,30 @@ def test_a_file_says_the_ref_it_carries_for_the_stores_row():
 def test_an_id_that_could_not_name_an_outbox_file_is_refused(bad):
     with pytest.raises(OutboxError):
         outbox_file(FILED, to="jim", channel="email", key=KEY, seq=1, now=NOW, id=bad)
+
+
+# ----- a subject MailApp can't refuse, whatever a row holds
+
+
+@pytest.mark.parametrize("message, start, end", [
+    (t.which_job_email(LONG_ROW), 'Which job is Fab row "Testerson closet', '…"?'),
+    (t.which_job_email("x" * 300), 'Which job is Fab row "xxx', '…"?'),
+    (t.shadow(t.which_job_email(LONG_ROW)), 'SHADOW Which job is Fab row "Testerson', '…"?'),
+    (LONG_CARD, 'TES-2 · Fab row "Testerson closet', '…" · Which job is this row?'),
+    (t.shadow(LONG_CARD), 'SHADOW TES-2 · Fab row "Testerson', '…" · Which job is this row?'),
+], ids=["which job email", "one long word", "shadow", "card", "shadow card"])
+def test_every_subject_is_cut_whatever_the_row_holds(message, start, end):
+    made = outbox_file(message, to="barbara", channel="email", key=KEY, seq=1, now=NOW)
+    subject = open_envelope(made.data, key=KEY, kind="outbox").payload["subject"]
+    assert len(subject) <= SUBJECT_LIMIT
+    assert subject.startswith(start) and subject.endswith(end)
+
+
+def test_a_title_with_no_row_in_it_is_cut_at_a_word_too():
+    message = Message("filed", "Filed as Testerson_101426" + " pantry" * 40, ("It is filed.",))
+    made = outbox_file(message, to="barbara", channel="email", key=KEY, seq=1, now=NOW)
+    subject = open_envelope(made.data, key=KEY, kind="outbox").payload["subject"]
+    assert len(subject) <= SUBJECT_LIMIT and subject.endswith("pantry…")
 
 
 # ----- a digest's ref: how the Apps Script knows Jim's list went out

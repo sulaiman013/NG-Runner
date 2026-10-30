@@ -22,7 +22,7 @@ from typing import Any, NamedTuple
 from ngrunner.clock import from_iso, pacific_day
 from ngrunner.config import ROLES
 from ngrunner.messages import Message
-from ngrunner.messages.lint import lint, redact
+from ngrunner.messages.lint import lint, redact, subject_line
 from ngrunner.signing import EnvelopeError, new_id, open_envelope, seal
 
 CHANNELS = ("email", "slack", "pushover")
@@ -74,7 +74,8 @@ def outbox_file(message: Message, *, to: str, channel: str, key: bytes, seq: int
     id, new by default. A queued row is written again with its own: rebuild it as
     Message("outbox", row.subject, row.lines, row.urgent) and pass id=row.id, seq=row.seq and
     ref=row.ref, so the numbers have no gap. A message that fails the lint is refused: send
-    templates.vetted(message) instead."""
+    templates.vetted(message) instead. Its title goes as the subject, cut to lint.SUBJECT_LIMIT,
+    so no row can make one that MailApp refuses."""
     if to not in ROLES:
         raise OutboxError("the recipient must be one of NG Runner's roles, never an address")
     if channel not in CHANNELS:
@@ -89,8 +90,8 @@ def outbox_file(message: Message, *, to: str, channel: str, key: bytes, seq: int
     if problems:
         raise OutboxError(f"the message failed the lint ({problems[0]}); nothing was built")
     payload: dict[str, Any] = {
-        "channel": channel, "to": to, "subject": message.title, "lines": list(message.lines),
-        "urgent": message.urgent, "ref": ref,
+        "channel": channel, "to": to, "subject": subject_line(message.title),
+        "lines": list(message.lines), "urgent": message.urgent, "ref": ref,
     }
     file_id = new_id() if id is None else id
     data = seal(OUTBOX_KIND, payload, key=key, seq=seq, issued_at=now, id=file_id)
