@@ -17,7 +17,7 @@ Sulaiman can veto any line below; the change then goes here first, then into the
 | Barbara's questions | One email listing the candidates when a row is unclear; "Filed as <Job>" when it is filed | Design section 2; she corrects the name in her own cell |
 | The night | P1a does not need the PC on overnight and changes no Windows power, update or restart settings. Nightly work runs at the first chance after 1:30 AM, or at the next logon, and is named when late | Leaves Jim's PC as it is; the night setup (questionnaire 5, 6) waits for Phase 5 |
 | Mozaik (Q18b) | NG Runner never opens or drives Mozaik, and never writes while it runs | RULES 79 |
-| Questions during work (Q14) | Work never stops to ask; questions come as cards. Only "which job is this row?" and "closet or garage?" make a job wait, and only that job | RULES 3-4, 57 |
+| Questions during work (Q14) | Work never stops to ask; questions come as cards. Only "which job is this row?", "closet or garage?" and a report that differs from Studio's proposal (the design check, below) make a job wait, and only that job | RULES 3-4, 57 |
 | Messages (Q18a) | Jim's format: numbered, one line each, no intro or sign-off; a clean result is exactly "Nothing to fix — matches IC summary." | RULES 11, 19-20 |
 | Accounts (11, 12) | The Apps Script runs under the Google account that owns the NG Fab Schedule, with no separate automation account (Sulaiman, 2026-10-30). ICLA owns the other accounts (Pushover when added, GitHub, signing); Sulaiman is a member | No new account or sharing, and pruning should work if Drive on Jim's PC uses that account, since only a file's owner may trash it. Accepted: emails come from that address, the script's permissions cover the whole account, and its daily limits are shared |
 | Remote access (7) | Chrome Remote Desktop, unattended with a PIN, set up in the first test window | Every later test and update runs over it, so Jim is not interrupted |
@@ -141,6 +141,56 @@ An independent fit check read the eight parts of Phase 1a together and found 28 
 | A root reached through another (W24) | `_load_roots` refuses a root whose configured spelling passes through another root, with a message about the setting | It loaded, and then every target spelled from it was refused |
 | A record nested too deep (W25) | Catch `RecursionError` in `_Registry._load` and report a damaged record | The reason read "Unexpected problem (RecursionError)" |
 | Tests for the unreached branches (W26) | Add tests for `_temp_changed` (identity and content), a record-write failure leading to a rollback, a target that becomes a link after planning, and a failed restore during a rollback | No test reached them, and W19 sat in one of them |
+
+### As wave 2 built it
+
+Where wave 2's owners went beyond or differed from the specs. The pipeline's other two deviations, the remake card and a rename after filing, are settled in "The final rulings" below.
+
+| Decision | Ruling | Why |
+|---|---|---|
+| A card and its email (pipeline) | Not all in one transaction. The card, the row's state and a queued `tell_*` row commit together, and the send follows under a unique ref. A restart looks for that ref in the outbox and in `messenger.held()`, so nothing goes twice | `Messenger.send` opens its own transaction and writes a file, so it can't run inside another |
+| A message held through quiet hours (messenger) | It has no outbox row until it goes. It waits in the state key `messenger.held` with the id `send()` returned, and takes its seq when it goes, so `get_outbox(id)` is None until 6 AM | If a held message kept a seq, later messages would pass it, and the Apps Script would refuse it, so it would never get a receipt |
+| A message that never gets a receipt (messenger) | A written message with no receipt after 24 hours counts as failed: one DEV item, `receipt_lost`, and nothing is resent | `Outbox.gs` can lose a message or refuse a late one, and nothing else could clear that row, so one lost message would keep the tray red for good. A real outage still stays red through the next day's messages |
+| The urgent DEV item (messenger) | It closes itself when the receipt arrives, the direct send succeeds, or the message is given up on | No screen closes DEV items in P1a |
+| Pushover in shadow mode (messenger) | The direct path counts as "no keys", so scenario 9's with-keys branch runs with `mode=live` | It would ring Jim's phone during the shadow run |
+| A commit settled at start-up (the write record) | When the settle closes a journal row, it opens one DEV item, code `write_settled`, with file names only. A row closes as `done` if it adopted anything, otherwise `aborted` | A crash cut a commit short, so Sulaiman hears of it, and can check by hand any path that was left alone |
+
+### The final rulings (wave 3)
+
+Measured facts behind them are in AGENTS.md: Before filing goes live, item 8. They all lean the same way: when something can't be verified, ask or say so; never guess.
+
+**The Studio design check (`ngrunner/intake/studio_designs.py`)**
+
+| Decision | Ruling | Why |
+|---|---|---|
+| The check | After fetch 1 passes the summary check, compare the report's designs with Studio's Proposal tab. `match`: carry on as today | On 59 of 59 real sold jobs the two are equal by name, 124 designs on each side, while those projects hold 202 in all. It is a list the report's own checks can't give |
+| The two differ | `report_missing_designs` or `proposal_missing_designs`: never file. One card, kind `design_mismatch`: "<Job>: the report lists 3 designs and Studio's proposal lists 4." Choices: "Fetch it again" and "File it as it is". Counts only, never a design name. Only that job waits. Re-check every 30 minutes; when the fetch and the proposal agree, withdraw the card and carry on. "Fetch it again" queues a fresh fetch 1. "File it as it is" files it and logs an event saying Jim chose to | A report that lost a room is the mistake this check exists for, so a person decides. Design names never leave the PC ("What leaves the PC", above) |
+| Studio can't be read | `StudioUnavailable`, when Studio can't be reached or the login is missing or refused: still file. Mark it plainly: `designs_checked: false` in `<folder>_NGRunner.json`, "designs not cross-checked" on the job's board line and in its log line, and one DEV item per day with code `studio_unavailable`. `page_changed` is treated the same way, with its own DEV code | Today's hand download has no such check, and a login problem must not stop all filing. `page_changed` means the parser needs attention |
+| Studio's report address | When every derived address gives `not_found`, try `ProjectPage.report_url` once, as the job's `known_url` | That should fetch the 1 sold job in 60 the derived addresses miss |
+| Where the check runs | Where fetches run, never on the scheduler's thread | The sign-in can take a minute |
+| `Ctx.studio` | `Ctx` gains `studio`: a `StudioSite`, or None when no login is set up. None means "not cross-checked", as above. The supervisor builds it from the secrets `studio_username` and `studio_password`; `NGRunner.exe setup` asks for them and shows neither. A missing login is a board item, not a crash | A login problem must not stop all filing, and no secret is ever shown (AGENTS.md rule 6) |
+| Counts a person can check | "Filed as" to Barbara, Jim's digest line and `<folder>_NGRunner_log.txt` all show the job's design and page counts, for example "Filed as Testerson_101426: 3 designs, 19 pages". `<folder>_NGRunner.json` gains `designs` (the count) and `designs_checked`. Counts only, no design names | A person who knows the job can spot a missing room at no cost, which also covers what the check can't see |
+
+**The day simulation owner's findings**
+
+| Decision | Ruling | Why |
+|---|---|---|
+| A fetch that raises | It must not go silent. The error becomes a refused `Fetched`, so backoff and the 24-hour card apply. Tested with a cache write that fails | It was only logged and retried every minute with `attempts` still 0, so no card or DEV item ever appeared, against "filed within 45 minutes or carded" |
+| "File the new one" | It must not end in nothing. Fall back to the newest cached render with the same fingerprint. If none is left, keep the card open and fetch again; never end failed with no message | Jim can answer an "IC changed" card after pruning has removed the render it points to |
+| Digest reminders | Record them only when `vetted()` did not replace the digest | Otherwise those cards don't come back until their next reminder day |
+| Lines to Sulaiman after a crash | `_night_ran` and `_night_dev_lines` check their ref, as the digest does | A crash between the send and the step's note would send the line twice |
+| The remake card | It gets its own kind: `remake` in `cards.CARD_KINDS`, with `QUESTIONS` and `_CARD_BACK` entries, and `_act` dispatches on the kind. Its digest line asks whether it is a remake. Wave 2 had it as `row_changed`, told apart by `REMAKE_CHOICES` | Under `row_changed` the digest asked "which job is it?" over the choices "A remake" and "The same job" |
+| `selftest.P1A_MODULES` | Gains `win32com.shell` and `win32com.propsys` | `install-shortcut` imports them, and a module missing from the build must fail the self-test |
+| `supervisor._is_paused` | Uses `interlock.is_paused` | So the two can never disagree. It tested `== "yes"`, while the interlock treats anything but `"no"` as paused |
+| `Ctx.commit` | Calls `commit_recorded` instead of copying it | The copy lacked `commit_recorded`'s guard around the row save |
+
+**Others**
+
+| Decision | Ruling | Why |
+|---|---|---|
+| A BLOCKED job | It counts on Your list once it has been blocked for over an hour, so the tray goes amber. A pause doesn't count, since the tray is already grey | Silence is never success. The tray stayed green while a job was BLOCKED |
+| `match._typed_variant` | It gets a public name, `typed_variant` | So `branch.py` stops importing a private one |
+| A rename after filing | Raising one "IC changed" card stands. The folder is never renamed | PROJECT NAME is part of the fingerprint, so the content really does differ. The pipeline owner was right not to suppress it, since that could hide a real change, and Jim settles it with one tap |
 
 ## Matching (settled)
 

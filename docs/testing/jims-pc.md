@@ -21,6 +21,7 @@ Ready outside Jim's PC before window 3:
   - the control folder, shared only by that account, Sulaiman and, if Drive on Jim's PC uses another account, that one;
   - the Apps Script project (`google\`) deployed, with its Script Properties set: signing key, addresses, Pushover when added, and, from the start, `SHADOW` set to `true` with `ALERT_ROLE` left at `sulaiman` (window 3 says why).
 - **Render:** the job-list export, shipped by Sulaiman's push to Assembly Reports, with `ASSEMBLY_EXPORT_KEY` set.
+- **Studio:** the login NG Runner will use, in ICLA's password manager, for the setup in window 2. It never goes in the repo.
 
 ## Window 1 — first look (about 15 minutes, Jim present)
 
@@ -49,7 +50,7 @@ Ready outside Jim's PC before window 3:
    - read-back and rollback.
 
    It removes only the files it created, checked by identity. Mozaik Shared is not touched: P1a never writes there.
-4. **Settings and keys.** Run `NGRunner.exe setup`. It asks for each setting in plain words, writes `settings.json`, puts the two keys in Credential Manager, shows no secret and checks the folders. Quit NG Runner from the tray and start it from the Start Menu, so it reads them. It starts in **shadow** mode, the default. Then, before window 3, set these in the Apps Script project's Script Properties:
+4. **Settings, keys and the Studio login.** Run `NGRunner.exe setup`. It asks for each setting in plain words, writes `settings.json`, puts the two keys and the Studio login in Credential Manager, shows no secret and checks the folders. NG Runner signs in to Studio through the community site, in Microsoft Edge with no window showing, the first time it needs to and then every 14 days or so, so Edge must stay on this PC. Quit NG Runner from the tray and start it from the Start Menu, so it reads them. It starts in **shadow** mode, the default. Then, before window 3, set these in the Apps Script project's Script Properties:
    - `ROLE_JIM_CHANNEL`: `email`, the default, since P1a has no push channel (`docs/decisions.md`), with his address in `ROLE_JIM_EMAIL`.
    - If his PC is off at night (window 1), which P1a allows: `pc_sleeps_at_night` on in the setup and `PC_SLEEPS_AT_NIGHT` set to `true` here. Otherwise the 7:00 AM alarm fires every morning.
    - `EXPECTED_ON_FROM` and `EXPECTED_ON_UNTIL`, the same hours as the setup's.
@@ -61,12 +62,12 @@ Ready outside Jim's PC before window 3:
 
 | Changes | Undo | Passes when |
 |---|---|---|
-| The app, its shortcut, two scheduled tasks, a Run key, its data folder, two Credential Manager entries | `uninstall.ps1`, which keeps the data folder and the Credential Manager entries: remove those by hand if they should go too | The self-test is clean, the canary passes on G:, the tray shows SHADOW, and the heartbeat reaches the control folder |
+| The app, its shortcut, two scheduled tasks, a Run key, its data folder, Credential Manager entries for the two keys, the Studio login and, after the first sign-in, its session | `uninstall.ps1`, which keeps the data folder and the Credential Manager entries: remove those by hand if they should go too | The self-test is clean, the canary passes on G:, the tray shows SHADOW, the heartbeat reaches the control folder, and the board shows no Studio login missing |
 
 ## Window 3 — shadow run (1 to 2 weeks, unattended)
 
 NG Runner does everything except write into NG Jobs:
-- it reads the Fab Schedule export, matches rows, fetches and checks each summary twice, and decides the branch;
+- it reads the Fab Schedule export, matches rows, fetches and checks each summary twice, compares its designs with Studio's proposal, and decides the branch;
 - it writes the files it would have filed into `control\shadow\` instead, where they are pruned after 30 days, since they hold client PDFs;
 - Barbara gets nothing (copies go to Sulaiman);
 - Jim's digest goes to Sulaiman only. With the `SHADOW` Script Property set, the Apps Script counts that as the morning's list, and its "no list today" reaches Sulaiman only, never Jim;
@@ -75,9 +76,13 @@ NG Runner does everything except write into NG Jobs:
 
 Sulaiman checks once a day, remotely or from the heartbeat and digest copies. Each check compares every shadow decision with what really happened: the folder Jim's chat created and the summary it holds.
 
+Two new alarms come from the design check. Each is one DEV item a day, and jobs keep filing, marked "designs not cross-checked":
+- `studio_unavailable` (Studio can't be reached, or its login is missing or refused). Fix: run `NGRunner.exe setup` with the right login, or wait if Studio is only out of reach.
+- `page_changed` (Studio's project page no longer reads as measured). Fix: correct the parser in `ngrunner/intake/studio_designs.py` on Sulaiman's PC and ship a new build.
+
 | Changes | Undo | Passes when |
 |---|---|---|
-| Nothing outside NG Runner's own data folder and the control folder | Pause from the tray, or uninstall | 0 rows matched to the wrong job; every other row asked, with a reason that makes sense; no crash; the heartbeat unbroken while the PC is on; the auto-match rate on real rows measured and written down |
+| Nothing outside NG Runner's own data folder and the control folder | Pause from the tray, or uninstall | 0 rows matched to the wrong job; every other row asked, with a reason that makes sense; no crash; the heartbeat unbroken while the PC is on; the auto-match rate on real rows measured and written down; no design missing from a filed summary, compared with what Jim actually builds (AGENTS.md: Before filing goes live, item 8) |
 
 ## Window 4 — go live (5 minutes, over remote access)
 

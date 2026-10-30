@@ -2,7 +2,7 @@
 
 For Sulaiman, or a backup developer, keeping NG Runner running on Jim's PC. It covers starting, stopping and pausing; falling back to chat; every P1a alarm with its one-line fix; updating and rolling back; restoring onto a new PC; rotating keys; and deleting fixtures (build spec 6.7, design section 6 "Monitoring, support, ownership"). It grows with each phase.
 
-Written in wave 1 of P1a. Items marked † rely on parts that wave 2 wires (the supervisor, the board's Health page, the tray menu, the `canary` and `setup` commands); check them against the build before go-live.
+Written in wave 1 of P1a, and brought up to wave 2. Items marked † rely on parts wave 2 wired (the supervisor, the board's Health page, the tray menu, the `canary` and `setup` commands), which have run only on fakes, or on the Studio design check, which is being wired in; check them against the build before go-live.
 
 **The rule above all others: when NG Runner is down, Jim works in chat as before.** NG Runner only adds; it never takes over a job so that chat can't work it. What it missed it catches up on when it is back, and says so. Never tell Jim "nothing is lost": the design bans those words (section 4, "Silence and failure"), because a risk may be open.
 
@@ -12,7 +12,7 @@ Written in wave 1 of P1a. Items marked † rely on parts that wave 2 wires (the 
 |---|---|
 | The install | `%LOCALAPPDATA%\Programs\NGRunner\`: `launcher\` (NGRunnerLauncher.exe, what everything starts), `app-<version>\` (one folder per version, side by side), `installer\` (uninstall.ps1 and its files), `tasks\` (the task XML as registered), `ngrunner-install.json` (the install record) |
 | NG Runner's data | `%LOCALAPPDATA%\NGRunner\`: `ngrunner.db` (the database), `settings.json`, `launcher.json` (which versions passed their self-test, failed starts, notes for DEV), `logs\` (`launcher.log`, `app-output.log`, NG Runner's own rotating log †), `backup\` (copies of files commit_write replaced, pruned after 60 days), `renders\` (fetched IC summaries: client documents, this PC only), `staging\`, `support\` (support bundles) |
-| Secrets | Windows Credential Manager, generic credentials `NGRunner/signing_key` and `NGRunner/export_key`, plus `NGRunner/pushover_token` and `NGRunner/pushover_user` once Pushover is added (P1b, `docs/decisions.md`). Never in files, logs or bundles |
+| Secrets | Windows Credential Manager, generic credentials `NGRunner/signing_key`, `NGRunner/export_key`, `NGRunner/studio_username`, `NGRunner/studio_password` and `NGRunner/studio_session` (Studio's cookies, saved after a sign-in), plus `NGRunner/pushover_token` and `NGRunner/pushover_user` once Pushover is added (P1b, `docs/decisions.md`). Never in files, logs or bundles |
 | The control folder | A Drive folder shared only by the account that runs the Apps Script (the one that owns the NG Fab Schedule), Sulaiman and, if Drive on Jim's PC uses another account, that one: `fab/`, `heartbeat/`, `outbox/`, `receipts/`, `pause/`, `logs/`, `backups/`, `support/` and, in shadow mode, `shadow/` (spec section 3) |
 | Auto-start | Scheduled tasks `NGRunner-logon` (at sign-in) and `NGRunner-ensure` (every 10 minutes); Run-key value `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\NGRunner`; Start Menu item `NG Runner` (it carries the AUMID `ICLA.NGRunner`, without which notifications don't show) |
 
@@ -26,10 +26,10 @@ $app = "$env:LOCALAPPDATA\Programs\NGRunner\app-0.1.0"
 & "$app\NGRunner.exe" support-bundle            # writes a bundle into the data folder's support\
 & "$app\NGRunner.exe" restore <file>.ngrbak     # the restore drill (asks for the private key)
 & "$app\NGRunner.exe" canary --folder <folder>  # proves a drive's file system; 0 = every check passed †
-& "$app\NGRunner.exe" setup                     # writes settings.json and puts the keys in Credential Manager †
+& "$app\NGRunner.exe" setup                     # writes settings.json; puts the keys and the Studio login in Credential Manager †
 ```
 
-Exit codes: 0 done, 1 a problem (the printed lines say what), 2 a wrong command line, 3 a command not built yet.
+Exit codes: 0 done, 1 a problem (the printed lines say what), 2 a wrong command line or no data folder, and for `canary` a folder it refuses.
 
 ## Start, stop, pause
 
@@ -45,6 +45,16 @@ Whenever NG Runner is down, paused, or a job has waited on it for more than 2 da
 1. Jim gets the IC summary from Assembly Reports and uploads it to his chat, as before NG Runner.
 2. Anything NG Runner already filed in `NG Jobs\<Job>\` stays and is correct: the summary passed the strict check and two fetches agreed. Chat reads `<Job>_NGRunner.json` before working a job (the RULES line).
 3. Nothing NG Runner wrote needs undoing, and nothing needs to be told to it later: it re-reads the folders.
+
+## Studio's sign-in
+
+NG Runner reads each job's project page on Studio for the design check (`docs/p1a/integration-spec.md`, section 1, step 4) †.
+
+- **The login.** `NGRunner.exe setup` asks for it and shows neither the username nor the password. Both go into Credential Manager.
+- **How it signs in.** Studio's own form doesn't work for this login, so sign-in goes through the community site, in Microsoft Edge with no window showing. It can take a minute, so it runs where fetches run, never on the scheduler's thread.
+- **How often.** Every 14 days or so. The cookies it leaves let plain requests read project pages for 14 days, and they are kept as `NGRunner/studio_session`. When Studio sends that session back to sign in, NG Runner signs in once and reads once more.
+- **A wrong password could lock the account,** so NG Runner never signs in twice within an hour. A restart forgets that wait, so after a refused login, put the right one in first, then restart.
+- **No login, or a refused one, never stops filing.** Jobs still file, marked "designs not cross-checked" (the `studio_unavailable` line below).
 
 ## Alarms, and their one-line fixes
 
@@ -64,6 +74,10 @@ Whenever NG Runner is down, paused, or a job has waited on it for more than 2 da
 | A fetch found another job's name in the report (`wrong_job`: a DEV item and that card at once †) | Sulaiman (DEV), Jim's card | Compare Studio's project name with the Opportunity Name. A rename the job list already shows is handled by itself, so this is a real mismatch to fix there. |
 | Two fetches came back byte for byte the same (`same_bytes`: one DEV item †) | Sulaiman (DEV) | Something between NG Runner and Studio served one render twice, so look for a cache or proxy on Jim's PC or network. It keeps fetching every 10 minutes, and the 24-hour card bounds it. |
 | A report too big to fetch, or two fetches in different layouts (`too_big`, `layouts_differ`: a DEV item, no loop †) | Sulaiman (DEV) | Open the job's Install Report in Assembly Reports and look at the job itself; meanwhile Jim works it in chat as before. |
+| "<Job>: the report lists 3 designs and Studio's proposal lists 4." (kind `design_mismatch`: only that job waits †) | Jim's card, the digest | Compare the job's proposal on Studio with the report's page 1, then answer "Fetch it again" or "File it as it is"; it re-checks every 30 minutes, and the card goes by itself once they agree. |
+| "designs not cross-checked", DEV code `studio_unavailable`: Studio can't be reached, or its login is missing or refused (one DEV item a day; jobs still file †) | Sulaiman (DEV), the job's board line | Read the item's reason: for a missing or refused login, try it by hand on the community site, then run `NGRunner.exe setup` with the right one; if Studio is only out of reach, it clears by itself. |
+| "designs not cross-checked", DEV code `page_changed`: Studio's project page no longer reads as measured (one DEV item a day; jobs still file †) | Sulaiman (DEV), the job's board line | The parser needs attention: compare a real project page with `parse_project_page` in `ngrunner/intake/studio_designs.py`, correct it and ship a new build. |
+| A written message with no receipt after 24 hours (`receipt_lost`: a DEV item, and nothing is resent †) | Sulaiman (DEV) | Check the Outbox log in the Apps Script project; if the message never went, tell that person by hand. |
 | A Fab export held: more than max(5 rows, 10%) of its rows gone or new at once (DEV †) | Sulaiman (DEV) | Look at Sheet1. A real change goes through when the next export says the same; a sheet read cut clears with the next whole export. |
 | A job with no filing because its folder was there at install (OBSERVED) or is in `NG Jobs\Old` (no write, and the job's row says why †) | Jim and Sulaiman, the board | Nothing to fix: NG Runner only watches such a folder and never makes a second one, so Jim works that job in chat as before. |
 | An urgent message with no receipt and no Pushover keys (logged, a DEV item, the red tray †) | Sulaiman (DEV) | The same fix as the "can't send messages" line; until receipts resume, only the board and the tray reach Jim. |
@@ -78,7 +92,7 @@ Whenever NG Runner is down, paused, or a job has waited on it for more than 2 da
 | A secret is missing from Credential Manager (a plain board item, never a crash loop †) | Sulaiman, the board | Put it back from ICLA's password manager as `NGRunner/<name>`, or through `NGRunner.exe setup` †. |
 | The nightly backup has no key: `backup_public_key` is blank (a board item, not a crash †) | Sulaiman, the board | Make a pair with `NGRunner.exe keygen` and put the public key in the settings (see "Key rotation"). |
 | The settings file has settings this version does not know, kept unused (after a fallback to an older version; a DEV note †) | Sulaiman (DEV) | Nothing to do while the older version runs: it writes them back for the version that knows them. |
-| A commit cut short by a crash, settled at start-up (DEV †) | Sulaiman | Nothing to do for a file that holds what was meant; check by hand any path the note says was left alone. |
+| A commit cut short by a crash, settled at start-up (DEV code `write_settled` †) | Sulaiman | Nothing to do for a file that holds what was meant; check by hand any path the note says was left alone. |
 | Leftover temp files (`*.ngr-tmp`) listed on the board | Sulaiman, the board's Health page † | NG Runner never deletes them: with NG Runner quit, check each against `logs\` and delete the listed files by hand. |
 | A write refused by commit_write (its reason in DEV) | Sulaiman | The chokepoint did its job: find the code that asked for that write (events, support bundle) and fix that, never the chokepoint's rules. |
 | A control-folder file refused (bad signature, old sequence number, an id seen before; never a Fab file read again unchanged, or a late receipt) | Sulaiman (DEV; the file is ignored) | Check that the signing key in Credential Manager and in the Apps Script's Script Properties match (see "Key rotation"). |
@@ -133,6 +147,7 @@ Never paste a key into chat, email, a ticket or a log.
 - **Backup key pair.** `NGRunner.exe keygen` on Sulaiman's PC prints a pair and its key id. The private key goes into ICLA's password manager, named with its key id; only the public key goes into NG Runner's settings on Jim's PC, as `backup_public_key` †. Keep the old private key until the last backup made with the old key has left the control folder (30 days): every backup names the key id that opens it, and restore says which key it needs.
 - **Signing key** (control-folder envelopes). Pause NG Runner. Make a new key (64 hex characters, `ngrunner.signing.new_key()`), put it in Credential Manager as `NGRunner/signing_key` and in the Apps Script's Script Properties as `SIGNING_KEY`, then resume at the PC. An outbox file refused meanwhile stays refused until its `refused.<id>` property is deleted (`google/README.md`, "Changing the signing key").
 - **Export key** (the job list from the online Assembly Reports). Set a new value for `ASSEMBLY_EXPORT_KEY` in that service's environment on Render (Sulaiman deploys it himself) and in Credential Manager as `NGRunner/export_key`.
+- **Studio login.** Run `NGRunner.exe setup` † on Jim's PC with the new password. To force a new sign-in at once, remove `NGRunner/studio_session` from Credential Manager.
 - **Pushover** (once it is added). Make a new application token in Pushover, then update `NGRunner/pushover_token` (and `NGRunner/pushover_user` if the user key changed).
 
 ## Deleting fixtures

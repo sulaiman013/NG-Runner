@@ -4,7 +4,7 @@ Wires the wave-1 slices into the running app. Read `build-spec.md` first; this f
 
 ## 1. The filing pipeline (`ngrunner/intake/pipeline.py`)
 
-The supervisor calls `tick(ctx)` every 60 seconds; `ctx` holds the store, settings, secrets, clock, roots, the Render and Studio clients and the messenger. Every step is idempotent and keyed by store rows, so a crash or restart mid-way resumes without duplicates. Real fetches take up to 95 s, so a tick never waits on them: they run off the scheduler thread, a couple at a time, and stop between steps on a stop request.
+The supervisor calls `tick(ctx)` every 60 seconds; `ctx` holds the store, settings, secrets, clock, roots, the Render and Studio clients and the messenger. `ctx.studio` is a `StudioSite`, or None when no login is set up, which means "not cross-checked" (step 4). Every step is idempotent and keyed by store rows, so a crash or restart mid-way resumes without duplicates. Real fetches take up to 95 s, so a tick never waits on them: they run off the scheduler thread, a couple at a time, and stop between steps on a stop request.
 
 1. **Fab export.** Read `control\fab\export.json` (and `edits.json`). Accept it only per the envelope rules (build-spec section 3): the same file read again (same seq and id) is unchanged, not a replay, and the 30-minute alarm goes by `exported_at`. Diff it against the last accepted export, whose rows are kept in the store as it came, not rebuilt from `fab_rows`: Add job rows have no sheet row, and would read as gone.
    - **The first export** after install goes through `diff(None, rows)`, and only it does: every row is marked `seen_at_install`, and nothing starts (design section 5). Every later one goes through `diff(previous, rows, edits, unchanged=True)`, which keeps sheet rows current, with only the edits made after the previous export's `exported_at`.
@@ -14,7 +14,7 @@ The supervisor calls `tick(ctx)` every 60 seconds; `ctx` holds the store, settin
      - A row in `new`, `waiting_list`, `asked` or `none` goes back to `new` (Barbara corrected the name), and its open which-job card is withdrawn.
      - A `seen_at_install` row stays seen, and the edit is logged.
      - A `matched` or `filed` row whose job text changed is re-matched in memory, with the job's own ID and folder left out of `ng_jobs`. Any result other than matched to this job raises the card "Row changed: which job?" and files nothing new.
-     - A `filed` row where only the install date or designer changed, and whose old install date has passed, may be a remake, so it is not absorbed as an edit: it raises the card "Is this a remake of <Job>?", and nothing is filed until it is answered. That card is a new template in wave 2.
+     - A `filed` row where only the install date or designer changed, and whose old install date has passed, may be a remake, so it is not absorbed as an edit: it raises the card "Is this a remake of <Job>?", and nothing is filed until it is answered. Its kind is `remake`, and `_act` dispatches on the kind.
    - `gone`: mark `gone` and log it (rows move to Archive). Its open which-job card is withdrawn.
 2. **Job list.** A `new` row that has waited its one export needs a list with `synced_at` at or after its last text change. That is `text_changed_at`, or `first_seen` until the text changes (`to_match()` passes it as `FabRow.first_seen`), so a corrected row needs a list read after the correction. If the stored list is older, ask Render for a push (at most once per 5 minutes) and set the row to `waiting_list`. Poll the export each tick until it is fresh. The alarm "job list is older than the oldest waiting row and over an hour old" goes to the board, the digest and DEV.
    - Match from `get_job_list`, so the list and its time come from one moment. Pass `synced_at`, never `fetched_at`.
@@ -26,12 +26,12 @@ The supervisor calls `tick(ctx)` every 60 seconds; `ctx` holds the store, settin
    - `none`: the same card and email, with no candidates ("type the full job name in the row"). A row too long to read (`row_too_long`) takes this path.
    - `stale_list`: back to `waiting_list`.
    - **Jim's answer** links a job only through the card's `choice_ids`, after checking that the ID is still in the list. If it is gone, the board says so and the row stays `asked`. "None of these" sets the row to `none`, logged, with no refiling.
-   - The card, the outbox row and the row's state change in one `store.transaction()`, after checking for an open card of that kind: `add_card` and `add_outbox` don't de-duplicate. `commit_write` never runs inside a transaction.
+   - The card, the row's state and a queued `tell_*` row change in one `store.transaction()`, after checking for an open card of that kind: `add_card` and `add_outbox` don't de-duplicate. The send follows under a unique ref, since `Messenger.send` opens its own transaction and writes a file. A restart looks for that ref in the outbox and in `messenger.held()`, so nothing goes twice. `commit_write` never runs inside a transaction.
 4. **Fetch 1.** `fetch_render(FetchTarget(...), base_url=settings.studio_url)`, stored in `renders`, with the bytes in `AppPaths.renders\<studio_id>\<sha256>.pdf`. A job's fetches all use one layout: its first render's, else `settings.report_layout`. Keep `Fetched.url` as the job's `known_url`.
 
    | `Fetched.code` | What happens |
    |---|---|
-   | `ok`, and `check.ok` | Queue fetch 2 at +10 min |
+   | `ok`, and `check.ok` | The design check (below), then fetch 2 at +10 min |
    | `ok`, and not `check.ok` | An early render: retry every 30 min |
    | `not_found`, `timeout`, `network`, `http_error`, `not_pdf`, `truncated` | Retry with backoff: 5, 15, 30, 60 min, then hourly |
    | `too_big` | A DEV item |
@@ -40,6 +40,17 @@ The supervisor calls `tick(ctx)` every 60 seconds; `ctx` holds the store, settin
    | `wrong_job`, any other name | A DEV item and the 24-hour card at once, never silent retries |
 
    Past 24 h from the first attempt: card "Could not get a complete IC summary for <Job>" (design 3.4: Fetch, 24 h, then a card), carrying `Fetched.reason`.
+
+   A fetch that raises, on a cache write that fails for example, becomes a refused `Fetched`, so the backoff and the 24-hour card apply: it never goes silent. When every derived address gives `not_found`, `ProjectPage.report_url` is tried once, as the job's `known_url`, which should fetch the 1 sold job in 60 the derived addresses miss.
+
+   **The design check** (`ngrunner/intake/studio_designs.py`, build-spec 6.2). After fetch 1 passes the summary check, `check_designs(check.designs, ctx.studio.project_page(studio_id))` compares the report's page 1 with Studio's Proposal tab. It runs where fetches run, never on the scheduler's thread, because the sign-in can take a minute.
+
+   | Result | What happens |
+   |---|---|
+   | `match` | Carry on as today |
+   | `report_missing_designs` or `proposal_missing_designs` | Never file. One card, kind `design_mismatch`: "<Job>: the report lists 3 designs and Studio's proposal lists 4." Counts only, never a design name. Only that job waits. Re-check every 30 minutes; when the fetch and the proposal agree, the card is withdrawn and the job carries on. "Fetch it again" queues a fresh fetch 1. "File it as it is" files it and logs an event saying Jim chose to |
+   | `StudioUnavailable` (`no_login`, `sign_in_failed` or `network`), or `ctx.studio` is None | Still file: today's hand download has no such check, and a login problem must not stop all filing. `designs_checked: false` in `<folder>_NGRunner.json`, "designs not cross-checked" on the job's board line and in its log line, and one DEV item per day with code `studio_unavailable` |
+   | `StudioUnavailable` (`page_changed`) | The same, with its own DEV code, `page_changed`, because the parser needs attention |
 5. **Fetch 2.** `agree(first, second)`, over `Render(cache_path, fetched_at, layout)`.
 
    | `Agreement.code` | What happens |
@@ -65,9 +76,10 @@ The supervisor calls `tick(ctx)` every 60 seconds; `ctx` holds the store, settin
    - After a crash mid-commit, when the start-up settle adopted part of a commit into `owned` (section 3), write whichever of the three files are missing, and only those.
    - A refusal leaves the job BLOCKED with the reason, and is retried when that reason clears: paused, unreachable or "folder changed".
 7. **Tell.**
-   - Outbox email to Barbara: "Filed as <Job>".
-   - An event for the digest and the board.
-   - From filing on, a nightly re-fetch for 30 days, one at a time, as a pending operation with no deadline. Content that changes, and is confirmed by two agreeing fetches, raises "IC changed: which render governs?". Nothing is ever re-filed by itself. A stored fingerprint read by another pypdf version is recomputed from `cache_path` first, so an upgrade raises no false card.
+   - Outbox email to Barbara: "Filed as <Job>", with the job's design and page counts, for example "Filed as Testerson_101426: 3 designs, 19 pages". Counts only, no design names, so a person who knows the job can spot a missing room.
+   - An event for the digest and the board. Jim's digest line shows the same counts.
+   - From filing on, a nightly re-fetch for 30 days, one at a time, as a pending operation with no deadline. Content that changes, and is confirmed by two agreeing fetches, raises "IC changed: which render governs?". Nothing is ever re-filed by itself. A stored fingerprint read by another pypdf version is recomputed from `cache_path` first, so an upgrade raises no false card. A rename after filing raises one such card too, since PROJECT NAME is part of the fingerprint.
+   - Jim's answer "File the new one" uses the render the card points to. If pruning has removed it, it falls back to the newest cached render with the same fingerprint. If none is left, the card stays open and the job is fetched again: it never ends failed with no message.
 
 **Add job** (board button or `add job <name or Studio ID>`) enters the pipeline at step 3, with the typed text as an exact name, or at step 4 for a Studio ID found in the list. The typed text goes through `parse_command`, so digits mean a Studio ID. A job added by hand has no Fab row, so no "Filed as" email.
 
@@ -80,7 +92,7 @@ The supervisor calls `tick(ctx)` every 60 seconds; `ctx` holds the store, settin
 - a target is in the folder of an OBSERVED job, which gets no writes (the design says watch and check only);
 - a target is outside NG Jobs and the control folder.
 
-Otherwise it returns None. `commit_write` calls it twice. HELD is not in P1a: no button or command can set it, so it is not in the interlock and stays an unused overlay. The Mozaik conditions of design section 5 join here in P1b and later, as P1a writes nothing a Mozaik job reads.
+Otherwise it returns None. `commit_write` calls it twice. `interlock.is_paused` is the one reading of the paused flag: the job model and the supervisor use it too, so they can never disagree. HELD is not in P1a: no button or command can set it, so it is not in the interlock and stays an unused overlay. The Mozaik conditions of design section 5 join here in P1b and later, as P1a writes nothing a Mozaik job reads.
 
 ## 3. The write record and crash recovery (`writes.py`, owned by its fixer)
 
@@ -91,11 +103,11 @@ Replace `owned_files.json` with the store's `owned` table:
   - `record(journal id, written)`: **after the read-back,** moves those hashes into `owned` and the row to `done`, in one transaction;
   - `abort(journal id)`: a commit that ended with nothing changed closes its row.
 - `owned` holds NG Jobs and `control\shadow\` paths only: heartbeats and outbox files are write-once, and about 300 commits a day would otherwise add rows forever.
-- One `ctx.commit(writes)` wrapper does `commit_write` plus `record_commit`, so no caller forgets.
+- One `ctx.commit(writes)` wrapper calls `writes.commit_recorded` (`commit_write` with the store's registry, plus `record_commit`), so no caller forgets.
 - **At start-up,** every `pending` row is settled:
   - each path that holds exactly its intended hash is adopted into `owned`;
   - every other path is left alone (never deleted);
-  - the row is closed, and the case is logged to DEV;
+  - the row is closed, and the case is logged to DEV, code `write_settled`, with file names only;
   - a path unreachable at start-up keeps its row pending and retries, because closing it would strand a file NG Runner can't overwrite later.
 
   So a crash between the rename and the record never strands a file NG Runner can't overwrite later, and never adopts a file someone else changed.
@@ -110,13 +122,15 @@ Replace `owned_files.json` with the store's `owned` table:
 {"schema": 1, "job": "<Name>", "branch": "closet",
  "summary": {"file": "<folder>_summary.pdf", "sha256": "...", "layout": "landscape",
              "pages": 19, "fetched": ["<ISO>", "<ISO>"]},
+ "designs": 3, "designs_checked": true,
  "filed_at": "<ISO>", "items": [],
  "note": "NG Runner filed this IC summary. Chat sessions read this file before working the job."}
 ```
 
 This is for machines (Jim's chat) and holds no address.
+- **The design check.** `designs` is the count of the report's designs, never their names. `designs_checked` is `false` when Studio couldn't be read (section 1, step 4).
 - **Kept current.** Jim's chat reads it first (`docs/p1a/rules-lines.md`), so NG Runner rewrites it whenever a card about the job opens or closes, and lists open cards in `items`. "IC changed: which render governs?" is one of them. It stays an owned file, rewritten through `commit_write`.
-- **A summary replaced by hand.** The RULES lines allow this on Jim's word. When the summary's sha256 no longer matches what `_NGRunner.json` records, NG Runner logs it and never overwrites the summary. It rewrites `_NGRunner.json` so the notes describe the file that is there, and it marks the job's summary "replaced by hand". `<folder>_NGRunner_log.txt` is for people. Each line has a Pacific time and one plain sentence, for example `10/30 3:05 PM  Filed the IC summary (landscape, 19 pages), checked on two fetches 10 minutes apart.`
+- **A summary replaced by hand.** The RULES lines allow this on Jim's word. When the summary's sha256 no longer matches what `_NGRunner.json` records, NG Runner logs it and never overwrites the summary. It rewrites `_NGRunner.json` so the notes describe the file that is there, and it marks the job's summary "replaced by hand". `<folder>_NGRunner_log.txt` is for people. Each line has a Pacific time and one plain sentence, for example `10/30 3:05 PM  Filed the IC summary (landscape, 3 designs, 19 pages), checked on two fetches 10 minutes apart.` The filing line shows the job's design and page counts, and says "designs not cross-checked" when `designs_checked` is `false`.
 
 ## 5. The job model (`ngrunner/jobmodel.py`)
 
@@ -134,7 +148,8 @@ Pure functions over store facts (design 3.4: facts, clicks and pending work; no 
 - **Install date:** a date; the words "could not verify" when `fab.install_date` gives None; None only when the row has no cells.
 - **Overlays:** WAITING (resumes by itself: list, second fetch), BLOCKED (a reason and a one-line fix), NOT_RUN (a reason and a retry), OBSERVED (a folder found at install: no writes, and the row says why), PAUSED. HELD stays an unused value: nothing sets it in P1a.
 - **Next step:** one plain line per job. Examples: "Waiting for a fresh job list", "Card TES-1: which job is this row?", "Second fetch at 3:15 PM", "Filed 10/30 3:05 PM", "Card FAK-1: closet or garage?".
-- **Your list:** open cards, pinned items and DEV items older than 48 h, each naming its job through `dev.studio_id`, with the manual fallback "work <Job> in chat as before". A DEV item about no job leaves nothing to work in chat, so it stays with Sulaiman.
+- **Designs not cross-checked:** a job with `designs_checked: false` says so on its board line (section 1, step 4).
+- **Your list:** open cards, pinned items and DEV items older than 48 h, each naming its job through `dev.studio_id`, with the manual fallback "work <Job> in chat as before". A DEV item about no job leaves nothing to work in chat, so it stays with Sulaiman. A BLOCKED job counts once it has been blocked for over an hour, so the tray goes amber: silence is never success. A pause doesn't count, since the tray is already grey.
 - **Tray colour:**
   - grey when paused;
   - red when NG Runner is unwell: no receipt for 5 min, the store unreadable, or an urgent DEV item;
@@ -144,7 +159,7 @@ Pure functions over store facts (design 3.4: facts, clicks and pending work; no 
   An unreadable store is decided by the supervisor, not by a view read from the store, since no view can be read then. An urgent DEV item is one opened with `urgent=True` (`dev.urgent`): NG Runner can't do its job until someone acts, as with an urgent message that has no receipt and no other way out (section 6). In shadow mode the tooltip starts SHADOW.
 - **Digest view:**
   - owner items first: jobs installing within 5 days with no summary filed, alarms;
-  - then one line per job touched since the last digest;
+  - then one line per job touched since the last digest, a filed job's line with its design and page counts;
   - then open cards with their age, coming back at 1, 3 and 7 days;
   - then "Your list: N open, oldest D days";
   - a quiet night gets one line.
@@ -155,6 +170,7 @@ Pure functions over store facts (design 3.4: facts, clicks and pending work; no 
   - `single.acquire()`; on `None`, `open_running_board` if `--open-board`, then exit 0, which the launcher reads as already running;
   - `StopSignal`;
   - load settings and secrets. A missing one is a plain board item, never a crash loop: `run` must come up and call `record_up` even with neither, because `install.ps1` starts it before they exist, and two failed starts retire the version;
+  - build `ctx.studio`: a `StudioSite` from the secrets `studio_username` and `studio_password`, or None when no login is set up. A missing login is a board item, not a crash;
   - read `Store(path).schema_version()`; if it is below `LATEST`, `backup_to` first, because `open_store` migrates at once and an older version then refuses the file;
   - open and migrate the store; one it can't read shows red, and is no crash loop either;
   - start the board server and the tray, `publish_board`, then `record_up`, within 120 s of the start. Nothing before it waits on a shared folder;
@@ -171,9 +187,9 @@ Pure functions over store facts (design 3.4: facts, clicks and pending work; no 
   | Pipeline tick | every 60 s |
   | Heartbeat | every 5 min |
   | Receipts check | every minute: a message with no receipt after 5 min turns the tray red. An urgent one goes through `messages.pushover.send` if the Pushover keys are in Credential Manager; without them (all of P1a unless Sulaiman adds them) it is logged and a DEV item opens. The tray turns red either way |
-  | Digest | 6:30 AM Pacific, once per Pacific date |
+  | Digest | 6:30 AM Pacific, once per Pacific date. Reminders are recorded only when `vetted()` did not replace the digest |
   | Nightly work: backup (committed to `control\<folder>\<name>`; `Pruned.left` and any `BackupError` go to DEV), re-fetches, yesterday's log to the control folder (composed from events, job names only), the toast-setting check, pruning NG Runner's own old backups, pruning old renders (keeping the governing one and the latest that differs), `prune_seen_ids`, pruning `writes` rows | from 1:30 AM, once per night key |
-  | The daily "ran" and DEV lines to Sulaiman; telling Jim of DEV items over 48 h | with the nightly work |
+  | The daily "ran" and DEV lines to Sulaiman, each checking its ref as the digest does, so a crash never sends it twice; telling Jim of DEV items over 48 h | with the nightly work |
   | Pause files | every minute |
 
 - **Timing.** Phone quiet hours are 10 PM to 6 AM except DO NOT CUT, `cant_send` included. Barbara's emails use the same quiet hours, with no new setting. The morning-list toast shows with the digest, or at the first start after it. No unlock detection in P1a.
@@ -186,7 +202,7 @@ Pure functions over store facts (design 3.4: facts, clicks and pending work; no 
 - **Receipts:** `read_receipt`, `seen_id`, `record_receipt` (build-spec section 3). A receipt saying the send failed goes to DEV with its error, and nothing is resent.
 - **Quit means quit, until the next logon.** Tray Quit calls `launcher.record_quit` and `request_stop`. The 10-minute "ensure running" task then does nothing; the logon task and a start by hand clear it. If Jim leaves it off, the Apps Script watchdog's missing heartbeats tell Sulaiman, as they would for a PC that is off.
 - **The tray's Send support bundle** commits to `control\support\<bundle_name>`, through `commit_write`.
-- **Commands filled with it** (build-spec 6.7): `install-shortcut` makes `NG Runner.lnk` with AUMID `ICLA.NGRunner`; `release-all` exits 0 saying there are no leases; `setup`; `canary` (section 7). `tools/sign_pause.py` gives Sulaiman the signed pause files of build-spec section 3, with a Unix-second seq. Every new module joins `selftest.P1A_MODULES`, with `pythoncom`, `win32com` and `win32cred`.
+- **Commands filled with it** (build-spec 6.7): `install-shortcut` makes `NG Runner.lnk` with AUMID `ICLA.NGRunner`; `release-all` exits 0 saying there are no leases; `setup`, which also asks for the Studio login and shows neither the username nor the password; `canary` (section 7). `tools/sign_pause.py` gives Sulaiman the signed pause files of build-spec section 3, with a Unix-second seq. Every new module joins `selftest.P1A_MODULES`, with `pythoncom`, `win32com`, `win32com.shell`, `win32com.propsys` and `win32cred`.
 - **Shutdown:** stop the scheduler between steps, then the board, then the tray, then `withdraw_board`. Nothing is left half-written: commit_write is all-or-nothing, and the store is transactional.
 
 ## 7. Shadow mode, the canary and the release build
@@ -219,7 +235,7 @@ Development happens on Sulaiman's PC; Jim's PC gets short test windows (`docs/te
 
 ## 8. Acceptance: the day simulation (`tests/test_e2e_day.py`)
 
-The setup is all fake, with a fake clock:
+All 22 scenarios pass (2026-10-30), on fakes only: none of them touches real Studio, Render, Drive, a packaged build or Jim's PC. The setup is all fake, with a fake clock:
 - a fake Studio server serving synthetic summaries (`tests/helpers_studio.py`, beside `helpers_pdf.summary_pdf`);
 - a fake Render (export and sync);
 - the control folder, NG Jobs and the data folder under `tmp_path`;

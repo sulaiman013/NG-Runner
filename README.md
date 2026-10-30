@@ -6,7 +6,7 @@ That is Phase 1a, the first step of a staircase. Later phases add read-only guar
 
 Built and supported by Sulaiman Ahmed, for Jim Delany, owner of Inspired Closets LA.
 
-> **Status, 2026-10-30, 4 AM Pacific.** Phase 1a's parts are built and tested, but they aren't wired into a running app yet, so NG Runner can't file a real job today. **Nothing is installed on Jim's PC.** Everything so far has been built and tested on Sulaiman's PC. See [Where it stands](#where-it-stands) and the [timeline](#timeline).
+> **Status, 2026-10-30, 9:45 AM Pacific.** Phase 1a is about 90% built and runs end to end, on fakes only, so NG Runner hasn't filed a real job yet. **Nothing is installed on Jim's PC.** Everything so far has been built and tested on Sulaiman's PC. See [Where it stands](#where-it-stands) and the [timeline](#timeline).
 
 ## Contents
 
@@ -30,17 +30,19 @@ Built and supported by Sulaiman Ahmed, for Jim Delany, owner of Inspired Closets
 
 | Stage | Share of the Phase 1a build | State |
 |---|---|---|
-| Foundations: safe writes, job matching, summary check | 20% | Built. The last fix round is under independent review |
-| The eight separate parts | 30% | Built and on GitHub. A reconcile step is making them fit together |
-| Wiring into a running app, and the day simulation | 30% | Not started |
-| Independent verification and fixes | 12% | Not started |
-| The installer build, the Apps Script guide and the test kit | 8% | Partly: the build and installer work; the kit doesn't exist yet |
+| Foundations: safe writes, job matching, summary check | 20% | Built. Matching and the summary check were reworked after the third review's no-go, and wave 3's review looks at them again |
+| The eight separate parts | 30% | Built. Reconcile and wave 2 worked through the 28 mismatches the fit check found ([docs/decisions.md](docs/decisions.md)) |
+| Wiring into a running app, and the day simulation | 30% | Built. All 22 scenarios pass, on fakes only |
+| Independent verification and fixes | 12% | Started: wave 2's proving run found 8 problems by reading the code, and those fixes, the last rulings and the Studio design check are going in now. The independent review of the running app follows |
+| The installer build, the Apps Script guide and the test kit | 8% | Mostly: the build and installer work, and the guide and the kit builder exist, but no kit has gone to Jim's PC and the guide hasn't been run on live Google |
 
-**About 55% of the Phase 1a build is done.** That is a judgment from the parts finished and the hours left, not a measurement. Across all phases it is roughly 15 to 20%, a rougher guess, because the later phases aren't specified yet.
+**About 90% of the Phase 1a build is done.** That is a judgment from the parts finished and the hours left, not a measurement. Across all phases it is about 12 of the design's 104 dev-days, or 20% of the 60 in the committed P0 to P3, a rougher guide, because the later phases aren't specified yet.
 
-**In numbers, at commit [`439896a`](https://github.com/sulaiman013/NG-Runner/commit/439896a):** 13,621 lines of app code, 14,454 lines of tests, and 2,384 tests passing on a clean checkout.
+**In numbers, 2026-10-30, 9:45 AM Pacific:** about 20,800 lines of app code and 29,600 lines of tests. Wave 2 ended with 3,945 tests passing on Sulaiman's PC, none skipped.
 
-**Not proven yet, and only provable on Jim's PC or on live Google:** the file-system checks on his Google Drive, the Apps Script running for real, a real tray icon and toasts, scheduled tasks under his account, and the auto-match rate on the real Fab Schedule.
+**It runs end to end on fakes only.** The day simulation drives the real pipeline, job model, supervisor and messenger on a fake clock, against a fake Studio, Render and Apps Script, and four of its scenarios run the real Apps Script files under node. It passed on its first full run with no mutation checks, so nothing yet shows that each assertion can catch a fault, and it calls each step directly rather than through the scheduler thread.
+
+**Not proven yet, and only provable on Jim's PC or on live Google:** a real job filed through real Studio, Render and Drive, Studio's sign-in from his PC, the file-system checks on his Google Drive, the Apps Script running for real, a real tray icon and toasts, scheduled tasks under his account, and the auto-match rate on the real Fab Schedule.
 
 ## Why it exists
 
@@ -90,7 +92,7 @@ flowchart TD
 
 **The summary check** is deliberately hard to pass. It reads the whole file: every checksum, the file's index and its ending, and whether each design on page 1 has its pages and drawings. A partial render that looks fine, or a file damaged by one bit, is refused. Two fetches must then agree on both text and drawings, because a render can be consistent with itself and still be early. Two byte-identical fetches don't count: real renders always differ in bytes, so identical ones mean something served one render twice.
 
-**What these checks can't prove.** They show that a report is whole, stable and true to its own page 1, not that it holds everything the job needs. A design missing from page 1 can't be seen, and neither can a missing drawing page within a design: on 86 real reports, drawing pages often show several walls but carry one wall number, so the file can't show that every wall is drawn. Today's hand download has the same gap, and a report that changes within 30 days of filing raises a card. Filing goes live only after the shadow run compares each report with what Jim actually builds, and an independent list of a job's designs is still being looked for ([AGENTS.md](AGENTS.md), Before filing goes live, item 8).
+**What these checks can't prove.** They show that a report is whole, stable and true to its own page 1, not that it holds everything the job needs. So the report is also checked against a second list: on 59 of 59 real sold jobs, the designs on Studio's Proposal tab equal the report's page 1, and that check is being wired in. If the two differ, the job waits for a card from Jim; if Studio can't be read, it still files, marked "designs not cross-checked". That can't catch a design the designer left off the proposal, or a missing drawing inside a design: on 86 real reports, drawing pages often show several walls but carry one wall number, so the file can't show that every wall is drawn. Today's hand download has the same gap, so "Filed as" and the digest show each job's design and page counts for a person who knows the job, and a report that changes within 30 days of filing raises a card. Filing goes live only after the shadow run compares each report with what Jim actually builds ([AGENTS.md](AGENTS.md), Before filing goes live, item 8).
 
 **Add job.** The board has a button for a job that never gets a row. It enters the same pipeline, with the same checks.
 
@@ -189,12 +191,13 @@ flowchart LR
 
 | Part | What it does | State |
 |---|---|---|
-| [`ngrunner/writes.py`](ngrunner/writes.py) | The one door for writes | Built, passed independent review |
-| [`ngrunner/match.py`](ngrunner/match.py) | Matches rows, files and folders to jobs | Built, last review running |
-| [`ngrunner/intake/summary_check.py`](ngrunner/intake/summary_check.py) | The strict whole-file check and the content fingerprint | Built, last review running |
+| [`ngrunner/writes.py`](ngrunner/writes.py) | The one door for writes | Built, passed independent review; the SQLite write record came after it |
+| [`ngrunner/match.py`](ngrunner/match.py) | Matches rows, files and folders to jobs | Built, reworked after the third review; wave 3's review looks again |
+| [`ngrunner/intake/summary_check.py`](ngrunner/intake/summary_check.py) | The strict whole-file check and the content fingerprint | Built, reworked after the third review; wave 3's review looks again |
 | [`ngrunner/intake/fetch.py`](ngrunner/intake/fetch.py) | The Studio download and the two-fetch agreement | Built, tried on real jobs |
-| [`ngrunner/intake/branch.py`](ngrunner/intake/branch.py) | Closet or garage | Built; its mixed-job rule is corrected in the wiring step |
-| [`ngrunner/joblist.py`](ngrunner/joblist.py) | Reads the job list from Assembly Reports, and refuses a bad one whole | Built; the route it calls isn't deployed yet |
+| [`ngrunner/intake/studio_designs.py`](ngrunner/intake/studio_designs.py) | Checks a report's designs against Studio's Proposal tab | Being finished and wired in; the comparison matches 59 of 59 real reports |
+| [`ngrunner/intake/branch.py`](ngrunner/intake/branch.py) | Closet or garage | Built; a mixed summary is one job, as Jim's rules say |
+| [`ngrunner/joblist.py`](ngrunner/joblist.py) | Reads the job list from Assembly Reports, and refuses a bad one whole | Built; the route it calls is pushed to Assembly Reports |
 | [`ngrunner/fab.py`](ngrunner/fab.py), [`google/`](google/) | The Fab Schedule export, edit log, outbox, watchdog and prune | Built, tested under node, never run on live Google |
 | [`ngrunner/store/`](ngrunner/store/) | The SQLite record, with migrations | Built |
 | [`ngrunner/messages/`](ngrunner/messages/), `cards.py`, `digest.py`, `heartbeat.py` | Templates, the format lint, cards, the digest | Built |
@@ -202,7 +205,8 @@ flowchart LR
 | `launcher.py`, `single.py`, `selftest.py`, `backup.py`, `support.py` | Falling back to the last good version, one running copy, the self-test, encrypted backups, support bundles | Built, tried in the real build |
 | [`installer/`](installer/), [`ngrunner.spec`](ngrunner.spec) | Install and uninstall scripts, scheduled tasks, the build | Built; never registered on a real account |
 | `clock.py`, `signing.py`, `config.py`, `secrets.py` | Pacific time, signed files, settings, keys | Built |
-| `intake/pipeline.py`, `interlock.py`, `jobmodel.py`, `supervisor.py`, `messenger.py`, `canary.py` | The wiring that makes it one running app | **Not built yet** |
+| `intake/pipeline.py`, `interlock.py`, `jobmodel.py`, `supervisor.py`, `messenger.py`, `canary.py`, `tools/sign_pause.py` | The wiring that makes it one running app | Built; runs end to end on fakes only |
+| [`tests/fakes.py`](tests/fakes.py), [`tests/test_e2e_day.py`](tests/test_e2e_day.py) | The day simulation: 22 scenarios on a fake clock | All pass |
 
 ### The control folder
 
@@ -233,6 +237,7 @@ timeline
         Evening : Two fix rounds : Repo created and first push : Drive check passes 18 of 18
     section Fri Oct 30
         Night : All eight parts built and pushed : Real fetches measured and fixed : Fit check finds 28 mismatches
+        Morning : Reconcile and wave 2 wire it together : Proposal tab matches 59 of 59 : All 22 simulated scenarios pass
 ```
 
 ### Monday 2026-10-19: the handover
@@ -275,7 +280,17 @@ Kickoff call with Jim, Mary, Nicole and Sulaiman. Jim hands over his IC-to-Mozai
 | 3:25 AM | **Auto-match on the real list** of 10,643 Opportunities | 60% of newly sold jobs auto-match. **None match the wrong job,** and the rest ask |
 | 3:26 AM | **The fit check.** One reviewer reads all eight parts together | All tests pass, yet it finds **28 places where the parts wouldn't work together,** 7 of them serious. For example, Jim would have had a false "No list today" alarm every morning of the shadow run, and a card didn't remember which job each button meant |
 | 3:28 AM | Pushed: [`439896a`](https://github.com/sulaiman013/NG-Runner/commit/439896a). A check of the real build found **the built app failed its own self-test,** so no install could have succeeded. The tests were green because they faked the broken call | Fixed and proven in the real .exe, with a new self-test test that fakes nothing. 2,384 tests, 13,621 app lines, 14,454 test lines |
-| 3:30 AM | **Reconcile** starts: six owners close those mismatches, with an independent check to follow | Running now |
+| 3:30 AM | **Reconcile.** Six owners close those mismatches | Pushed at 6:42 AM: [`91a0c39`](https://github.com/sulaiman013/NG-Runner/commit/91a0c39) |
+| 5:50 AM | **Assembly Reports goes live** with the address fix and the job-list route for NG Runner: [`4789456`](https://github.com/sulaiman013/icla_assembly_report_app/commit/4789456), [`56edd05`](https://github.com/sulaiman013/icla_assembly_report_app/commit/56edd05) | The 3 sold jobs that used to fail download on the live app. The deploy emptied the live job list for about 12 minutes, because the office PC's publisher was starved of CPU by this build |
+| 6:28 AM | **Wave 2 starts:** the pipeline, job model, supervisor, messenger, canary and write record, proven by a simulated day | Runs in parallel, each owner with its own files |
+| 7:24 AM | Pushed: [`415448e`](https://github.com/sulaiman013/NG-Runner/commit/415448e) | Google clean-up and digest fixes, the Apps Script guide and the test kit builder. 3,180 tests |
+| 7:37 AM | Pushed: [`d9d60b3`](https://github.com/sulaiman013/NG-Runner/commit/d9d60b3) | The Apps Script moves to the account that owns the Fab Schedule |
+| 7:58 AM | Pushed: [`ddfb223`](https://github.com/sulaiman013/NG-Runner/commit/ddfb223) | The checks say what they can and can't prove |
+| 8:38 AM | **Studio's Proposal tab** against the real reports | Matches 59 of 59 |
+| 8:51 AM | **Wave 2 finished** | All 22 day-simulation scenarios pass, on fakes, with no code fixes needed. A read of the code still found 8 problems no scenario hits |
+| 9:12 AM | **The Studio check, live with the real code:** Edge signs in by itself through the community site in 24 seconds | 59 of 59 real sold jobs match. The one sold job the derived addresses missed fetches through its Studio page's link, so **60 of 60 sold jobs now fetch** |
+| 9:15 AM | Pushed: [`3fefdce`](https://github.com/sulaiman013/NG-Runner/commit/3fefdce) | The running app. 3,945 tests on a clean checkout |
+| 9:45 AM | **Now:** the 8 fixes and wiring in the Studio check, then independent verification that breaks the code on purpose | Running |
 
 ## Measured so far
 
@@ -287,8 +302,10 @@ Real files were read only, and nothing here required touching Jim's PC.
 | File and folder IDs stay stable while Drive syncs | Yes, at 5, 30 and 60 seconds | 10-29 |
 | Writes that must be refused | 20 of 20 refused | Every self-test |
 | Two real fetches, 10 minutes apart | 6 of 6 jobs agree on text and all 105 drawings; none byte-identical | 10-30 |
-| Real sold jobs that fetch | 59 of 60 (7 to 95 seconds each) | 10-30 |
+| Real sold jobs that fetch | 60 of 60 (7 to 95 seconds each), the last through its Studio page's report link | 10-30 |
 | Real renders the strict check wrongly refuses | 0 of 59 | 10-30 |
+| Reports whose designs match Studio's Proposal tab, by name, with the real code and a live sign-in | 59 of 59 (124 designs on each side, 202 on the projects) | 10-30 |
+| Studio's Proposal tab against the report's page 1 | 59 of 59 jobs match, 124 designs on each side; those projects hold 202 | 10-30 |
 | Auto-match, jobs dated in the list's last 30 days | 32 of 53 (60%) | 10-30 |
 | Auto-match, last 90 days | 64 of 116 (55%) | 10-30 |
 | Auto-match, all 628 sold jobs | 307 (49%) | 10-30 |
@@ -306,25 +323,25 @@ Rough estimates of build time. Earlier estimates ran long, so expect the upper e
 
 | Step | What | Estimate |
 |---|---|---|
-| Finish reconcile and the last review | The parts fit, and matching and the summary check close | 1 to 2 hours |
-| **Wave 2: wiring** | Pipeline, job model, supervisor, messenger, canary and the write record, proven by a 22-scenario simulated day | 4 to 5 hours |
-| Wave 3: verification | Independent review of the running app, and fixes | 2 to 3 hours |
-| Release | The real build, the Apps Script guide and the test kit | 2 to 3 hours |
+| **The design check and the last rulings** | Wire in Studio's Proposal tab and the design and page counts, and fix what wave 2's proving run found ([docs/decisions.md](docs/decisions.md)) | Under way |
+| Verification | Independent review of the running app, breaking the code on purpose to prove the tests can fail, and fixes | About 1 hour |
+| Release | The real build and its self-test, the canary from the installed copy, and the test kit | About 30 minutes, alongside verification |
 
 **Then on Jim's PC,** in short scripted windows that stay out of his way ([docs/testing/jims-pc.md](docs/testing/jims-pc.md)). Every window says how long it takes, what it changes and how to undo it.
 
 | Window | Takes | What happens | Passes when |
 |---|---|---|---|
 | 1. First look | 15 minutes, Jim present | Remote access and the read-only Setup Check. This doesn't need the build, so it can happen any time | The report is read, and decides signing |
-| 2. Install | 20 minutes, remote | Install, self-test, the canary on his Drive, settings and keys, start in shadow mode | Self-test clean, canary passes, tray says SHADOW |
+| 2. Install | 20 minutes, remote | Install, self-test, the canary on his Drive, settings, keys and the Studio login, start in shadow mode | Self-test clean, canary passes, tray says SHADOW |
 | 3. Shadow run | 1 to 2 weeks, unattended | Everything except writing to NG Jobs. Files go to a side folder, and every message goes to Sulaiman only | 0 rows matched to the wrong job, and every other row asked for a sensible reason |
 | 4. Go live | 5 minutes, remote | Switch shadow off, on the board and in the Apps Script | Then 10 working days against the exit criteria |
 
 **Phase 1a is done when, over 10 working days:** every new row is filed within 45 minutes or carded; **0 summaries are filed to the wrong job;** the board is right on 10 jobs Jim picks; 10 of 10 digests arrive; a sleep test alerts Sulaiman within 50 minutes; 20 of 20 forbidden writes are refused; and the restore drill passes.
 
 **Needed from people first:**
-- Sulaiman's OK to deploy the job-list route to Assembly Reports. It's built and tested locally, but a push there deploys production.
+- `ASSEMBLY_EXPORT_KEY` set on Render and on Jim's PC, if it isn't yet. The job-list route itself is pushed to Assembly Reports.
 - The Apps Script set up under the account that owns the Fab Schedule: [docs/testing/apps-script-setup.md](docs/testing/apps-script-setup.md).
+- The Studio login NG Runner will use, for `NGRunner.exe setup` in window 2.
 - 15 minutes with Jim for window 1.
 
 ## The later phases
@@ -383,10 +400,10 @@ The tests refuse to start without `-X warn_default_encoding`, because it's what 
 | `NGRunner.exe --self-test [--record]` | Imports, migration, 20 forbidden writes, every message through the lint | Works |
 | `NGRunner.exe restore <backup> [--install]` | The restore drill, or a move to a new PC | Works |
 | `NGRunner.exe support-bundle`, `keygen` | A support bundle; the backup keys | Work |
-| `NGRunner.exe run` | Runs the app | Wiring step |
-| `NGRunner.exe setup` | Writes settings and keys for a test window | Wiring step |
-| `NGRunner.exe canary --folder <path>` | Proves a drive's file-system behaviour | Wiring step |
-| `NGRunner.exe install-shortcut`, `release-all` | Shortcut; releases leases (none exist in P1a) | Wiring step |
+| `NGRunner.exe run` | Runs the app | Built; run only on fakes so far |
+| `NGRunner.exe setup` | Writes settings, keys and the Studio login for a test window | Built; the Studio login is going in |
+| `NGRunner.exe canary --folder <path>` | Proves a drive's file-system behaviour | Built; 19 of 19 checks on a scratch folder on C:, not yet run on a Drive |
+| `NGRunner.exe install-shortcut`, `release-all` | Shortcut; releases leases (none exist in P1a) | Built; not yet tried in a real build |
 | `NGRunnerLauncher.exe [--logon \| --ensure]` | Starts the app, falling back if a version fails | Works |
 | `installer\install.ps1`, `uninstall.ps1` | Install for one user, no admin rights. Uninstall keeps the data folder | Work; registering tasks is untested |
 
