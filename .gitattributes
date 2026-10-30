@@ -1,0 +1,6 @@
+# Line endings are fixed here, not by each PC's core.autocrlf, so every checkout holds the bytes
+# the tests ran on: CRLF for batch files (cmd.exe can misread LF ones), LF for everything else.
+* text=auto eol=lf
+*.cmd text eol=crlf
+*.bat text eol=crlf
+*.pdf binary

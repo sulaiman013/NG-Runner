@@ -1,0 +1,27 @@
+# Client data never belongs in git: IC summaries, Mozaik jobs and fixtures stay local.
+/.local-fixtures/
+/data/
+/logs/
+/out/
+# Jim's answers name jobs, so no copy of them is ever committed, whatever its name or format.
+# docs/p0 tracks only its three blank documents; anything else there stays out, and so does a
+# copy of the questionnaire anywhere else (code aside; a new blank questionnaire needs its own
+# ! line). No rule protects a tracked file: never save his answers over the blank one.
+/docs/p0/*
+!/docs/p0/access-request.md
+!/docs/p0/questionnaire-jim.md
+!/docs/p0/setup-check.md
+*questionnaire*
+!*questionnaire*.py
+!/docs/p0/questionnaire-jim.md
+# Python
+/.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+/build/
+/dist/
+*.egg-info/
+# Atomic-write temp files
+*.part
+*.ngr-tmp

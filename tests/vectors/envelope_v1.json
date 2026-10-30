@@ -1,0 +1,24 @@
+{
+ "_about": "Shared test vector: Python (tests/test_signing.py) and Apps Script (google/test) must both reproduce body and sig.",
+ "body": "{\"id\":\"0123456789abcdef0123456789abcdef\",\"issued_at\":\"2026-10-30T13:30:00+00:00\",\"kind\":\"fab_export\",\"payload\":{\"note\":\"café — 3/4\\\" ünïcödé\",\"rows\":[{\"designer\":\"PE\",\"install\":[\"Friday\",\" 11 /6\"],\"job\":\"Testerson closet\",\"sheet_row\":3}]},\"seq\":42,\"v\":1}",
+ "id": "0123456789abcdef0123456789abcdef",
+ "issued_at": "2026-10-30T13:30:00+00:00",
+ "key_hex": "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
+ "kind": "fab_export",
+ "payload": {
+  "note": "café — 3/4\" ünïcödé",
+  "rows": [
+   {
+    "designer": "PE",
+    "install": [
+     "Friday",
+     " 11 /6"
+    ],
+    "job": "Testerson closet",
+    "sheet_row": 3
+   }
+  ]
+ },
+ "seq": 42,
+ "sig": "0cf8f825abda509bdb736852ffdd7f9db4c98e4e1ec234583dbb371bc58694d3"
+}
