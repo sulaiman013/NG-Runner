@@ -1,6 +1,6 @@
 # NG Runner
 
-NG Runner is a Windows tray app for the CNC office of Inspired Closets LA. When Barbara adds a job to the NG Fab Schedule, it finds the job in Salesforce, downloads its install report (the **IC summary**) from Studio twice, checks that the report is complete and belongs to that job, and files it in the job's folder, without anyone touching a file. Whenever it can't be sure of something, it asks Jim with a one-tap card. It never guesses.
+NG Runner is a Windows tray app for the CNC office of Inspired Closets LA. When Barbara adds a job to the NG Fab Schedule, it finds the job in Salesforce, downloads its install report (the **IC summary**) from Studio twice, checks that the report is whole, matches its own page 1 and belongs to that job, and files it in the job's folder, without anyone touching a file. Whenever it can't be sure of something, it asks Jim with a one-tap card. It never guesses.
 
 That is Phase 1a, the first step of a staircase. Later phases add read-only guards, shared checking tools, a button for locking a job and, only if a test on past jobs passes, overnight building of walls and verticals.
 
@@ -67,7 +67,7 @@ flowchart TD
     F -- "Yes" --> H["Fetch the IC summary from Studio and check the whole file"]
     H -- "Incomplete, or Studio is down" --> I["Retry; after 24 hours, a card"]
     I --> H
-    H -- "Complete" --> J["Wait 10 minutes, then fetch it again"]
+    H -- "Matches its page 1" --> J["Wait 10 minutes, then fetch it again"]
     J --> K{"Do the text and the drawings agree?"}
     K -- "No" --> J
     K -- "Yes" --> L{"Is a summary already in the job folder?"}
@@ -82,13 +82,15 @@ flowchart TD
 
 | File | For | Contents |
 |---|---|---|
-| `Testerson_101426_summary.pdf` | Everyone | The verified IC summary |
+| `Testerson_101426_summary.pdf` | Everyone | The checked IC summary |
 | `Testerson_101426_NGRunner.json` | Jim's chat sessions | What was filed, its checksum, any open cards. The chat reads this first |
 | `Testerson_101426_NGRunner_log.txt` | People | One plain line per event, for example `10/30 3:05 PM  Filed the IC summary (landscape, 19 pages), checked on two fetches 10 minutes apart.` |
 
 **Closet or garage.** A garage-only summary goes to `<Name>_Gar\`. Closets only, or closets and garage mixed, go to `<Name>\`: a mixed summary is one job, as Jim's own rules say. A card comes only when a design can't be classified, or when the row or the job's name says garage and no design does, and only that job waits.
 
 **The summary check** is deliberately hard to pass. It reads the whole file: every checksum, the file's index and its ending, and whether each design on page 1 has its pages and drawings. A partial render that looks fine, or a file damaged by one bit, is refused. Two fetches must then agree on both text and drawings, because a render can be consistent with itself and still be early. Two byte-identical fetches don't count: real renders always differ in bytes, so identical ones mean something served one render twice.
+
+**What these checks can't prove.** They show that a report is whole, stable and true to its own page 1, not that it holds everything the job needs. A design missing from page 1 can't be seen, and neither can a missing drawing page within a design: on 86 real reports, drawing pages often show several walls but carry one wall number, so the file can't show that every wall is drawn. Today's hand download has the same gap, and a report that changes within 30 days of filing raises a card. Filing goes live only after the shadow run compares each report with what Jim actually builds, and an independent list of a job's designs is still being looked for ([AGENTS.md](AGENTS.md), Before filing goes live, item 8).
 
 **Add job.** The board has a button for a job that never gets a row. It enters the same pipeline, with the same checks.
 
