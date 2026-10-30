@@ -31,7 +31,7 @@
   - How: pick a time that suits you. Have sections 1–4 of the questionnaire answered if you can.
 - [ ] **6. Chrome Remote Desktop, unattended, with a PIN**
   - Why: so Sulaiman can install, update and fix NG Runner during your night without you at the PC. It is free; AnyDesk's free version isn't allowed for business use.
-  - How: in Chrome go to remotedesktop.google.com/access, choose **Set up remote access**, install it, name the PC and pick a PIN of at least 6 digits. Use the ICLA Google account set up for NG Runner if it exists by then, otherwise the account you agree on the call. Give Sulaiman the PIN by phone, never in writing. You can turn access off any time from the same page.
+  - How: in Chrome go to remotedesktop.google.com/access, choose **Set up remote access**, install it, name the PC and pick a PIN of at least 6 digits. Use the account you agree on the call. Give Sulaiman the PIN by phone, never in writing. You can turn access off any time from the same page.
 - [ ] **7. The Setup Check report**
   - Why: it reads, and never changes, the settings that decide whether NG Runner can run at night and how it must be installed: Windows edition and admin rights, sleep and wake, Smart App Control, antivirus, whether ICWC manages the PC, and OneDrive and Drive.
   - How: over the remote session, Sulaiman puts `setup_check.cmd` and `setup_check.ps1` on your Desktop and you double-click `setup_check.cmd`. In a minute or so it saves two files on the Desktop: the report (`.txt`) and a copy of it for Sulaiman's tools (`.json`). Drag both into your private Drive folder (in File Explorer: Google Drive (G:) > My Drive).

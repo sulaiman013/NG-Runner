@@ -322,7 +322,7 @@ Rough estimates of build time. Earlier estimates ran long, so expect the upper e
 
 **Needed from people first:**
 - Sulaiman's OK to deploy the job-list route to Assembly Reports. It's built and tested locally, but a push there deploys production.
-- The ICLA Google automation account, for the Apps Script.
+- The Apps Script set up under the account that owns the Fab Schedule: [docs/testing/apps-script-setup.md](docs/testing/apps-script-setup.md).
 - 15 minutes with Jim for window 1.
 
 ## The later phases

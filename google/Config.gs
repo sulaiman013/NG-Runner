@@ -1,7 +1,7 @@
 /**
  * NG Runner's Google side: settings, the control folder, the lock and the clock.
  *
- * This project runs under ICLA's automation account (design section 3.1). It reads the NG Fab
+ * This project runs under the account that owns the NG Fab Schedule. It reads the NG Fab
  * Schedule and never modifies it (risk C3), and it talks to NG Runner on Jim's PC only through
  * signed files in the control folder (Signing.gs). Everything that differs per install, and
  * every address, token and key, lives in Script Properties (README.md lists them), never in

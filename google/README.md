@@ -1,6 +1,6 @@
 # NG Runner's Google side (Apps Script)
 
-One Apps Script project, under ICLA's automation account, that is NG Runner's bridge to Google (design section 3.1). It:
+One Apps Script project, under the Google account that owns the NG Fab Schedule (`docs/decisions.md`, "Accounts"), that is NG Runner's bridge to Google. It:
 
 - exports Sheet1 of the NG Fab Schedule to `fab/export.json` every 5 minutes, and logs Barbara's edits to Job Name, Designer and Install Date in `fab/edits.json`. It only reads the workbook; it never changes it (risk C3);
 - sends NG Runner's outbox (email, Slack or Pushover) every minute, writing a receipt for each message and never sending one twice;
@@ -23,21 +23,21 @@ It talks to NG Runner only through signed files in the control folder (`ngrunner
 
 ## Setup
 
-1. Under the ICLA automation account, create a standalone Apps Script project. In Project Settings, tick "Show appsscript.json", then paste in `appsscript.json` and the seven `.gs` files.
-2. Share the control folder with the automation account as Editor. Share the NG Fab Schedule with it as Viewer (see "Not verified" below).
+1. Under the account that owns the NG Fab Schedule (the script account), create a standalone Apps Script project. In Project Settings, tick "Show appsscript.json", then paste in `appsscript.json` and the seven `.gs` files.
+2. Make the control folder under the script account, and share it with Sulaiman and, if Drive on Jim's PC uses another account, with that one. The workbook needs no sharing.
 3. Set the Script Properties (Project Settings, Script Properties) from the table below.
 4. Run `checkSetup` from the editor. It lists what is missing or wrong, one line each, never a value. Fix those until it lists nothing.
 5. Run `installTriggers` and accept Google's authorization. It refuses while `checkSetup` finds a problem, and running it again replaces its own triggers.
-6. Check on real Google, with two accounts, that the automation account may trash NG Runner's files, since pruning depends on it. Google's reference for `File.setTrashed` says "Only the owner may trash the File", and NG Runner's files reach Drive under Jim's account (Drive for desktop).
+6. If Drive for desktop on Jim's PC uses another account, check on real Google that the script account may trash NG Runner's files, since pruning depends on it. Google's reference for `File.setTrashed` says "Only the owner may trash the File", and NG Runner's files reach Drive under the account Drive for desktop uses. If it uses the script account, the owner is the same and this step isn't needed.
    1. As the account Drive for desktop uses on Jim's PC, put a small file named `trash-check.txt` in the control folder, and wait until it shows there on drive.google.com.
-   2. As the automation account, paste this into the project, run `tryTrash` from the editor, and delete it from the project again:
+   2. As the script account, paste this into the project, run `tryTrash` from the editor, and delete it from the project again:
       ```js
       function tryTrash() { controlFolder_().getFilesByName('trash-check.txt').next().setTrashed(true); }
       ```
       An error that the iterator reached its end only means the file has not reached the control folder yet: wait, and run it again.
    3. No error, and Jim's account no longer sees the file in the control folder: pruning can do its job, and this step is done.
    4. Any other error, or the file still there for Jim's account: Google refused. Delete `trash-check.txt` as Jim's account. Pruning then can't clear what NG Runner wrote, so `shadow/` keeps client PDFs past 30 days and `outbox/` keeps growing, which slows the one-minute run.
-      - If ICLA has Google Workspace with shared drives, move the control folder to a shared drive, where a content manager may trash any file, and make the automation account a Content manager there. Then set `CONTROL_FOLDER_ID` from the folder's address, in case the move changed it, and NG Runner's `control` path on Jim's PC, and repeat this step.
+      - If ICLA has Google Workspace with shared drives, move the control folder to a shared drive, where a content manager may trash any file, and make the script account a Content manager there. Then set `CONTROL_FOLDER_ID` from the folder's address, in case the move changed it, and NG Runner's `control` path on Jim's PC, and repeat this step.
       - Otherwise, raise it with Sulaiman.
 
    `checkSetup` also lists what Google refused on the last prune, which never stops `installTriggers`; a prune with no refusal clears that line. A prune that finds nothing old enough tries nothing (heartbeats are the first, at 2 days), so a clean list from `checkSetup` proves nothing yet: this step is the proof.
@@ -92,7 +92,7 @@ The script keeps its own state in Script Properties too: `state.*` (sequence num
 - For a date cell, Google may give an edit's old value as a serial number, not as shown. The log keeps what Google gives; it is a hint only.
 - That Drive for desktop uploads files in any order (hence the 2-minute wait), and how long a file takes to reach Drive.
 - Whether Drive keeps a file's creation date when Drive for desktop replaces it. Pruning goes by that date, so a `_NGRunner.json` rewritten in `shadow/` may count from its rewrite, which only keeps that job's folder a little longer.
-- Whether the automation account may trash what NG Runner wrote. Google's reference for `File.setTrashed` says "Only the owner may trash the File", and NG Runner's files reach Drive under Jim's account (Drive for desktop), so `heartbeat/`, `outbox/`, `logs/`, `backups/`, `support/` and `shadow/` may all be refused. Setup step 6 tries it; do that in the first test window, before counting on the 30 days for `shadow/`. Pruning already copes: a refused file or folder stays and is counted, the run carries on with the rest, the next run tries it again, and the outbox marks still go (a message whose file stays is still refused by its sequence number, so it is never sent twice). The last run's count is in `state.prune.refused`, the log and `checkSetup`'s list. Google's words for a refusal are not known yet, so any error from `setTrashed` counts as one, and the log gives the first in Google's words.
+- Whether the script account may trash what NG Runner wrote. Google's reference for `File.setTrashed` says "Only the owner may trash the File", and NG Runner's files reach Drive under Jim's account (Drive for desktop), so `heartbeat/`, `outbox/`, `logs/`, `backups/`, `support/` and `shadow/` may all be refused. Setup step 6 tries it; do that in the first test window, before counting on the 30 days for `shadow/`. Pruning already copes: a refused file or folder stays and is counted, the run carries on with the rest, the next run tries it again, and the outbox marks still go (a message whose file stays is still refused by its sequence number, so it is never sent twice). The last run's count is in `state.prune.refused`, the log and `checkSetup`'s list. Google's words for a refusal are not known yet, so any error from `setTrashed` counts as one, and the log gives the first in Google's words.
 
 ## Changing the signing key
 

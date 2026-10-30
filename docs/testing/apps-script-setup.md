@@ -2,53 +2,46 @@
 
 For Sulaiman, once, before test window 3 ([jims-pc.md](jims-pc.md)). Allow about an hour. It installs nothing on Jim's PC and changes nothing in the NG Fab Schedule, which the script only reads.
 
-When you finish, one Apps Script project under ICLA's automation account exports the Fab Schedule, sends NG Runner's messages, watches its heartbeat and prunes old files, all through one private Drive folder. [google/README.md](../../google/README.md) explains how. This guide is only the clicks.
+When you finish, one Apps Script project, under the Google account that owns the Fab Schedule, exports the Fab Schedule, sends NG Runner's messages, watches its heartbeat and prunes old files, all through one private Drive folder. [google/README.md](../../google/README.md) explains how. This guide is only the clicks.
 
 These steps have not been run on a live Google account yet, and Google moves its buttons now and then. If a screen differs, follow the words on it, then correct this guide.
 
-**The placeholders:** `<automation account address>`, `<Jim's address>`, `<Barbara's address>`, `<your address>`, `<control folder ID>`, `<spreadsheet ID>`, `<signing key>`. None of these real values ever goes in the repo.
+**The placeholders:** `<Jim's address>`, `<Barbara's address>`, `<your address>`, `<control folder ID>`, `<spreadsheet ID>`, `<signing key>`. None of these real values ever goes in the repo.
 
 **Before you start:**
-- Open a private browser window (Chrome: Ctrl+Shift+N). Use it, signed in only as the automation account, unless a step says otherwise. Triggers run as the account that made them, so a project made under your own account would send its mail as you.
-- Have ICLA's password manager open.
+- Open a private browser window (Chrome: Ctrl+Shift+N). Use it, signed in only as the script account (step 1), unless a step says otherwise. Triggers run as the account that made them, so a project made under your own account would send its mail as you.
+- Have the password manager open, for the signing key.
 - Have the repo checked out at the commit the test kit was built from, since you paste from its `google\` folder.
 
-## 1. Create the automation account
+## 1. Check the script account
 
-1. Ask Jim which phone number and recovery address it should use. ICLA owns this account and you are a member (`docs/decisions.md`, "Accounts"), so it must not depend on your own phone.
-2. In the private window, go to `accounts.google.com/signup`.
-3. Enter first name `ICLA` and last name `Automation`, then click **Next**. Enter the birthday and gender Google asks for, then **Next**.
-4. Choose **Create your own Gmail address** and type the address you want. This is `<automation account address>`. Click **Next**.
-5. Make a long password, save it in ICLA's password manager, then click **Next**.
-6. Enter the phone number and recovery address from step 1, and accept Google's terms.
-7. Click the round picture at the top right, then **Manage your Google Account**, **Security**, **2-Step Verification**, and turn it on with that phone. On the same page open **Backup codes**, click **Get backup codes**, and save them in the password manager, so you can still sign in from afar.
+The project runs under the Google account that owns the NG Fab Schedule, called the script account below (`docs/decisions.md`, "Accounts"). There is no new account to make, and the script reads the sheet directly. What that costs: NG Runner's emails come from that address, shown as "NG Runner", and replies land in its inbox; the script's permissions cover that whole account, so only `google\`'s code keeps it read-only on the workbook; and Google's daily limits are shared with anything else that account runs.
 
-If ICLA already has Google Workspace, ask its admin for a new user instead of steps 2 to 6. Triggers then get 6 hours a day instead of 90 minutes.
+In the private window, signed in as the script account:
+
+1. Open the NG Fab Schedule and click **Share**. The account must be listed as **Owner**. If it isn't, stop: the rest of this guide assumes it.
+2. Click the round picture at the top right, then **Manage your Google Account**, **Security**. Check that **2-Step Verification** is on, since this account now also runs NG Runner's Google side.
+3. Go to `script.google.com` and click the alarm clock icon on the left (**Triggers**). If other projects already run under this account, note them: they share the 90 minutes of trigger time a free account gets each day.
+4. Find out which account Google Drive is signed in with on Jim's PC (the Drive icon in his tray, in window 1). This decides step 2's sharing and whether pruning works; see the end of this guide.
 
 ## 2. Create the control folder
 
-Signed in as the automation account:
+Signed in as the script account:
 
 1. Go to `drive.google.com`. Click **+ New**, **New folder**, type `NG Runner control`, then **Create**. It stays in this account's My Drive, outside the shared CNC operations tree. Leave it empty: the script and NG Runner make their own folders in it.
-2. Right-click the folder, then **Share**, **Share**. Type `<Jim's address>` and `<your address>` in the box, leave the role at **Editor**, and click **Send**. Jim's PC writes here through Drive for desktop; you read logs here and put pause files here.
-3. Open **Share** again and check it. It must list exactly three people: the automation account (Owner), Jim and you. **General access** must say **Restricted**. Click **Done**.
+2. Right-click the folder, then **Share**, **Share**. Type `<your address>`, and `<Jim's address>` only if Drive on Jim's PC uses another account. Leave the role at **Editor** and click **Send**. Jim's PC writes here through Drive for desktop; you read logs here and put pause files here.
+3. Open **Share** again and check it. It must list only the script account (Owner), you and, if you added it, Jim's other account. **General access** must say **Restricted**. Click **Done**.
 4. Double-click the folder. The address now reads `drive.google.com/drive/folders/<control folder ID>`. Copy the ID, stopping before any `?`, and keep it for step 6.
 
-**Later, at the start of window 2, on Jim's PC.** A folder shared with Jim reaches his PC only once it is in his Drive. In his browser, signed in as Jim, go to `drive.google.com`, then **Shared with me**. Right-click `NG Runner control`, then **Organize**, **Add shortcut**, **My Drive**, **Add**. Then find it in File Explorer and note its full path, for the canary and `NGRunner.exe setup`. The Setup Check does not look for this folder. A shared folder usually sits at `G:\.shortcut-targets-by-id\<folder id>\NG Runner control`, as the CNC folder does on your PC; go by what his PC shows. To undo it, remove the shortcut from his My Drive.
+**Later, at the start of window 2, on Jim's PC.** If Drive there uses the script account, the folder is already in his My Drive, usually at `G:\My Drive\NG Runner control`. If it uses another account, a shared folder reaches his PC only once it is in his Drive: in his browser, signed in as that account, go to `drive.google.com`, then **Shared with me**, right-click `NG Runner control`, then **Organize**, **Add shortcut**, **My Drive**, **Add**. It usually sits at `G:\.shortcut-targets-by-id\<folder id>\NG Runner control`, as the CNC folder does on your PC. Either way, find it in File Explorer and note its full path, for the canary and `NGRunner.exe setup`. The Setup Check does not look for this folder.
 
-## 3. Share the NG Fab Schedule
+## 3. Copy the NG Fab Schedule's ID
 
-This is Jim's workbook, so do this in your normal browser window, signed in as yourself:
-
-1. Open the NG Fab Schedule and click **Share** at the top right.
-2. Type `<automation account address>`, set the role on the right to **Viewer**, and click **Send**. If Google won't let you share it, ask Jim to do this step.
-3. The address reads `docs.google.com/spreadsheets/d/<spreadsheet ID>/edit`. Copy the ID, and keep it for step 6.
-
-Change nothing else in the workbook.
+Open the NG Fab Schedule. The address reads `docs.google.com/spreadsheets/d/<spreadsheet ID>/edit`. Copy the ID, and keep it for step 6. It needs no sharing, since the script account owns it. Change nothing in the workbook.
 
 ## 4. Create the Apps Script project
 
-Back in the private window, as the automation account:
+In the private window, as the script account:
 
 1. Go to `script.google.com` and click **New project**.
 2. Click **Untitled project** at the top, type `NG Runner`, then **Rename**.
@@ -77,7 +70,7 @@ When `google\` changes later, paste the changed files the same way.
 .\.venv\Scripts\python.exe -c "from ngrunner.signing import new_key; print(new_key())"
 ```
 
-It prints `<signing key>`, 64 hex characters. Save it in ICLA's password manager straight away. It goes in `SIGNING_KEY` below, and `NGRunner.exe setup` puts the same key in Credential Manager on Jim's PC in window 2. Never paste it into a chat, an email, a ticket or a log.
+It prints `<signing key>`, 64 hex characters. Save it in the password manager straight away. It goes in `SIGNING_KEY` below, and `NGRunner.exe setup` puts the same key in Credential Manager on Jim's PC in window 2. Never paste it into a chat, an email, a ticket or a log.
 
 `NGRunner.exe keygen` does not make this key. It prints the backup key pair, for NG Runner's settings and the password manager, and nothing from it goes in this project.
 
@@ -124,7 +117,7 @@ Once the triggers run, the script adds properties of its own: `state.*`, `done.<
 
 1. Click the `< >` icon, then `Config.gs` in the Files list.
 2. In the toolbar, open the function menu beside **Run** and **Debug**, pick `checkSetup`, and click **Run**.
-3. The first time only, Google asks for permission. Click **Review permissions** and pick the automation account. On "Google hasn't verified this app" click **Advanced**, then **Go to NG Runner (unsafe)**. If it shows tick boxes, click **Select all**. Then click **Allow** or **Continue**. Google warns because this is a private script, not a published app. The permissions are the ones in `appsscript.json`: Sheets, Drive, sending mail, reaching outside services, and running on triggers.
+3. The first time only, Google asks for permission. Click **Review permissions** and pick the script account. On "Google hasn't verified this app" click **Advanced**, then **Go to NG Runner (unsafe)**. If it shows tick boxes, click **Select all**. Then click **Allow** or **Continue**. Google warns because this is a private script, not a published app. The permissions are the ones in `appsscript.json`: Sheets, Drive, sending mail, reaching outside services, and running on triggers.
 4. Read the **Execution log** that opens at the bottom (the table below). Fix each line and click **Run** again, until it says `setup: everything NG Runner needs is set`.
 5. Pick `installTriggers` in the same menu and click **Run**. The log should say `triggers installed: exportFab, processOutbox, runWatchdog, pruneControlFolder, onFabEdit`. It refuses with `fix the setup first` while `checkSetup` finds a problem. It is safe to run again: it replaces its own triggers.
 6. Click the alarm clock icon on the left (**Triggers**). It must list those five, none of them twice.
@@ -137,8 +130,8 @@ Once the triggers run, the script adds properties of its own: `state.*`, `done.<
 |---|---|---|
 | `the project time zone is ..., not America/Los_Angeles` | `appsscript.json` was not pasted or saved | Paste it again and press Ctrl+S |
 | `the Script Property SIGNING_KEY is not set to the 64-hex-character signing key` | It is missing, or not exactly 64 hex characters | Paste it again from the password manager |
-| `the control folder could not be opened: ...` | `CONTROL_FOLDER_ID` is missing or wrong, or this account can't see the folder | Copy the ID again (step 2). Check you are signed in as the automation account |
-| `the NG Fab Schedule could not be opened: ...` | `SHEET_ID` is missing or wrong, the workbook isn't shared with this account, or it is an Excel file in Drive and not a Google Sheet | Copy the ID again and check the sharing (step 3). If its title shows a `.XLSX` tag, stop and tell Jim |
+| `the control folder could not be opened: ...` | `CONTROL_FOLDER_ID` is missing or wrong, or this account can't see the folder | Copy the ID again (step 2). Check you are signed in as the script account |
+| `the NG Fab Schedule could not be opened: ...` | `SHEET_ID` is missing or wrong, this isn't the account that owns the workbook, or it is an Excel file in Drive and not a Google Sheet | Copy the ID again (step 3), and check which account you are signed in as. If its title shows a `.XLSX` tag, stop and tell Jim |
 | `the workbook has no Sheet1` | The tab has another name | Ask Jim. Never rename it yourself |
 | `Sheet1 is empty`, or `no Job Name header in the first 10 rows of Sheet1` | Wrong workbook, or the sheet has changed | Check `SHEET_ID`, then look at the sheet |
 | `no "designer" header in row ...` or `more than one "fab date" header in row ...` (any of the four headers) | The export needs exactly one each of Job Name, Designer, Install Date and Fab Date | Look at the sheet. If its layout really changed, the script must change, never Jim's sheet |
@@ -164,8 +157,8 @@ Within about 10 minutes:
 
 The full list is in [google/README.md](../../google/README.md), "Not verified". The three to watch here:
 
-- **The edit trigger with Viewer access.** If `installTriggers` stops at `onFabEdit`, or `fab/edits.json` never appears after a row is edited, Google has refused it. Ask Jim to give the automation account Editor, then run `installTriggers` again. The code still never writes to the workbook, and its tests fail on any write.
-- **Pruning NG Runner's files.** They reach Drive under Jim's account, and Google says only the owner may trash a file, so pruning may be refused. Try it in the first test window, before counting on the 30 days for `shadow/`. A control folder on a shared drive would avoid it.
+- **The workbook stays read-only by code alone.** The script account could edit it, so only `google\`'s code keeps it read-only, and its tests fail on any write.
+- **Pruning NG Runner's files.** They reach Drive under the account Drive for desktop uses on Jim's PC, and Google says only the owner may trash a file. If that is the script account, pruning should work. If it is another account, it may be refused: run [google/README.md](../../google/README.md)'s setup step 6 in the first test window, before counting on the 30 days for `shadow/`.
 - **The daily quota.** On a free account, triggers may run 90 minutes a day in total, and the one-minute outbox uses the most. Measure it in the first week under **Executions**. If needed, run `processOutbox` every 5 minutes instead.
 
 ## Later
@@ -175,9 +168,9 @@ The full list is in [google/README.md](../../google/README.md), "Not verified". 
 
 ## Checklist
 
-- [ ] Automation account made; its password and backup codes are in ICLA's password manager
-- [ ] Control folder shared with Jim and you as Editors, **General access** Restricted, its ID copied
-- [ ] NG Fab Schedule shared with the automation account as Viewer, its ID copied
+- [ ] The script account owns the NG Fab Schedule, has 2-Step Verification on, and its other triggers are noted
+- [ ] Control folder made, shared with you (and Jim's other account, if Drive on his PC uses one), **General access** Restricted, its ID copied
+- [ ] NG Fab Schedule's ID copied
 - [ ] Project holds `appsscript.json` and seven `.gs` files, all saved
 - [ ] Signing key made with the command in step 6, saved in the password manager, set as `SIGNING_KEY`
 - [ ] Script Properties set, with `SHADOW` at `true` and `ALERT_ROLE` at `sulaiman`

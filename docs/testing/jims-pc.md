@@ -16,9 +16,9 @@ Every window states how long it takes, what it changes and how to undo it. Each 
    - this file.
 
 Ready outside Jim's PC before window 3:
-- **Google:**
-  - the ICLA Google automation account;
-  - the control folder, shared only by Jim's account, the automation account and Sulaiman;
+- **Google** (step by step: [apps-script-setup.md](apps-script-setup.md)):
+  - the Apps Script's account: the one that owns the NG Fab Schedule (`docs/decisions.md`, "Accounts");
+  - the control folder, shared only by that account, Sulaiman and, if Drive on Jim's PC uses another account, that one;
   - the Apps Script project (`google\`) deployed, with its Script Properties set: signing key, addresses, Pushover when added, and, from the start, `SHADOW` set to `true` with `ALERT_ROLE` left at `sulaiman` (window 3 says why).
 - **Render:** the job-list export, shipped by Sulaiman's push to Assembly Reports, with `ASSEMBLY_EXPORT_KEY` set.
 

@@ -35,7 +35,7 @@ Already built — call these, never re-implement them:
 
 ## 3. The control folder
 
-A Drive folder outside the CNC operations tree, shared only by Jim's account, the ICLA automation account (Apps Script) and Sulaiman. Every file is a signed envelope (`ngrunner.signing`) unless the table says otherwise. NG Runner writes only new files here (through `commit_write`), and never overwrites or deletes, except in `shadow/`, where the rules of a job folder apply; the Apps Script replaces its own two `fab/` files in place and prunes old files elsewhere.
+A Drive folder outside the CNC operations tree, shared only by the account that runs the Apps Script (the one that owns the NG Fab Schedule), Sulaiman and, if Drive on Jim's PC uses another account, that one. Every file is a signed envelope (`ngrunner.signing`) unless the table says otherwise. NG Runner writes only new files here (through `commit_write`), and never overwrites or deletes, except in `shadow/`, where the rules of a job folder apply; the Apps Script replaces its own two `fab/` files in place and prunes old files elsewhere.
 
 | Path | Written by | Kind | Notes |
 |---|---|---|---|
