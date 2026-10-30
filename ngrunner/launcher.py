@@ -256,11 +256,16 @@ def launch(
         raise ValueError(f"mode must be one of {', '.join(MODES)}")
     clock = clock or SystemClock()
     run = _Run(root, paths, mode, start or start_process, running, clock, sleep, timeout_s, poll_s)
-    with _locked(paths, "Launcher", wait_s=30.0 if mode == "open" else 5.0) as got:
-        if not got:
-            result = Launched("busy", reason="another launcher is starting NG Runner")
-        else:
-            result = run.launch(open_board)
+    try:
+        with _locked(paths, "Launcher", wait_s=30.0 if mode == "open" else 5.0) as got:
+            if not got:
+                result = Launched("busy", reason="another launcher is starting NG Runner")
+            else:
+                result = run.launch(open_board)
+    except OSError as exc:  # a full disk, say. This build has no console: an error raised
+        # from here would be a box on Jim's PC, and would hold up the 10-minute task.
+        reason = f"NG Runner could not use its start-up record ({_why(exc)})"
+        result = Launched("nothing_to_start", reason=reason)
     if tell is not None and mode == "open":
         if result.outcome == "busy":
             tell(_BUSY)
@@ -578,12 +583,14 @@ def _clear_stop(state: dict[str, Any]) -> bool:
 
 
 def _add_note(paths: AppPaths, clock: Clock, text: str) -> None:
+    """A note for DEV. One that can't be saved (a full disk) never undoes a start that worked."""
+
     def change(state: dict[str, Any]) -> bool:
         state["notes"] = [*state["notes"], {"id": secrets.token_hex(16), "at": to_iso(clock.now()),
                                             "code": "launcher", "text": text}][-_KEEP_NOTES:]
         return True
 
-    _update(paths, change, clock=clock)
+    _try_update(paths, change, clock)
 
 
 def _fallback_note(retired: list[tuple[str, str]], started: str | None) -> str:

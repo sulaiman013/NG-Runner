@@ -61,6 +61,9 @@ _HEADER_BYTES = len(MAGIC) + 1 + _ID_BYTES + _KEY_BYTES + _NONCE_BYTES
 _MAX_PLAIN = 2**31 - 1  # the most AES-GCM takes in one piece here
 _SQLITE = b"SQLite format 3\x00"
 _STAMP = re.compile(r"([0-9]{8}T[0-9]{12})Z(?:-[0-9]+)?")  # writes.py: %Y%m%dT%H%M%S%fZ[-n]
+_OUTGOING = "out:%"  # how store.sequences keys what NG Runner sends in the seqs table
+# Far above what can have been sent since the oldest backup kept: 30 days at one a minute is 43,200.
+_SEQ_JUMP = 1_000_000
 
 
 class BackupError(ValueError):
@@ -230,12 +233,9 @@ def describe(db: bytes) -> DatabaseFacts:
     version and rows per table. It reads a copy in memory, so nothing on disk changes."""
     if not db.startswith(_SQLITE):
         return DatabaseFacts(None, {}, ("It is not an SQLite database.",))
-    image = bytearray(db)
-    if len(image) > 19:
-        image[18] = image[19] = 1  # WAL marks can't be opened in memory; no row depends on them
     try:
         with closing(sqlite3.connect(":memory:")) as con:
-            con.deserialize(bytes(image))
+            con.deserialize(_openable(db))
             checks = [row[0] for row in con.execute("PRAGMA integrity_check")]
             version = con.execute("PRAGMA user_version").fetchone()[0]
             names = [row[0] for row in con.execute(
@@ -253,6 +253,35 @@ def _quoted(name: str) -> str:
     """A table name from the database's own catalogue, quoted as SQL needs (names can't be
     passed as parameters)."""
     return '"' + name.replace('"', '""') + '"'
+
+
+def _openable(db: bytes) -> bytes:
+    """A database's bytes as SQLite can open them in memory: WAL marks can't be, and no row
+    depends on them."""
+    image = bytearray(db)
+    if len(image) > 19:
+        image[18] = image[19] = 1
+    return bytes(image)
+
+
+def for_a_new_pc(db: bytes) -> bytes:
+    """A restored database made ready to run on a new PC: its outgoing sequence numbers jump
+    far ahead. The backup is older than the last files NG Runner sent, and the Apps Script
+    ignores any number it has seen (spec section 3), so a restored NG Runner would go unheard
+    until the numbers caught up. What it has received keeps its place. restore() itself
+    changes nothing, so the drill checks the backup exactly as it was made."""
+    try:
+        with closing(sqlite3.connect(":memory:")) as con:
+            con.deserialize(_openable(db))
+            if con.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'seqs'"
+                           ).fetchone() is None:
+                return db
+            con.execute("UPDATE seqs SET last = last + ? WHERE stream LIKE ?",
+                        (_SEQ_JUMP, _OUTGOING))
+            con.commit()
+            return con.serialize()
+    except sqlite3.Error as exc:
+        raise BackupError(f"The restored database could not be made ready ({exc}).") from exc
 
 
 def nightly_backup(paths: AppPaths, public_key: str, *, clock: Clock) -> Backup:
@@ -278,8 +307,12 @@ def prune(paths: AppPaths, *, clock: Clock, keep_days: int = KEEP_DAYS) -> Prune
         return Pruned((), ("The backup folder is a link or not a folder, so nothing in it was"
                            " pruned.",))
     cutoff = clock.now() - timedelta(days=keep_days)
+    try:
+        names = sorted(os.listdir(base))
+    except OSError as exc:
+        return Pruned((), (f"The backup folder could not be listed ({_why(exc)}).",))
     removed, left = [], []
-    for name in sorted(os.listdir(base)):
+    for name in names:
         made = _stamp_time(name)
         if made is None or made >= cutoff:
             continue  # not one of commit_write's copies, or not old enough

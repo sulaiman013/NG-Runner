@@ -1,9 +1,11 @@
-"""The support bundle: what Sulaiman needs to help from afar, and nothing he must not receive."""
+"""What Sulaiman needs to help from afar: the support bundle, and nothing he must not receive;
+and the runbook, which must name every P1a alarm as it reads."""
 from __future__ import annotations
 
 import io
 import json
 import os
+import re
 import sqlite3
 import zipfile
 from datetime import datetime, timezone
@@ -15,6 +17,7 @@ from ngrunner import __main__ as cli
 from ngrunner import launcher, single, support
 from ngrunner.clock import FakeClock, to_iso
 from ngrunner.config import AppPaths, Settings, save_settings
+from ngrunner.messages import templates
 
 NOW = datetime(2026, 10, 29, 20, 0, tzinfo=timezone.utc)
 
@@ -116,3 +119,69 @@ def test_the_command_line_writes_the_bundle_into_the_data_folder(paths, tmp_path
     assert [p.name for p in written] == ["support-20261029-200000-2.zip", "support-20261029-200000.zip"]
     assert out.getvalue().splitlines()[0] == f"Support bundle written: {written[1]}"
     assert unpack(written[1].read_bytes())[0]["made_at"] == to_iso(NOW)
+
+
+# ----- the runbook (spec 6.7): every P1a alarm with its one-line fix
+
+ROOT = Path(__file__).resolve().parent.parent
+RUNBOOK = ROOT / "docs" / "p1a" / "runbook.md"
+
+
+def _alarm_rows() -> list[str]:
+    """The rows of the runbook's alarm table: one per alarm, its fix in the last cell."""
+    text = RUNBOOK.read_text(encoding="utf-8")
+    table = text[text.index("## Alarms, and their one-line fixes"):text.index("## Update and rollback")]
+    rows = [line for line in table.splitlines() if line.startswith("| ")]
+    return rows[1:]                      # the first is the table's heading
+
+
+def _watchdog_alerts() -> list[str]:
+    source = (ROOT / "google" / "Watchdog.gs").read_text(encoding="utf-8")
+    return re.findall(r"alert_\('([^']+)'", source) + re.findall(r"subject: '([^']+)'", source)
+
+
+@pytest.mark.parametrize("words", [
+    *templates.ALARMS.values(),
+    templates.stuck("<Job>"),
+    templates.cant_send(since=NOW, now=NOW, waiting=0).title,
+    templates.QUESTIONS["fetch_failed"],
+    "failed to start twice",
+    "No version of NG Runner could start",
+    "start-up record is damaged",
+    "NG Runner's database is damaged",
+    "last used by a newer version of NG Runner",
+    "NG Runner has no settings yet",
+    "is not reachable right now",
+    "refused NG Runner's export key",
+    'daily "ran" line',
+])
+def test_the_runbook_names_every_p1a_alarm_as_it_reads(words):
+    assert any(words in row for row in _alarm_rows()), words
+
+
+def test_the_runbook_names_every_alert_the_watchdog_sends():
+    alerts = _watchdog_alerts()
+    assert {"NG Runner is not checking in", "No list reached Jim", "No list today"} <= set(alerts)
+    for alert in alerts:
+        assert any(alert in row for row in _alarm_rows()), alert
+
+
+def test_every_alarm_row_says_who_sees_it_and_gives_a_one_line_fix():
+    rows = _alarm_rows()
+    assert len(rows) >= 20
+    for row in rows:
+        cells = [cell.strip() for cell in row.strip("|").split(" | ")]
+        assert len(cells) == 3 and all(cells), row
+
+
+@pytest.mark.parametrize("heading", ["## Start, stop, pause", "## Falling back to chat", "## Update and rollback",
+                                     "## Restore onto a new PC", "## Key rotation", "## Deleting fixtures"])
+def test_the_runbook_has_every_section_the_spec_asks_for(heading):
+    assert heading in RUNBOOK.read_text(encoding="utf-8")
+
+
+def test_the_runbook_calls_the_hosted_app_what_the_glossary_calls_it():
+    # In this repo a render is one download of an IC summary (GLOSSARY.md); the hosted app is the
+    # online Assembly Reports, and "Render" names only the service whose settings hold its key.
+    text = RUNBOOK.read_text(encoding="utf-8")
+    assert "the job list from Render" not in text and "the online Assembly Reports" in text

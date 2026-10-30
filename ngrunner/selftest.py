@@ -24,10 +24,12 @@ from __future__ import annotations
 
 import hashlib
 import importlib
+import itertools
 import secrets
 import sys
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
+from datetime import date, datetime, timezone
 from pathlib import Path, PureWindowsPath
 
 from ngrunner.backup import BackupError, DatabaseFacts, describe, remove_own_tree, snapshot
@@ -66,8 +68,9 @@ def run_self_test(
     samples: Callable[[], Iterable[object]] | None = None,
     lint: Callable[[object], list[str]] | None = None,
 ) -> list[str]:
-    """Every problem found, one plain sentence each; empty means this build may run. migrate,
-    samples and lint default to the store's and the message modules' own (tests fake them)."""
+    """Every problem found, one plain sentence each; empty means this build may run. migrate
+    and lint default to the store's and the lint module's own, samples to message_samples (tests
+    fake them)."""
     problems = import_problems(modules)
     if getattr(sys, "frozen", False) and not sys.flags.utf8_mode:
         problems.append("This build does not run in UTF-8 mode (ngrunner.spec must pass X utf8).")
@@ -298,11 +301,57 @@ def _contents(work: Path) -> dict[str, str]:
 def _templates(samples: Callable[[], Iterable[object]] | None,
                lint: Callable[[object], list[str]] | None) -> list[str]:
     try:
-        samples = samples or _function("ngrunner.messages.templates", "samples")
         lint = lint or _function("ngrunner.messages.lint", "lint")
     except (ImportError, LookupError) as exc:
         return [f"The message templates could not be checked: {_reason(exc)}."]
-    return template_problems(samples, lint)
+    return template_problems(samples or message_samples, lint)
+
+
+def message_samples() -> list[object]:
+    """One rendered example of every P1a message, from the templates this build carries: each
+    template, every kind of card, every alarm and every fixed template, with made-up jobs.
+    tests\\test_selftest.py fails when a template has no example here. Imported here, not at the
+    top, so a template module that won't load is reported as a problem like any other."""
+    from ngrunner.cards import new_card, parse_command
+    from ngrunner.match import Opportunity
+    from ngrunner.messages import Message, templates as t
+
+    day, install = date(2026, 10, 30), date(2026, 11, 6)
+    at = datetime(2026, 10, 30, 22, 5, tzinfo=timezone.utc)
+    job, other, row = "Testerson_101426", "Fakeley_102026", "Dummitt"
+    candidates = (Opportunity("Dummitt_101426", "201", "Pat Example", "Ready to Install"),
+                  Opportunity("Dummitt_102226", "202", "Pat Example", "Ready to Order"))
+    numbers = itertools.count(1)
+    cards = [new_card(spec, created_at=at, allocate=lambda prefix: next(numbers)) for spec in (
+        t.which_job_card(row, designer="PE", install=install, candidates=candidates),
+        t.which_job_card(row),
+        t.closet_or_garage_card(job, reason="the Fab row says garage, but no design is a garage"),
+        t.fetch_failed_card(job, since=at, reason="Studio did not answer within 60 seconds"),
+        t.ic_changed_card(job, filed_at=at, filed_pages=19, new_at=at, new_pages=20),
+        t.row_changed_card(job, was="Testerson", now_reads=row, candidates=candidates),
+    )]
+    echoes = [t.echo(parse_command(typed, cards)) for typed in (
+        f"{cards[2].id} 2", "pause", "resume", f"add job {job}", "add job 84213")]
+    return [
+        t.digest(day, for_you=(t.install_soon(job, install), t.stuck(other), *t.ALARMS.values()),
+                 jobs=((other, "filed 10/29 3:05 PM"),), cards=[(card, 3) for card in cards],
+                 open_items=len(cards), oldest_days=3),
+        t.quiet_digest(day),
+        t.quiet_digest(day, open_items=2, oldest_days=3),
+        t.filed(job, row="Testerson", designer="PE", install=install),
+        t.filed(job, row="Testerson garage", garage=True),
+        t.which_job_email(row, designer="PE", install=install, candidates=candidates),
+        t.which_job_email(row),
+        *(t.card_message(card) for card in cards),
+        t.dev((t.DevLine(at, "Studio did not answer on the 3rd try", job),
+               t.DevLine(at, "the Fab export is 42 minutes old")), day=day),
+        t.dev((), day=day),
+        t.ran(day, version="0.0.1", new_rows=2, filed=1, cards_opened=1, cards_answered=0,
+              writes_refused=0, dev_open=1),
+        t.cant_send(since=at, now=at, waiting=2),
+        *(t.fixed(kind, day=day) for kind in (*t.FIXED, "any_other_kind")),
+        *(Message("echo", "NG Runner", (line,)) for line in echoes),
+    ]
 
 
 def _function(module: str, name: str) -> Callable[..., object]:

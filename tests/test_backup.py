@@ -3,6 +3,7 @@ pruning of commit_write's own copies after 60 days, which never reaches outside 
 from __future__ import annotations
 
 import _winapi
+import hashlib
 import io
 import os
 import sqlite3
@@ -13,10 +14,11 @@ from pathlib import Path
 import pytest
 
 from ngrunner import __main__ as cli
-from ngrunner import backup
+from ngrunner import backup, store
 from ngrunner.backup import BackupError
 from ngrunner.clock import FakeClock
 from ngrunner.config import AppPaths
+from ngrunner.writes import FileWrite, Roots, commit_write
 
 NOW = datetime(2026, 10, 29, 20, 0, tzinfo=timezone.utc)
 OLD = NOW - timedelta(days=61)
@@ -67,6 +69,22 @@ def test_each_backup_is_locked_with_a_fresh_key(keys):
     first, second = backup.encrypt(b"SQLite format 3\x00same", public), backup.encrypt(b"SQLite format 3\x00same", public)
     assert first != second
     assert backup.restore(first, private) == backup.restore(second, private) == b"SQLite format 3\x00same"
+
+
+def _roots(paths: AppPaths, tmp_path: Path) -> Roots:
+    roots = Roots(tmp_path / "NG Jobs", tmp_path / "Mozaik Shared", tmp_path / "control", paths.app_data)
+    for folder in (roots.ng_jobs, roots.mozaik_shared, roots.control, roots.app_data):
+        folder.mkdir(parents=True, exist_ok=True)
+    return roots
+
+
+def test_a_nightly_backup_goes_through_the_chokepoint_into_the_control_folder(paths, keys, live_db, tmp_path):
+    made = backup.nightly_backup(paths, keys[1], clock=FakeClock(NOW))
+    roots = _roots(paths, tmp_path)
+    target = roots.control / made.folder / made.name
+    result = commit_write([FileWrite(target, made.data, None)], roots=roots, interlock=lambda planned: None)
+    assert result.ok, result.reason
+    assert backup.describe(backup.restore(target.read_bytes(), keys[0])).tables == {"cards": 0, "jobs": 3}
 
 
 def test_there_is_nothing_to_back_up_before_the_database_exists(paths, keys):
@@ -179,6 +197,18 @@ def test_copies_older_than_60_days_are_pruned_and_newer_ones_kept(paths):
     assert kept.is_file()
 
 
+def test_a_copy_made_by_the_real_chokepoint_is_one_pruning_recognises(paths, tmp_path):
+    roots = _roots(paths, tmp_path)
+    target = roots.control / "note.json"
+    for content, expected in ((b"one", None), (b"two", hashlib.sha256(b"one").hexdigest())):
+        result = commit_write([FileWrite(target, content, expected)], roots=roots, interlock=lambda planned: None)
+        assert result.ok, result.reason
+    assert result.backups and result.backups[0].read_bytes() == b"one"
+    later = FakeClock(datetime.now(timezone.utc) + timedelta(days=61))
+    assert len(backup.prune(paths, clock=later).removed) == 1
+    assert list(paths.backup.iterdir()) == [] and target.read_bytes() == b"two"
+
+
 def test_a_copy_whose_files_changed_recently_is_kept_whatever_its_name_says(paths):
     copy = _old_copy(paths, "20260801T120000000000Z", "ng_jobs", "Testerson_101426", "Testerson_101426_summary.pdf")
     os.utime(copy, (RECENT.timestamp(), RECENT.timestamp()))
@@ -220,6 +250,20 @@ def test_a_backup_folder_that_is_itself_a_link_is_never_pruned(paths, tmp_path):
     pruned = backup.prune(paths, clock=FakeClock(NOW))
     assert pruned.removed == () and len(pruned.left) == 1
     assert (old / "keep.txt").is_file()
+
+
+def test_a_backup_folder_that_can_not_be_listed_is_reported_never_raised(paths, monkeypatch):
+    paths.backup.mkdir(parents=True)
+    real = os.listdir
+
+    def denied(path):
+        if Path(path) == paths.backup:
+            raise PermissionError(5, "Access is denied")
+        return real(path)
+
+    monkeypatch.setattr(backup.os, "listdir", denied)
+    pruned = backup.prune(paths, clock=FakeClock(NOW))
+    assert pruned.removed == () and len(pruned.left) == 1 and "Access is denied" in pruned.left[0]
 
 
 def test_with_no_backup_folder_there_is_nothing_to_prune(paths):
@@ -292,6 +336,49 @@ def test_a_restore_puts_the_database_in_place_on_a_new_pc_only(paths, keys, back
     assert backup.describe(new_pc.db.read_bytes()).tables == {"cards": 0, "jobs": 3}
     code, text = _cli(["restore", str(backup_file), "--install"], new_pc, key=keys[0])
     assert code == 1 and "already has a database here (ngrunner.db)" in text
+
+
+def test_a_restore_onto_a_new_pc_never_reuses_a_sequence_number_already_sent(paths, keys, tmp_path):
+    # The backup is older than the last files NG Runner sent, and the Apps Script refuses any
+    # number it has seen (spec section 3): no heartbeat would count and no message would go out
+    # until the numbers caught up. What the new PC has received keeps its place.
+    paths.app_data.mkdir(parents=True)
+    running = store.open_store(paths.db)
+    for _ in range(5):
+        store.next_seq(running, "heartbeat")
+    store.next_seq(running, "outbox")
+    assert store.accept_seq(running, "fab_export", 7)
+    store.set_state(running, "paused", "no")
+    source = tmp_path / "from the control folder.ngrbak"
+    source.write_bytes(backup.nightly_backup(paths, keys[1], clock=FakeClock(NOW)).data)
+    for _ in range(40):                        # sent after the backup was made, then the PC died
+        last_sent = store.next_seq(running, "heartbeat")
+
+    new_pc = AppPaths(tmp_path / "new PC" / "NGRunner")
+    code, text = _cli(["restore", str(source), "--install"], new_pc, key=keys[0])
+    assert code == 0, text
+    restored = store.open_store(new_pc.db)
+    days_kept, per_day = 30, 24 * 60          # at most one a minute, for as long as backups are kept
+    assert store.next_seq(restored, "heartbeat") > last_sent + days_kept * per_day
+    assert store.next_seq(restored, "outbox") > 1 + days_kept * per_day
+    assert store.last_accepted_seq(restored, "fab_export") == 7
+    assert store.accept_seq(restored, "fab_export", 8)
+    assert store.get_state(restored, "paused") == "no"
+
+
+def test_the_drill_restores_the_database_exactly_as_it_was_backed_up(paths, keys):
+    paths.app_data.mkdir(parents=True)
+    store.next_seq(store.open_store(paths.db), "heartbeat")
+    data = backup.nightly_backup(paths, keys[1], clock=FakeClock(NOW)).data
+    assert backup.restore(data, keys[0]) == backup.snapshot(paths.db)
+
+
+def test_a_database_with_no_sequence_table_is_put_in_place_unchanged():
+    con = sqlite3.connect(":memory:")
+    con.execute("CREATE TABLE jobs(studio_id TEXT PRIMARY KEY)")
+    image = con.serialize()
+    con.close()
+    assert backup.for_a_new_pc(image) == image
 
 
 def test_a_restore_waits_until_ngrunner_has_quit(keys, backup_file, tmp_path):

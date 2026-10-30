@@ -191,7 +191,14 @@ def _restore(source: Path, install: bool, paths: AppPaths, read_secret: Callable
         return 1
     say(f"Restore drill passed: schema version {facts.schema_version}, {len(facts.tables)} tables,"
         f" {sum(facts.tables.values())} rows.")
-    return _put_in_place(database, paths, running, say) if install else 0
+    if not install:
+        return 0
+    try:
+        ready = backup.for_a_new_pc(database)
+    except backup.BackupError as exc:
+        say(str(exc))
+        return 1
+    return _put_in_place(ready, paths, running, say)
 
 
 def _put_in_place(database: bytes, paths: AppPaths, running: Callable[[], bool] | None,

@@ -4,7 +4,7 @@ For Sulaiman, or a backup developer, keeping NG Runner running on Jim's PC. It c
 
 Written in wave 1 of P1a. Items marked † rely on parts that wave 2 wires (the supervisor, the board's Health page, the tray menu); check them against the build before go-live.
 
-**The rule above all others: when NG Runner is down, nothing is lost. Jim works in chat as before.** NG Runner only adds; it never takes over a job so that chat can't work it.
+**The rule above all others: when NG Runner is down, Jim works in chat as before.** NG Runner only adds; it never takes over a job so that chat can't work it. What it missed it catches up on when it is back, and says so. Never tell Jim "nothing is lost": the design bans those words (section 4, "Silence and failure"), because a risk may be open.
 
 ## Where things are
 
@@ -12,7 +12,7 @@ Written in wave 1 of P1a. Items marked † rely on parts that wave 2 wires (the 
 |---|---|
 | The install | `%LOCALAPPDATA%\Programs\NGRunner\`: `launcher\` (NGRunnerLauncher.exe, what everything starts), `app-<version>\` (one folder per version, side by side), `installer\` (uninstall.ps1 and its files), `tasks\` (the task XML as registered), `ngrunner-install.json` (the install record) |
 | NG Runner's data | `%LOCALAPPDATA%\NGRunner\`: `ngrunner.db` (the database), `settings.json`, `launcher.json` (which versions passed their self-test, failed starts, notes for DEV), `logs\` (`launcher.log`, `app-output.log`), `backup\` (copies of files commit_write replaced, pruned after 60 days), `renders\` (fetched IC summaries: client documents, this PC only), `staging\`, `support\` (support bundles) |
-| Secrets | Windows Credential Manager, generic credentials `NGRunner/signing_key`, `NGRunner/export_key`, `NGRunner/pushover_token`, `NGRunner/pushover_user`. Never in files, logs or bundles |
+| Secrets | Windows Credential Manager, generic credentials `NGRunner/signing_key` and `NGRunner/export_key`, plus `NGRunner/pushover_token` and `NGRunner/pushover_user` once Pushover is added (P1b, `docs/decisions.md`). Never in files, logs or bundles |
 | The control folder | A Drive folder shared only by Jim's account, the ICLA automation account and Sulaiman: `fab/`, `heartbeat/`, `outbox/`, `receipts/`, `pause/`, `logs/`, `backups/` (spec section 3) |
 | Auto-start | Scheduled tasks `NGRunner-logon` (at sign-in) and `NGRunner-ensure` (every 10 minutes); Run-key value `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\NGRunner`; Start Menu item `NG Runner` (it carries the AUMID `ICLA.NGRunner`, without which notifications don't show) |
 
@@ -47,13 +47,16 @@ Whenever NG Runner is down, paused, or a job has waited on it for more than 2 da
 
 | Alarm (as it reads) | Who sees it, where | One-line fix |
 |---|---|---|
-| "NG Runner is not checking in" (no heartbeat for 45 minutes in expected-on hours) | Sulaiman, from the Apps Script watchdog | Remote in: wake or sign in the PC; if NG Runner isn't running, start it from the Start Menu, then read the last lines of `logs\launcher.log` and `logs\app-output.log`. |
-| "No list reached Jim" (no digest receipt by 7:00 AM; Jim gets the "no list today" message) | Jim and Sulaiman, from the watchdog | The same fix as the line above; the digest follows the next run. |
+| "NG Runner is not checking in" (no heartbeat for 45 minutes in expected-on hours) | Sulaiman, from the Apps Script watchdog | Remote in: wake or sign in the PC; if NG Runner isn't running, start it from the Start Menu, then read the last lines of `logs\launcher.log` and `logs\app-output.log`; if it is, check that Google Drive for desktop is signed in and syncing, since heartbeats reach the control folder through it. |
+| "No list reached Jim" (to Sulaiman) and "No list today" (to Jim, on his `ROLE_JIM_CHANNEL`, `email` until Pushover is added): no digest receipt by 7:00 AM | Jim and Sulaiman, from the watchdog | The same fix as the line above; the digest follows the next run. If his PC is simply off at night, declare it: `pc_sleeps_at_night` in NG Runner's settings and `PC_SLEEPS_AT_NIGHT` in the Script Properties. |
+| No daily "ran" line came (its absence is the alarm, design section 2) | Sulaiman | Check the heartbeat: if NG Runner is not checking in, use the first line's fix; if it is, read `logs\app-output.log` in a support bundle and the Outbox log in the Apps Script project. |
 | "The Fab Schedule export is over 30 minutes old, so new rows are not being seen" | Jim's digest (For you), the board | In the Apps Script project (ICLA automation account), check FabExport's 5-minute trigger and its last error, then run FabExport once by hand. |
-| "The job list is over an hour old and older than the oldest waiting row" | Jim's digest, the board | On the office PC, check the `AssemblyReportsPublishJobs` task (it runs only while `autob` is signed in) and `logs\publish_jobs.log` there, then press Sync in Assembly Reports. |
-| "Windows notifications are off for NG Runner" | Jim's digest, the board, DEV | Settings, System, Notifications: turn notifications on, and on for NG Runner. If NG Runner is missing from that list, run install.ps1 again (it remakes the Start Menu item). |
+| "The job list is over an hour old and older than the oldest waiting row, so that row can't be matched yet" | Jim's digest, the board, DEV | On the office PC, check the `AssemblyReportsPublishJobs` task (it runs only while `autob` is signed in) and `logs\publish_jobs.log` there, then press Sync in Assembly Reports. |
+| "The online Assembly Reports refused NG Runner's export key: it is not set there, or it is a different one." | Sulaiman (DEV, the board's Health page †) | Set the same value in both places (see "Key rotation"). "Has no job-list export yet" instead means its update is not deployed: Sulaiman deploys it. |
+| "Windows notifications are off for NG Runner, so its pop-ups don't show" | Jim's digest, the board, DEV | Settings, System, Notifications: turn notifications on, and on for NG Runner. If NG Runner is missing from that list, run install.ps1 again (it remakes the Start Menu item). |
 | "NG Runner is paused, so nothing is filed until you resume it at the PC" | Jim's digest, grey tray | Clear the reason for the pause, then Resume at the PC. |
-| "NG Runner can't send messages" (no receipt for 5 minutes; red tray; urgent items go to Pushover) | Jim's phone, the tray | In the Apps Script project, check the Outbox trigger (every minute), its quota and the automation account's sign-in; receipts resume by themselves. |
+| "NG Runner can't send messages" (no receipt for 5 minutes; red tray), and on the For you line "Messages are not being confirmed sent, so urgent ones go to your phone directly" | Jim: the tray, the board, the digest, and his phone once Pushover is added (P1b) | In the Apps Script project, check the Outbox trigger (every minute), its quota and the automation account's sign-in; receipts resume by themselves. |
+| "<file> was not written: NG Jobs is not reachable right now." (or the control folder) | Sulaiman (DEV), the job's row on the board † | Check that Google Drive for desktop is running, signed in and online on Jim's PC, and that the folder in the settings still exists; the write is tried again when that clears. |
 | "Could not get a complete IC summary for <Job>" (fetching failed for 24 hours) | Jim's card, the digest | Open the job's Install Report in Assembly Reports; once Studio renders it fully, the next fetch files it (or answer the card). |
 | "<Job> has waited on NG Runner for over 2 days; work it in chat as before" (a DEV item over 48 hours old) | Jim's digest | Jim works the job in chat; Sulaiman fixes the cause from a support bundle and closes the DEV item. |
 | "NG Runner 0.1.1 failed to start twice (...), so 0.1.0 was started instead." | Sulaiman's DEV lane † | Read `logs\app-output.log` and `launcher.log` in a support bundle; fix, give the build a new version and install it (the failed version stays out until its own self-test passes again). |
@@ -61,12 +64,18 @@ Whenever NG Runner is down, paused, or a job has waited on it for more than 2 da
 | "NG Runner's start-up record is damaged" (`launcher.log`; nothing starts) | Sulaiman, through the heartbeat alarm | Run `NGRunner.exe --self-test --record` for the version to keep: it sets the damaged record aside (`launcher.json.damaged-...`) and writes a fresh one. |
 | The self-test failed during install | Sulaiman, in the install window | Fix what the numbered lines name, rebuild under a new version, install again (install.ps1 already removed the failed version). |
 | "NG Runner's database was last used by a newer version of NG Runner" (after a rollback) | Sulaiman (DEV, `app-output.log`) | Start the newer version again, or restore the last backup made by this version (see "Restore"). |
+| "NG Runner's database is damaged (SQLite's check found problems), so it can't be used; restore it from a backup." | Sulaiman (DEV, `app-output.log`, the red tray †) | Quit NG Runner, move `ngrunner.db` and its `-wal` and `-shm` files aside, then `NGRunner.exe restore "<file>" --install` (see "Restore"). |
+| A message failed the message check, so its fixed template went out instead (DEV names the rule and the line, never the text) | Sulaiman (DEV) | Nothing waits on it: fix the template, or the outside text that fed it, in the next build. |
+| A secret is missing from Credential Manager (a plain board item, never a crash loop †) | Sulaiman, the board | Put it back from ICLA's password manager as `NGRunner/<name>`. |
+| A commit cut short by a crash, settled at start-up (DEV †) | Sulaiman | Nothing to do for a file that holds what was meant; check by hand any path the note says was left alone. |
 | Leftover temp files (`*.ngr-tmp`) listed on the board | Sulaiman, the board's Health page † | NG Runner never deletes them: with NG Runner quit, check each against `logs\` and delete the listed files by hand. |
 | A write refused by commit_write (its reason in DEV) | Sulaiman | The chokepoint did its job: find the code that asked for that write (events, support bundle) and fix that, never the chokepoint's rules. |
 | A control-folder file refused (bad signature, old sequence number, an id seen before) | Sulaiman (DEV; the file is ignored) | Check that the signing key in Credential Manager and in the Apps Script's Script Properties match (see "Key rotation"). |
-| No `backups/<YYYYMMDD>.ngrbak` for a night | Sulaiman (weekly check of the control folder) | Check that NG Runner ran that night and look in DEV for the backup's reason; the next night writes the next one. |
-| Pruning left a copy in `backup\` (it holds a link) | Sulaiman (DEV) | Look inside `%LOCALAPPDATA%\NGRunner\backup\<time>\`; remove the link itself by hand, never through it. |
+| No `backups/<YYYYMMDD>.ngrbak` for a day | Sulaiman (weekly check of the control folder) | Check that the PC was on that day (nightly work runs at the first chance after 1:30 AM, or at the next logon) and look in DEV for the backup's reason; the next night writes the next one. |
+| Pruning left a copy in `backup\` (it holds a link, or the folder can't be read) | Sulaiman (DEV) | Look inside `%LOCALAPPDATA%\NGRunner\backup\<time>\`; remove a link itself by hand, never through it. |
 | "NG Runner has no settings yet; run its setup first" | Sulaiman, through the heartbeat alarm | Put `settings.json` back (from the last support bundle's values) or run setup again †. |
+
+While Sulaiman is away, set `ALERT_ROLE` and `ALERT_NAME` in the Script Properties, so the watchdog's alarms reach and name the backup contact (design section 4; `google/README.md`).
 
 ## Update and rollback
 
@@ -80,7 +89,7 @@ Whenever NG Runner is down, paused, or a job has waited on it for more than 2 da
 
 **Install** (Jim's PC, over the remote session):
 
-1. Copy `<out>\dist` to Jim's PC (zipped), as `NGRunner-<version>`. Nothing ever installs itself from Drive.
+1. Copy `<out>\dist` to Jim's PC (zipped), as `NGRunner-<version>`. Nothing ever installs itself from Drive. Install when Mozaik is closed (design section 6, "Updates"): install.ps1 does not check for it, because Mozaik's exe name is only confirmed on Jim's PC in test window 1, and P1a writes nothing a Mozaik job reads.
 2. In PowerShell: `powershell -NoProfile -ExecutionPolicy Bypass -File "<folder>\installer\install.ps1" -ManifestSha256 <hash>`
 3. It checks every file against the manifest, copies the new version beside the old one, runs its self-test (a failing version is removed again), registers the tasks, the Run key and the Start Menu item, asks the running NG Runner to stop (it finishes what it is doing; after 2 minutes it is ended), and starts the launcher.
 4. Check: `launcher.log` ends with `started <version>`, and the board and the next heartbeat show it.
@@ -99,9 +108,9 @@ If install.ps1 says PowerShell runs in Constrained Language Mode, Smart App Cont
 
 **A new PC** (or a rebuilt one):
 
-1. Install with `install.ps1 -NoStart`.
-2. `NGRunner.exe restore "<file>" --install`. It puts the database in place only where NG Runner has none, and never while NG Runner runs.
-3. Put the settings back (`settings.json`, or setup †) and the four secrets into Credential Manager from ICLA's password manager.
+1. Install with `install.ps1 -NoStart`, and go straight on to step 2: the 10-minute task starts NG Runner otherwise, and a database it made stops step 2 (then quit it and move that new database aside).
+2. `NGRunner.exe restore "<file>" --install`. It puts the database in place only where NG Runner has none, and never while NG Runner runs. It also moves the outgoing sequence numbers far ahead: the backup is older than the last files the old PC sent, and the Apps Script ignores any number it has seen. So the first message waits up to 2 minutes for the gap, and that is normal.
+3. Put the settings back (`settings.json`, or setup †) and the secrets into Credential Manager from ICLA's password manager.
 4. Start NG Runner from the Start Menu; check the board and the first heartbeat.
 
 What happened after the backup was made (rows seen, summaries filed) is not in the restored database. commit_write never files over a summary that is already there, so nothing is filed twice; NG Runner must then treat such a summary as already filed †.
@@ -111,9 +120,9 @@ What happened after the backup was made (rows seen, summaries filed) is not in t
 Never paste a key into chat, email, a ticket or a log.
 
 - **Backup key pair.** `NGRunner.exe keygen` on Sulaiman's PC prints a pair and its key id. The private key goes into ICLA's password manager, named with its key id; only the public key goes into NG Runner's settings on Jim's PC †. Keep the old private key until the last backup made with the old key has left the control folder (30 days): every backup names the key id that opens it, and restore says which key it needs.
-- **Signing key** (control-folder envelopes). Pause NG Runner. Make a new key (64 hex characters, `ngrunner.signing.new_key()`), put it in Credential Manager as `NGRunner/signing_key` and in the Apps Script's Script Properties, then resume at the PC.
-- **Export key** (the job list from Render). Set a new value for `ASSEMBLY_EXPORT_KEY` on Render (Sulaiman deploys Render himself) and in Credential Manager as `NGRunner/export_key`.
-- **Pushover.** Make a new application token in Pushover, then update `NGRunner/pushover_token` (and `NGRunner/pushover_user` if the user key changed).
+- **Signing key** (control-folder envelopes). Pause NG Runner. Make a new key (64 hex characters, `ngrunner.signing.new_key()`), put it in Credential Manager as `NGRunner/signing_key` and in the Apps Script's Script Properties as `SIGNING_KEY`, then resume at the PC. An outbox file refused meanwhile stays refused until its `refused.<id>` property is deleted (`google/README.md`, "Changing the signing key").
+- **Export key** (the job list from the online Assembly Reports). Set a new value for `ASSEMBLY_EXPORT_KEY` in that service's environment on Render (Sulaiman deploys it himself) and in Credential Manager as `NGRunner/export_key`.
+- **Pushover** (once it is added). Make a new application token in Pushover, then update `NGRunner/pushover_token` (and `NGRunner/pushover_user` if the user key changed).
 
 ## Deleting fixtures
 
@@ -132,4 +141,4 @@ Tray, then Send support bundle †, or `NGRunner.exe support-bundle` (it prints 
 
 `powershell -NoProfile -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\Programs\NGRunner\installer\uninstall.ps1"`
 
-It unregisters both tasks, removes the Run-key value and the Start Menu item, asks NG Runner to stop, releases every job to chat (`release-all` †), and removes the install folder's own parts. It keeps the data folder and prints where it is: remove that by hand, and only after the last backup has passed a drill. It removes nothing if anything in the install holds a link or junction, and nothing from a folder without `ngrunner-install.json`.
+It unregisters both tasks, removes the Run-key value and the Start Menu item, asks NG Runner to stop, releases every job to chat (`release-all` †; P1a writes no leases, `docs/decisions.md`, so chat is not held up either way), and removes the install folder's own parts. It keeps the data folder and prints where it is: remove that by hand, and only after the last backup has passed a drill. It removes nothing if anything in the install holds a link or junction, and nothing from a folder without `ngrunner-install.json`.

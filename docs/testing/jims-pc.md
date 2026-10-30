@@ -57,7 +57,7 @@ Ready outside Jim's PC before window 3:
 
 | Changes | Undo | Passes when |
 |---|---|---|
-| The app, its shortcut, two scheduled tasks, a Run key, its data folder, two Credential Manager entries | `uninstall.ps1`, which keeps the data folder unless asked | The self-test is clean, the canary passes on G:, the tray shows SHADOW, and the heartbeat reaches the control folder |
+| The app, its shortcut, two scheduled tasks, a Run key, its data folder, two Credential Manager entries | `uninstall.ps1`, which keeps the data folder | The self-test is clean, the canary passes on G:, the tray shows SHADOW, and the heartbeat reaches the control folder |
 
 ## Window 3 — shadow run (1 to 2 weeks, unattended)
 

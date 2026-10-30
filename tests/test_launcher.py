@@ -317,6 +317,54 @@ def test_a_damaged_start_up_record_starts_nothing_until_a_self_test_rewrites_it(
     assert len(kept) == 1 and kept[0].read_text(encoding="utf-8") == "{ not json"
 
 
+def test_a_record_that_can_not_be_written_is_a_plain_outcome_never_an_error_box(root, paths, clock,
+                                                                                 monkeypatch):
+    # The launcher build has no console: an exception would be a traceback box on Jim's PC, and
+    # the 10-minute task (IgnoreNew) would not run again until someone closed it.
+    install(root, "0.0.1")
+    passed(paths, clock, "0.0.1")
+
+    def disk_full(*args, **kwargs):
+        raise OSError(28, "There is not enough space on the disk")
+
+    monkeypatch.setattr(launcher, "_save", disk_full)
+    starts = FakeStarts(paths, clock, {})
+    told: list[str] = []
+    result = run(root, paths, clock, starts, mode="open", told=told)
+    assert result.outcome == "nothing_to_start" and starts.calls == []
+    assert "There is not enough space on the disk" in result.reason and len(told) == 1
+    assert "There is not enough space on the disk" in (
+        paths.logs / "launcher.log").read_text(encoding="utf-8")
+
+
+def test_a_start_lock_that_windows_refuses_is_a_plain_outcome_too(root, paths, clock, monkeypatch):
+    install(root, "0.0.1")
+
+    def refused(*args, **kwargs):
+        raise PermissionError(5, "Access is denied")
+
+    monkeypatch.setattr(launcher.single, "acquire", refused)
+    result = run(root, paths, clock, FakeStarts(paths, clock, {}), mode="ensure")
+    assert result.outcome == "nothing_to_start" and "Access is denied" in result.reason
+
+
+def test_a_note_that_can_not_be_saved_never_undoes_a_start_that_worked(root, paths, clock, monkeypatch):
+    install(root, "0.0.1", "0.0.2")
+    passed(paths, clock, "0.0.1", "0.0.2")
+    real = launcher._save
+
+    def full_once_a_note_is_due(where, state):
+        if state["notes"]:
+            raise OSError(28, "There is not enough space on the disk")
+        real(where, state)
+
+    monkeypatch.setattr(launcher, "_save", full_once_a_note_is_due)
+    starts = FakeStarts(paths, clock, {"0.0.2": ["exit:1", "exit:1"], "0.0.1": ["up"]})
+    result = run(root, paths, clock, starts)
+    assert (result.outcome, result.version) == ("started", "0.0.1")
+    assert launcher.pending_notes(paths) == []
+
+
 def test_the_launcher_writes_a_log_line_for_every_start(root, paths, clock):
     install(root, "0.0.1")
     passed(paths, clock, "0.0.1")

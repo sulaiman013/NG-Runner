@@ -1,11 +1,14 @@
 """The post-install self-test: imports, a migration on a copy of the database, the 20 forbidden
 writes, and the message templates; the installer and the launcher trust its exit code.
 
-The store and the message templates are other slices' work, so they are faked here; the
-forbidden writes run against the real commit_write.
+Most tests fake the store and the message templates, which are other slices' work, to reach
+each way the self-test can fail; the forbidden writes run against the real commit_write. Those
+fakes can't show that the real neighbours fit, so the first test fakes nothing: it is the check
+the installer and the launcher trust, and it has to pass for any version to start.
 """
 from __future__ import annotations
 
+import inspect
 import io
 import sqlite3
 from collections.abc import Iterable
@@ -17,7 +20,10 @@ import pytest
 
 from ngrunner import __main__ as cli
 from ngrunner import launcher, selftest
+from ngrunner.cards import CARD_KINDS
 from ngrunner.config import AppPaths
+from ngrunner.messages import templates
+from ngrunner.messages.lint import lint as real_lint
 from ngrunner.writes import CommitResult
 
 NOW = datetime(2026, 10, 29, 20, 0, tzinfo=timezone.utc)
@@ -60,6 +66,10 @@ def checks(**overrides):
 
 
 # ----- the whole self-test
+
+
+def test_with_nothing_faked_the_self_test_passes(paths):
+    assert selftest.run_self_test(paths) == []
 
 
 def test_a_sound_install_passes_with_no_problems(paths):
@@ -255,6 +265,72 @@ def test_templates_that_can_not_be_rendered_are_reported_not_raised():
         "The message templates could not be rendered (KeyError: 'job')."]
     assert selftest.template_problems(lambda: [], no_problems) == [
         "No message templates were found to check."]
+
+
+# The real templates: the self-test renders every one itself, as the build carries it
+
+
+def _template_functions() -> list[str]:
+    """Every public function of messages.templates that makes a message or its words."""
+    return [name for name, value in vars(templates).items()
+            if inspect.isfunction(value) and not name.startswith("_")
+            and value.__module__ == templates.__name__
+            and value.__annotations__.get("return") in ("Message", "CardSpec", "str")]
+
+
+def test_every_template_function_has_an_example_in_the_self_test(monkeypatch):
+    # A template added without an example here would never be checked in a build.
+    called: set[str] = set()
+
+    def spy(name, real):
+        def recording(*args, **kwargs):
+            called.add(name)
+            return real(*args, **kwargs)
+        return recording
+
+    names = _template_functions()
+    assert {"digest", "filed", "card_message", "cant_send", "fixed", "echo"} <= set(names)
+    for name in names:
+        monkeypatch.setattr(templates, name, spy(name, getattr(templates, name)))
+    selftest.message_samples()
+    assert called == set(names)
+
+
+def test_the_examples_cover_every_card_every_alarm_and_every_fixed_template():
+    samples = selftest.message_samples()
+    text = "\n".join(message.text for message in samples)
+    assert {message.kind for message in samples} >= set(templates.FIXED)
+    assert all(alarm in text for alarm in templates.ALARMS.values())
+    assert set(templates.QUESTIONS) == set(CARD_KINDS)
+    assert all(question in text for question in templates.QUESTIONS.values())
+    fixed_lines = {line for _, line in templates.FIXED.values()}
+    assert fixed_lines <= {line for message in samples for line in message.lines}
+
+
+def test_every_example_passes_the_real_lint():
+    for message in selftest.message_samples():
+        assert real_lint(message) == [], message.text
+
+
+def test_a_real_template_that_breaks_the_format_fails_the_self_test(paths, monkeypatch):
+    real = templates.filed
+
+    def with_a_path(*args, **kwargs):
+        made = real(*args, **kwargs)
+        return templates.Message(made.kind, made.title, (r"Filed in C:\NG Jobs\Testerson_101426.",))
+
+    monkeypatch.setattr(templates, "filed", with_a_path)
+    problems = selftest.run_self_test(paths, modules=(), migrate=good_migrate)
+    assert problems and all(p.startswith("Message template filed: line 1:") for p in problems)
+
+
+def test_a_real_template_that_can_not_render_fails_the_self_test(paths, monkeypatch):
+    def broken(*args, **kwargs):
+        raise KeyError("job")
+
+    monkeypatch.setattr(templates, "ran", broken)
+    assert selftest.run_self_test(paths, modules=(), migrate=good_migrate) == [
+        "The message templates could not be rendered (KeyError: 'job')."]
 
 
 # ----- the command line: the installer and launcher trust this exit code
