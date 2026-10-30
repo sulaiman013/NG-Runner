@@ -6,7 +6,7 @@ That is Phase 1a, the first step of a staircase. Later phases add read-only guar
 
 Built and supported by Sulaiman Ahmed, for Jim Delany, owner of Inspired Closets LA.
 
-> **Status, 2026-10-30, 9:45 AM Pacific.** Phase 1a is about 90% built and runs end to end, on fakes only, so NG Runner hasn't filed a real job yet. **Nothing is installed on Jim's PC.** Everything so far has been built and tested on Sulaiman's PC. See [Where it stands](#where-it-stands) and the [timeline](#timeline).
+> **Status, 2026-10-30, 10:45 AM Pacific.** Phase 1a is about 93% built. The app runs end to end on fakes only, so NG Runner hasn't filed a real job yet. The Google side is now live in shadow mode, and NG Runner's real code reads its signed Fab export. **Nothing is installed on Jim's PC.** Everything so far has been built and tested on Sulaiman's PC. See [Where it stands](#where-it-stands) and the [timeline](#timeline).
 
 ## Contents
 
@@ -33,16 +33,18 @@ Built and supported by Sulaiman Ahmed, for Jim Delany, owner of Inspired Closets
 | Foundations: safe writes, job matching, summary check | 20% | Built. Matching and the summary check were reworked after the third review's no-go, and wave 3's review looks at them again |
 | The eight separate parts | 30% | Built. Reconcile and wave 2 worked through the 28 mismatches the fit check found ([docs/decisions.md](docs/decisions.md)) |
 | Wiring into a running app, and the day simulation | 30% | Built. All 22 scenarios pass, on fakes only |
-| Independent verification and fixes | 12% | Started: wave 2's proving run found 8 problems by reading the code, and those fixes, the last rulings and the Studio design check are going in now. The independent review of the running app follows |
-| The installer build, the Apps Script guide and the test kit | 8% | Mostly: the build and installer work, and the guide and the kit builder exist, but no kit has gone to Jim's PC and the guide hasn't been run on live Google |
+| Independent verification and fixes | 12% | Under way: the 8 fixes from wave 2's proving run, the last rulings and the Studio design check are written but not pushed. Three independent reviews of the running app are going now, one breaking the code on purpose. Fixes, a full clean test run and the push follow |
+| The installer build, the Apps Script and the test kit | 8% | Mostly: the build and installer work, the kit builder exists, and the Apps Script is live on real Google. The final kit isn't built yet, and no kit has gone to Jim's PC |
 
-**About 90% of the Phase 1a build is done.** That is a judgment from the parts finished and the hours left, not a measurement. Across all phases it is about 12 of the design's 104 dev-days, or 20% of the 60 in the committed P0 to P3, a rougher guide, because the later phases aren't specified yet.
+**About 93% of the Phase 1a build is done.** That is a judgment from the parts finished and the hours left, not a measurement. Across all phases it is about 12 of the design's 104 dev-days, or 20% of the 60 in the committed P0 to P3, a rougher guide, because the later phases aren't specified yet.
 
 **In numbers, 2026-10-30, 9:45 AM Pacific:** about 20,800 lines of app code and 29,600 lines of tests. Wave 2 ended with 3,945 tests passing on Sulaiman's PC, none skipped.
 
 **It runs end to end on fakes only.** The day simulation drives the real pipeline, job model, supervisor and messenger on a fake clock, against a fake Studio, Render and Apps Script, and four of its scenarios run the real Apps Script files under node. It passed on its first full run with no mutation checks, so nothing yet shows that each assertion can catch a fault, and it calls each step directly rather than through the scheduler thread.
 
-**Not proven yet, and only provable on Jim's PC or on live Google:** a real job filed through real Studio, Render and Drive, Studio's sign-in from his PC, the file-system checks on his Google Drive, the Apps Script running for real, a real tray icon and toasts, scheduled tasks under his account, and the auto-match rate on the real Fab Schedule.
+**Proven on real Google, 2026-10-30:** the Apps Script runs under the account that owns the Fab Schedule, in shadow mode. Its setup check came back clean and its five triggers installed. Its export reaches Sulaiman's PC through Drive for desktop every 5 minutes or so, and NG Runner's real code accepts its signature and reads all 91 rows, and refuses the file with one byte changed or with the wrong key. The watchdog's two emails reached Sulaiman.
+
+**Not proven yet:** a real job filed through real Studio, Render and Drive, Studio's sign-in from Jim's PC, the file-system checks on his Google Drive, the rest of the Apps Script (the outbox, the edit log and the nightly clean-up), a real tray icon and toasts, scheduled tasks under his account, and the auto-match rate over the shadow run, on rows as they arrive.
 
 ## Why it exists
 
@@ -290,7 +292,12 @@ Kickoff call with Jim, Mary, Nicole and Sulaiman. Jim hands over his IC-to-Mozai
 | 8:51 AM | **Wave 2 finished** | All 22 day-simulation scenarios pass, on fakes, with no code fixes needed. A read of the code still found 8 problems no scenario hits |
 | 9:12 AM | **The Studio check, live with the real code:** Edge signs in by itself through the community site in 24 seconds | 59 of 59 real sold jobs match. The one sold job the derived addresses missed fetches through its Studio page's link, so **60 of 60 sold jobs now fetch** |
 | 9:15 AM | Pushed: [`3fefdce`](https://github.com/sulaiman013/NG-Runner/commit/3fefdce) | The running app. 3,945 tests on a clean checkout |
-| 9:45 AM | **Now:** the 8 fixes and wiring in the Studio check, then independent verification that breaks the code on purpose | Running |
+| 9:44 AM | Pushed: [`766359f`](https://github.com/sulaiman013/NG-Runner/commit/766359f) | README, specs and runbook catch up with the running app. 296 doc and support tests |
+| 9:58 AM | **The real Fab Schedule** against the live job list, each row treated as new | **67 of 91 rows auto-match (74%),** including all 4 rows with an upcoming install date. 55 of the 67 have an NG Jobs folder under that same name. The other 24 ask |
+| 9:58 AM | The 8 fixes, the last rulings and the Studio check are written, and **three independent reviews start** | Running |
+| 10:22 AM | **The Apps Script goes live** on the real account, in shadow mode | Setup check clean, five triggers installed, both watchdog emails reach Sulaiman |
+| 10:42 AM | **First real Google-to-NG Runner test:** the real signed export, through Drive for desktop, opened by the real code | Signature good, 91 rows, and the file with one byte changed or the wrong key is refused. 67 of 91 auto-match, the same as the direct read |
+| 10:45 AM | **Now:** three independent reviews of the running app, one breaking the code on purpose. Then fixes, a full clean run and the push | Running |
 
 ## Measured so far
 
@@ -310,10 +317,14 @@ Real files were read only, and nothing here required touching Jim's PC.
 | Auto-match, last 90 days | 64 of 116 (55%) | 10-30 |
 | Auto-match, all 628 sold jobs | 307 (49%) | 10-30 |
 | **Matches to the wrong job in all of those** | **0** | 10-30 |
+| Auto-match on the real Fab Schedule, 91 rows against the live job list of 10,781 | 67 (74%): 62 by exact name, 5 by surname and designer | 10-30 |
+| Of those 67, with an NG Jobs folder under the same name | 55. The other 12 have none, which doesn't show them right or wrong | 10-30 |
+| Real rows with an upcoming install date that auto-match | 4 of 4 | 10-30 |
+| The Apps Script's signed export, read by the real code through Drive for desktop | Accepted, 91 rows. Refused with one byte changed and with the wrong key | 10-30 |
 | Matching: deliberately broken copies of the code that the tests catch | 50 of 50 | 10-30 |
 | Build size and time | 74 MB, 45 seconds | 10-30 |
 
-**How to read the auto-match numbers.** Each sold job was typed the way Barbara usually types it, a bare surname with the designer's initials, against the local job list of 2026-09-15. The rest aren't failures: they become one-tap cards. The real Fab Schedule's rate is measured during the shadow run.
+**How to read the auto-match numbers.** Each sold job was typed the way Barbara usually types it, a bare surname with the designer's initials, against the local job list of 2026-09-15. The rest aren't failures: they become one-tap cards. The real Fab Schedule's rows were then read once, each treated as new, which gave 74%. No person has checked those 67 matches, so that run gives no count of wrong ones. The shadow run measures both, on rows as they arrive.
 
 **What zero errors proves.** Not much, on a small sample: zero wrong in 10 jobs still allows a true error rate of up to 26%, and 15 jobs up to 18%. That's why the design rests on per-item checks and doesn't claim safety from a clean run.
 
@@ -323,9 +334,10 @@ Rough estimates of build time. Earlier estimates ran long, so expect the upper e
 
 | Step | What | Estimate |
 |---|---|---|
-| **The design check and the last rulings** | Wire in Studio's Proposal tab and the design and page counts, and fix what wave 2's proving run found ([docs/decisions.md](docs/decisions.md)) | Under way |
-| Verification | Independent review of the running app, breaking the code on purpose to prove the tests can fail, and fixes | About 1 hour |
-| Release | The real build and its self-test, the canary from the installed copy, and the test kit | About 30 minutes, alongside verification |
+| The design check and the last rulings | Wire in Studio's Proposal tab and the design and page counts, and fix what wave 2's proving run found ([docs/decisions.md](docs/decisions.md)) | Written, pushed with verification |
+| **Verification** | Independent review of the running app, breaking the code on purpose to prove the tests can fail, and fixes | Running since 9:58 AM |
+| Release | The real build and its self-test, the canary from the installed copy, and the test kit | About 30 minutes, after verification |
+| A real run on Sulaiman's PC | NG Runner in shadow mode with the real Fab Schedule, job list and Studio. Files go only to the control folder's `shadow` folder, NG Jobs is only read, and messages go only to Sulaiman. It's the first real end-to-end run, before anything touches Jim's PC | After the release |
 
 **Then on Jim's PC,** in short scripted windows that stay out of his way ([docs/testing/jims-pc.md](docs/testing/jims-pc.md)). Every window says how long it takes, what it changes and how to undo it.
 
@@ -339,8 +351,8 @@ Rough estimates of build time. Earlier estimates ran long, so expect the upper e
 **Phase 1a is done when, over 10 working days:** every new row is filed within 45 minutes or carded; **0 summaries are filed to the wrong job;** the board is right on 10 jobs Jim picks; 10 of 10 digests arrive; a sleep test alerts Sulaiman within 50 minutes; 20 of 20 forbidden writes are refused; and the restore drill passes.
 
 **Needed from people first:**
-- `ASSEMBLY_EXPORT_KEY` set on Render and on Jim's PC, if it isn't yet. The job-list route itself is pushed to Assembly Reports.
-- The Apps Script set up under the account that owns the Fab Schedule: [docs/testing/apps-script-setup.md](docs/testing/apps-script-setup.md).
+- Jim's and Barbara's addresses in the Apps Script, at go-live. The script itself is live under the account that owns the Fab Schedule ([docs/testing/apps-script-setup.md](docs/testing/apps-script-setup.md)), and `ASSEMBLY_EXPORT_KEY` is set on Render.
+- A new signing key before go-live, in the Apps Script and on Jim's PC.
 - The Studio login NG Runner will use, for `NGRunner.exe setup` in window 2.
 - 15 minutes with Jim for window 1.
 
