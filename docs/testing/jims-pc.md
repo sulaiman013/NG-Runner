@@ -27,9 +27,11 @@ Ready outside Jim's PC before window 3:
 1. **Remote access:** Jim installs Chrome Remote Desktop and turns on unattended access with a PIN only he and Sulaiman know (about 5 min).
 2. **Setup Check:** double-click `setup_check.cmd`. It is read-only, takes up to 3 minutes and saves two report files.
 
+3. **Mozaik:** open Mozaik's About screen and note the program's name, install folder and version, then close it. NG Runner must recognise Mozaik exactly to never write while it runs, and a new version can change the file format.
+
 | Changes | Undo | Passes when |
 |---|---|---|
-| Chrome Remote Desktop is installed; nothing else | Settings, Apps, uninstall it | The report is read and decides signing (Smart App Control). It also gives the real paths of NG Jobs, Mozaik Shared and the control folder on his PC, and shows Drive and OneDrive healthy |
+| Chrome Remote Desktop is installed; nothing else | Settings, Apps, uninstall it | The report is read and decides signing (Smart App Control). It also gives the real paths of NG Jobs, Mozaik Shared and the control folder on his PC, shows Drive and OneDrive healthy, and records the Mozaik version |
 
 ## Window 2 — install and prove the drives (about 20 minutes, over remote access)
 
@@ -47,6 +49,11 @@ Ready outside Jim's PC before window 3:
 
    It removes only the files it created, checked by identity. Mozaik Shared is not touched: P1a never writes there.
 4. Write the settings and the keys to Credential Manager, and start NG Runner in **shadow** mode.
+5. **Copy the material for later phases.** Do this with Mozaik closed, without tidying or renaming anything, and only into Sulaiman's private Drive folder, never into git:
+   - the `_NG_Automation` toolkit, zipped, including its 3 frozen regression jobs and `baseline.json`;
+   - about 20 closed Mozaik job folders, newest first, covering if possible a garage, a Tafisa colour with 1/4 backs, a bridge between bays of different depths, REA and radius panels, a stacked tower and a remake.
+
+   P2 and P3 are built on these on Sulaiman's PC.
 
 | Changes | Undo | Passes when |
 |---|---|---|

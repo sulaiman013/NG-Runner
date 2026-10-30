@@ -1,5 +1,7 @@
 # What Sulaiman needs from your PC
 
+**Not sent (Sulaiman, 2026-10-29).** Sulaiman does these items himself, with Jim's OK, in the test windows on Jim's PC (`docs/testing/jims-pc.md`). The questionnaire and the weekly check-in are dropped (`docs/decisions.md`). Kept as the record of what each item is for.
+
 **For:** Jim. **From:** Sulaiman. Needed for Phase 0 (getting ready) and Phase 1 (filing summaries). Most of it happens on one 20-minute call.
 
 **Where files go.** Make one Google Drive folder that you own, for example "NG Runner for Sulaiman", and share it with Sulaiman only. Everything below goes there. Never email these files or post them in Slack, and don't put them in the shared CNC operations folders: Mozaik jobs and NG Jobs folders carry client names and addresses. Keep the folder afterwards. It becomes the store of test files, and nothing in it ever goes into NG Runner's code.
