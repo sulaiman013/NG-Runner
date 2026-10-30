@@ -25,7 +25,7 @@ The supervisor calls `tick(ctx)` every 60 seconds; `ctx` holds the store, settin
 5. **Fetch 2.** `agree(first, second)`. On `agree`, file. On `differ`, the second becomes the new first and fetch 2 is queued again. On incomplete, continue as step 4.
 6. **File.**
    - The render's PROJECT NAME already equals the Opportunity Name (fetch enforces it). Freeze the job name now; later names become aliases.
-   - `branch_of(designs, row_text)`: `closet` gives folder `<Name>`, `garage` gives `<Name>_Gar`. `unclear` raises the card "Closet or garage?"; only that job waits.
+   - `branch_of(designs, row_text)`: a garage-only summary gives `<Name>_Gar`. Closets only, or closets and garage mixed, give `<Name>`: a mixed summary is one job with no `_Gar` (Jim's BUILD.md Step 0). `unclear` (a design that can't be classified) raises the card "Closet or garage?"; only that job waits.
    - Look in `NG Jobs\<folder>\` (read-only).
      - A summary there, NG Runner's or hand-named (`match_file_to_job` with `folder=` and `opportunity_names=`), with the same fingerprint: mark `filed` with no write.
      - One with a different fingerprint: card "IC changed: which render governs?". Never overwrite.
@@ -73,7 +73,9 @@ Replace `owned_files.json` with the store's `owned` table:
  "note": "NG Runner filed this IC summary. Chat sessions read this file before working the job."}
 ```
 
-This is for machines (Jim's chat) and holds no address. `<folder>_NGRunner_log.txt` is for people. Each line has a Pacific time and one plain sentence, for example `10/30 3:05 PM  Filed the IC summary (landscape, 19 pages), checked on two fetches 10 minutes apart.`
+This is for machines (Jim's chat) and holds no address.
+- **Kept current.** Jim's chat reads it first (`docs/p1a/rules-lines.md`), so NG Runner rewrites it whenever a card about the job opens or closes, and lists open cards in `items`. "IC changed: which render governs?" is one of them. It stays an owned file, rewritten through `commit_write`.
+- **A summary replaced by hand.** The RULES lines allow this on Jim's word. When the summary's sha256 no longer matches what `_NGRunner.json` records, NG Runner logs it and never overwrites the summary. It rewrites `_NGRunner.json` so the notes describe the file that is there, and it marks the job's summary "replaced by hand". `<folder>_NGRunner_log.txt` is for people. Each line has a Pacific time and one plain sentence, for example `10/30 3:05 PM  Filed the IC summary (landscape, 19 pages), checked on two fetches 10 minutes apart.`
 
 ## 5. The job model (`ngrunner/jobmodel.py`)
 
@@ -170,7 +172,7 @@ Scenarios, each with its assertions:
    - a heartbeat is written every 5 minutes.
 3. An unclear row: a card and one email to Barbara. Her corrected name is matched and filed. Jim's card answer gives the same result on another run.
 4. An early incomplete render followed by a complete one: filed after the complete pair agrees.
-5. Garage designs give `<Name>_Gar\<Name>_Gar_summary.pdf`. Mixed designs raise the closet/garage card; the answer files the job.
+5. Garage-only designs give `<Name>_Gar\<Name>_Gar_summary.pdf`. Mixed closet and garage designs give `<Name>\<Name>_summary.pdf` with no card. A design that can't be classified raises the closet/garage card, and the answer files the job.
 6. The folder already holds the same summary: marked filed with no write. A different summary raises the "IC changed" card, and nothing is overwritten.
 7. Paused: nothing is written. Resumed: the pipeline continues where it stopped.
 8. Studio down for 24 h raises the card.

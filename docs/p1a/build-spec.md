@@ -102,7 +102,11 @@ Each builder edits only its own files. Tests go in `tests/test_<module>.py`. No 
 - `FetchTarget(studio_id, name, client, layout, known_url=None)`; `Fetched(ok, url, data, code, reason, status)` with `code` one of `ok`, `not_found`, `timeout`, `network`, `http_error`, `not_pdf`, `truncated`, `too_big`, `no_project_name`, `wrong_job`; `reason` is plain words.
 - `fetch_render(target, *, http, timeout_s=60, max_bytes=50_000_000) -> Fetched`; `http` is injected (a `requests.Session`-like object); the default makes one.
 - `agree(first, second, *, min_gap=timedelta(minutes=10)) -> Agreement(ok, code, reason)`: both pass `check_summary`, both are the same layout, their `content_fingerprint`s are equal, and the second was fetched at least `min_gap` after the first. Codes: `agree`, `differ`, `first_incomplete`, `second_incomplete`, `layouts_differ`, `too_soon`.
-- `branch.branch_of(designs, row_text=None) -> Branch(kind, reason)`: `kind` is `garage` when every page-1 design's name or category carries a garage word, `closet` when none does, `unclear` otherwise or when the row's room words disagree with the designs. Closed word list, no fuzzy matching. `unclear` raises the closet/garage card, and only that job waits.
+- `branch.branch_of(designs, row_text=None) -> Branch(kind, reason)`, following Jim's BUILD.md Step 0 (lines 22-30): "A mixed summary is ONE job — never split it, never add `_Gar`".
+  - `garage` (folder `<Name>_Gar`) only when every page-1 design is a garage design by its name or category.
+  - `closet` (no suffix) when none is, and also when the summary mixes closet and garage designs.
+  - `unclear` only when a design can't be classified at all, or when the row says garage and no design does. That raises the closet/garage card (How-we-work 37-38), and only that job waits.
+  - One closed word list, no fuzzy matching.
 
 ### 6.3 joblist
 - Render, in the Assembly Reports repo: `GET /api/jobs/export`, guarded by header `X-Export-Key` against a new `ASSEMBLY_EXPORT_KEY` (constant-time compare; 403 when unset or wrong), returning `{"synced_at": ISO with offset or null, "job_count": n, "jobs": [{"studio_id", "name", "stage", "designer", "client", "created", "modified"}]}`. Never `email`, `opp_id` or `account_name`. Documented in that repo's AGENTS.md and README; tested with the Flask test client. **Not committed or pushed** (pushing that repo deploys production; Sulaiman pushes it himself, decision 18).
