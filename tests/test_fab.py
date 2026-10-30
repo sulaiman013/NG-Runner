@@ -369,6 +369,11 @@ JUNE = date(2026, 6, 20)
     (("", "7/15/26"), date(2026, 7, 15)),
     (("7/15/26", " 7 /15"), date(2026, 7, 15)),          # a full date and its short form
     (("", " 7 /1"), date(2026, 7, 1)),                   # a short date alone
+    (("Wednesday", "7/1-2"), date(2026, 7, 1)),          # a multi-day install: its first day
+    (("Wed", " 7 / 1 - 2 "), date(2026, 7, 1)),
+    (("Tuesday", "6/30-7/2"), date(2026, 6, 30)),        # across a month
+    (("", "7/1–2"), date(2026, 7, 1)),                   # the dash Sheets may autocorrect to
+    (("7/1/26", "7/1-2"), date(2026, 7, 1)),             # a date and a range that starts on it
 ])
 def test_the_two_install_date_cells_are_read_as_one_date(install, expected):
     assert fab.install_date(install, near=JUNE) == expected
@@ -380,6 +385,8 @@ def test_the_two_install_date_cells_are_read_as_one_date(install, expected):
     ("Thursday", " 7 /1"),                               # 7/1/26 is a Wednesday
     ("7/15/26", "7/16/26"), ("7/15/26", " 7 /16"), ("7/15/26", "7/15/27"),
     ("TBD", " 7 /1"), ("Wednesday", "week of 7/1"), ("Wednesday", "7-1"),
+    ("Thursday", "7/1-2"), ("7/2/26", "7/1-2"),          # a range is its first day: 7/1 is a Wednesday
+    ("", "7/1-"), ("", "-7/1"), ("", "7/1-2-3"), ("", "7/1-2/3/4"),
     ("", "13/1"), ("", "2/30"), ("", "0/5"), ("", "7/1/123"), ("", "7/1/26/1"),
     ("", "7/15/0026"), ("", "7/15/1926"), ("", "٧/١"),          # no year 26 AD; ASCII digits only
 ])

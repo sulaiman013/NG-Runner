@@ -327,6 +327,8 @@ _WEEKDAYS = {
 }
 # M/D, M/D/YY or M/D/20YY, ASCII digits only (\d alone would take any script's digits).
 _DATE = re.compile(r"(\d{1,2})/(\d{1,2})(?:/(\d{2}|20\d{2}))?", re.ASCII)
+# A multi-day install, as Barbara types it (10/29-30, 10/30-11/2): the same groups, the first day's.
+_DATE_RANGE = re.compile(_DATE.pattern + r"[-–—](?:\d{1,2}/)?\d{1,2}(?:/(?:\d{2}|20\d{2}))?", re.ASCII)
 
 
 @dataclass(frozen=True)
@@ -343,8 +345,10 @@ def install_date(install: tuple[str, str], *, near: date | datetime) -> date | N
     or None when they don't say one date for sure: "could not verify", never a guess.
 
     Each cell may hold a weekday ("Wednesday", "wed."), a date (M/D, M/D/YY or M/D/20YY, spaces
-    anywhere ignored) or nothing. Every date given must be the same day and every weekday must
-    be that day's; anything else in a cell (a note, "TBD", "week of 7/1") can't be read. A date
+    anywhere ignored), a multi-day install (10/29-30, 10/30-11/2), which counts as its first day
+    because that is when the job must be ready, or nothing. Every date given must be the same day
+    and every weekday must be that day's; anything else in a cell (a note, "TBD", "week of 7/1")
+    can't be read. A date
     with no year takes the year that puts it nearest near (a date, or a time read as its Pacific
     day; a naive time is refused), the later one on a tie.
     """
@@ -372,7 +376,7 @@ def _read_cell(text: str) -> _Cell | None:
     weekday = _WEEKDAYS.get(squeezed.rstrip(".,").casefold())
     if weekday is not None:
         return _Cell(weekday=weekday)
-    m = _DATE.fullmatch(squeezed)
+    m = _DATE.fullmatch(squeezed) or _DATE_RANGE.fullmatch(squeezed)
     if m is None:
         return None
     year = None if m[3] is None else int(m[3]) + (2000 if len(m[3]) == 2 else 0)
