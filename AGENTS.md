@@ -28,7 +28,7 @@ A Windows tray app for Jim Delany (owner, Inspired Closets LA), installed for hi
 | `tools/` | Standalone scripts: `setup_check.ps1` (read-only check of Jim's PC) and `setup_check.cmd` (what Jim double-clicks to run it) |
 | `docs/p0/` | Phase 0 material for Jim (questionnaire, access list, Setup Check guide), blank. His answers name jobs, so they stay outside the repo, in his private Drive folder: read them there, and never save them over `questionnaire-jim.md` (git would take that file). `.gitignore` keeps every other file in `docs/p0/`, and any copy of the questionnaire, out of git |
 | `docs/p1a/` | Phase 1a: `build-spec.md` and `integration-spec.md` (the contracts), `runbook.md` (running it on Jim's PC), `rules-lines.md` and `skill-update.md` (drafts for Jim's chat) |
-| `.local-fixtures/` | Gitignored. `summaries/ngjobs/` = 27 archived `<Job>_summary.pdf`; `summaries/downloads/` = raw Assembly Reports downloads (incl. incomplete early renders and Studio-native names) |
+| `.local-fixtures/` | Gitignored. `summaries/ngjobs/` = 27 archived `<Job>_summary.pdf`; `summaries/downloads/` = raw Assembly Reports downloads (incl. incomplete early renders and Studio-native names); `summaries/sold/` = one fetch each of recent sold jobs; `summaries/pairs/` = two fetches each, 10 minutes apart. The last two are named by index, with `index.json` beside them |
 
 ## Commands
 ```powershell
@@ -50,6 +50,8 @@ Tests marked `fixtures` read material that never enters git, and skip when it is
 ## Before filing goes live
 P1a files nothing on Jim's PC until all of these hold:
 1. **Two fetches agree.** Two fetches of a job 10 minutes apart have the same `content_fingerprint()`: the summary check alone can't catch a partial render that is consistent with itself.
+   - **Measured on real jobs from Sulaiman's PC (2026-10-30).** 6 of 6 jobs agree on their text and all 105 drawings, and no pair is byte-identical, since Studio renders afresh. Of the 60 most recently changed sold jobs, 59 fetched (7 to 95 s each) and all 59 pass the summary check. `tests/test_real_renders.py` keeps both true on those files.
+   - Jim's PC repeats it during the shadow run, on the real jobs of those days.
 2. **One report layout per job.** Every fetch of one job uses the same layout, landscape or portrait, so its fingerprints can be compared.
 3. **The file system is proven on Jim's PC.** A canary on G: (Google Drive) and on OneDrive confirms `fsync`, `os.rename` and `os.replace`, and the file identity every commit relies on: `os.fstat` of a new temp file and `os.lstat` of its path, taken while NG Runner still holds it open with no sharing, give the same `(st_dev, st_ino)`, and a rename keeps it. It also confirms the no-follow create (`CreateFile` with `CREATE_NEW` and `FILE_FLAG_OPEN_REPARSE_POINT`) works there. Where any of this differs, every commit refuses ("could not be prepared") and leaves an empty temp file behind, since the clean-up needs the same match.
    - **Proven on Sulaiman's PC on Google Drive for desktop (2026-10-29, 18 of 18 checks)**, in `CNC operations\Sulaiman\Sulaiman Testing (Do not delete)\`, the only place on G: tests may write. Everything above held. File and folder IDs stayed stable through Drive's sync, Drive refused to make junctions, and `commit_write` worked end to end: new files, an overwrite of its own file, and a rollback.

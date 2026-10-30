@@ -7,6 +7,7 @@ are synthetic (tests/helpers_pdf.py) with made-up names; the Studio IDs are made
 """
 from __future__ import annotations
 
+import re
 import socket
 import threading
 import time
@@ -19,7 +20,14 @@ import pytest
 import requests
 
 from helpers_pdf import summary_pdf
-from ngrunner.intake.fetch import FetchTarget, Render, agree, fetch_render
+from ngrunner.intake.fetch import (
+    MAX_CANDIDATES,
+    FetchTarget,
+    Render,
+    agree,
+    candidate_slugs,
+    fetch_render,
+)
 from ngrunner.intake.summary_check import check_summary, content_fingerprint
 
 # ----- a fake Studio
@@ -121,10 +129,10 @@ def test_fetches_the_jobs_summary_from_its_first_derived_address(studio, http):
     assert studio.asked == [LANDSCAPE_PATH]
 
 
-def test_a_404_at_every_address_is_not_found_after_at_most_eight_tries_in_order(studio, http):
+def test_a_404_at_every_address_is_not_found_after_asking_each_in_order(studio, http):
     # Assembly Reports' order: client slugs (the name's first word, its camel-case words last to
     # first, the client's last then first word), each with the project slug, then with the
-    # project slug split at capitals. This name and client give ten pairs; eight are tried.
+    # project slug split at capitals.
     target = FetchTarget("4242", "VanTesta_101426", "Mockford Dummitt", "landscape")
     fetched = fetch(studio, http, target)
     assert (fetched.ok, fetched.code, fetched.data, fetched.url, fetched.status) == (
@@ -133,8 +141,56 @@ def test_a_404_at_every_address_is_not_found_after_at_most_eight_tries_in_order(
         ("vantesta", "vantesta_101426"), ("vantesta", "van_testa_101426"),
         ("testa", "vantesta_101426"), ("testa", "van_testa_101426"),
         ("van", "vantesta_101426"), ("van", "van_testa_101426"),
-        ("dummitt", "vantesta_101426"), ("dummitt", "van_testa_101426")]]
+        ("dummitt", "vantesta_101426"), ("dummitt", "van_testa_101426"),
+        ("mockford", "vantesta_101426"), ("mockford", "van_testa_101426")]]
     assert_plain(fetched.reason, "VanTesta_101426")
+
+
+# The forms below are the shapes of real sold jobs Assembly Reports' order misses: 4 of 60 failed
+# without them (measured on Studio, 2026-10-30), each meaning a 24-hour wait and then a card.
+@pytest.mark.parametrize(("name", "client", "address"), [
+    pytest.param("Mockford_101426", "Pat Testerson- 1234 Fake Street, Sampletown CA, CA 90000",
+                 ("testerson", "mockford_101426"), id="the surname sits before a street address"),
+    pytest.param("Testerson-Fakeley_101426", "Jo Testerson-Fakeley",
+                 ("testerson-fakeley", "testerson-fakeley_101426"), id="Studio keeps a hyphen in both"),
+    pytest.param("PatMockford_101426", "Pat Mockford-Dummitt",
+                 ("mockford-dummitt", "patmockford_101426"), id="a hyphen only in the client"),
+    pytest.param("Testerson_101426", "Pat Sam Testerson Jr",
+                 ("sam", "testerson_101426"), id="any word of the client, not just its first and last"),
+    pytest.param("Testerson-Fakeley_101426", "Jo Fakeley",
+                 ("fakeley", "testerson-fakeley_101426"), id="a plain client with a hyphenated project"),
+])
+def test_the_address_forms_real_jobs_need_are_asked(studio, http, name, client, address):
+    path = f"/install_summary_landscape/{address[0]}/{address[1]}/4242/"
+    studio.serve(path, pdf := summary_pdf(project_name=name))
+    fetched = fetch(studio, http, FetchTarget("4242", name, client, "landscape"))
+    assert fetched.ok and fetched.data == pdf
+    assert studio.asked[-1] == path and len(studio.asked) == len(set(studio.asked))
+
+
+def test_the_usual_address_is_still_the_first_one_asked():
+    # 53 of 56 real sold jobs answered at the first address: nothing may come before it.
+    assert candidate_slugs("Testerson_101426", "Jo Testerson-Fakeley 1234 Fake St")[0] == (
+        "testerson", "testerson_101426")
+
+
+def test_the_words_of_a_street_address_are_never_asked_as_the_client():
+    clients = {client for client, _ in candidate_slugs(
+        "Mockford_101426", "Pat Testerson- 1234 Fake Street, Sampletown CA, CA 90000")}
+    assert {"pat", "testerson", "mockford"} <= clients
+    assert not {"1234", "fake", "street", "sampletown", "ca"} & clients
+
+
+def test_the_addresses_asked_stay_few_and_safe_whatever_the_names_hold():
+    # Wrong addresses 404 in a fraction of a second, but a job that never fetches asks them all,
+    # at every retry. Each slug goes into a web address.
+    name, client = "VanTesta-Fakeley-Mockford_101426", "Pat Sam Lee Jo Dummitt-Testova-Fakeo Mo Bo"
+    pairs = candidate_slugs(name, client)
+    assert len(pairs) == MAX_CANDIDATES == 24 and len(set(pairs)) == len(pairs)
+    for weird_name, weird_client in [("Testerson_101426", "-- , -"), ("Testerson_101426", "../.. %2f"),
+                                     ("Testerson-_101426", "Pat-")]:
+        for pair in candidate_slugs(weird_name, weird_client):
+            assert all(re.fullmatch(r"[a-z0-9]+(?:[_-]+[a-z0-9]+)*", slug) for slug in pair), pair
 
 
 def test_a_portrait_target_asks_for_the_portrait_report_only(studio, http):

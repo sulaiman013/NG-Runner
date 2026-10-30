@@ -50,7 +50,7 @@ FetchCode = Literal["ok", "not_found", "timeout", "network", "http_error", "not_
 
 STUDIO_URL = "https://studio.inspiredclosets.com"
 LAYOUT_PATHS: dict[str, str] = {"landscape": "install_summary_landscape", "portrait": "install_summary"}
-MAX_CANDIDATES = 8  # derived slug pairs tried per fetch; wrong ones 404 in a fraction of a second
+MAX_CANDIDATES = 24  # derived slug pairs tried per fetch; wrong ones 404 in a fraction of a second
 # Bytes read at a time. urllib3 returns a read only once it holds this much (or the file ends),
 # and the time limit is checked between reads, so a small read keeps a slow download from
 # running long past it.
@@ -128,13 +128,17 @@ class Fetched:
 
 def candidate_slugs(name: str, client: str | None = None) -> list[tuple[str, str]]:
     """
-    (client slug, project slug) guesses from the job's name and client, best first, at most 8.
+    (client slug, project slug) guesses from the job's name and client, best first, at most 24.
 
-    Assembly Reports' order: the client slug is the name's first word, then its camel-case words
-    last to first (VanTesta: testa, van), then the client's last and first words; each is paired
-    with the project slug (the whole name), then with the name split at its capitals
-    (van_testa_101426). Slugs are match.slugify's: lowercase, accents folded, every other run of
-    characters one "_".
+    First Assembly Reports' order: the client slug is the name's first word, then its camel-case
+    words last to first (VanTesta: testa, van), then the client's last and first words; each is
+    paired with the project slug (the whole name), then with the name split at its capitals
+    (van_testa_101426). Those slugs are match.slugify's: lowercase, accents folded, every other
+    run of characters one "_".
+
+    Then the forms that order misses, which real sold jobs need (4 of 60 failed without them on
+    Studio, 2026-10-30): Studio keeps a hyphen in both slugs, and an account name can carry a
+    street address after the person's name, so its surname is neither its first nor its last word.
     """
     project = slugify(name)
     camel = [slugify(word) for word in re.findall(r"[A-Z][a-z0-9]*", _deaccented(name).split("_")[0])]
@@ -144,8 +148,30 @@ def candidate_slugs(name: str, client: str | None = None) -> list[tuple[str, str
     projects = [project]
     if len(camel) > 1:
         projects.append("_".join(camel) + "_" + project.split("_")[-1])
-    pairs = dict.fromkeys((c, p) for c in clients for p in projects if c and p)
+    first = [(c, p) for c in clients for p in projects]
+    every_client = [*clients, *_client_words(client or ""), _studio_slug(name.split("_")[0])]
+    every_project = [*projects, _studio_slug(name)]
+    pairs = dict.fromkeys((c, p) for c, p in [*first, *((c, p) for c in every_client for p in every_project)]
+                          if c and p)
     return list(pairs)[:MAX_CANDIDATES]
+
+
+def _client_words(client: str) -> list[str]:
+    """The person's words at the start of an account name, each as Studio spells it and in its
+    hyphenated parts. The first word holding a digit starts an address, so the words stop there."""
+    words: list[str] = []
+    for raw in re.split(r"[\s,]+", client):
+        if any(c.isdigit() for c in raw):
+            break
+        word = _studio_slug(raw)
+        words += [word, *word.split("-")] if "-" in word else [word]
+    return words
+
+
+def _studio_slug(text: str) -> str:
+    """Lowercase with accents folded and a hyphen kept, as Studio's own slugs are; every other run
+    of characters is one "_"."""
+    return re.sub(r"[^a-z0-9-]+", "_", _deaccented(text).lower()).strip("_-")
 
 
 def _deaccented(text: str) -> str:
