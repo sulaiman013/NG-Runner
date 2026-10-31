@@ -27,6 +27,9 @@ Lane = Literal["ACT", "LOG", "DEV"]
 OVERLAYS = ("WAITING", "BLOCKED", "NOT_RUN", "HELD", "OBSERVED", "PAUSED")
 SHADOW = "SHADOW"  # what the board and the tray say in shadow mode (integration spec 7)
 NEST_STATES = ("not_posted", "not_checked", "save_nest", "do_not_cut", "nest_checked")
+CHECK_STATES = ("none", "asked", "running", "waiting", "passed", "failed", "could_not_verify", "stale",
+                "not_run")
+CHECK_ITEM_KINDS = ("fix", "mozaik", "could_not_verify", "advisory")
 TAKEOFF_STATES = ("made", "chat", "unverified", "in_chat", "failed")
 
 
@@ -92,6 +95,48 @@ class TakeoffView:
 
 
 @dataclass(frozen=True)
+class CheckItemView:
+    """One thing a check found (P3). kind: "fix" (chat line given), "mozaik" (only Jim in Mozaik),
+    "could_not_verify" or "advisory". text: NG Runner's words, parts by tag. chat: the line Jim pastes
+    into his chat. settled: when and how Jim settled it, empty while open. can_settle: a button for it."""
+
+    n: int
+    kind: str
+    text: str
+    chat: str | None = None
+    settled: str = ""
+    can_settle: bool = False
+
+    def __post_init__(self) -> None:
+        _one_of(self.kind, CHECK_ITEM_KINDS, "a check item's kind")
+
+
+@dataclass(frozen=True)
+class PromptView:
+    """A close prompt still waiting: its words, and its answers as buttons."""
+
+    id: int
+    text: str
+    choices: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class CheckView:
+    """A job's check (P3), with Check now always beside it. state: one of CHECK_STATES. line: its one
+    line. run_id: the run its items are of. prompt: a close prompt waiting on Jim."""
+
+    studio_id: str
+    state: str
+    line: str = ""
+    run_id: int | None = None
+    items: tuple[CheckItemView, ...] = ()
+    prompt: PromptView | None = None
+
+    def __post_init__(self) -> None:
+        _one_of(self.state, CHECK_STATES, "a check's state")
+
+
+@dataclass(frozen=True)
 class JobRow:
     """One row per job, and one for a Fab row with no job yet: its studio_id is None and its
     name is the row as Barbara typed it. A folder in NG Jobs with no Fab row gets one too, once the
@@ -99,7 +144,7 @@ class JobRow:
     (the job model's words, such as "could not verify"), or None when the Fab row has no
     install date. materials: the nest guard's lines. notes: anything else a guard can't verify. lock:
     what the pre-flight would have him look at before he locks. takeoff: NG Runner's takeoff of
-    the summary it filed, once it has one."""
+    the summary it filed, once it has one. check: its check (P3), for a row with a job."""
 
     studio_id: str | None
     name: str
@@ -111,6 +156,7 @@ class JobRow:
     notes: tuple[str, ...] = ()
     lock: tuple[str, ...] = ()
     takeoff: TakeoffView | None = None
+    check: CheckView | None = None
 
     def __post_init__(self) -> None:
         if self.overlay is not None:
@@ -282,4 +328,17 @@ class BoardActions(Protocol):
         """Switch to shadow or live, the deliberate settings change on Health, logged as an
         event (integration spec 7). mode is one of config.MODES, as the board refuses anything
         else; it may be the mode NG Runner is already in, from a page left open."""
+        ...
+
+    def check_job(self, studio_id: str) -> str:
+        """Check now: Jim's crosscheck on this job, as it is (P3)."""
+        ...
+
+    def settle_item(self, studio_id: str, run_id: str, n: str, how: str) -> str:
+        """Settle item n of a check run for this job: how is "not_a_problem" or "told_chat", as the
+        board refuses anything else. The ids are as the form sent them."""
+        ...
+
+    def answer_prompt(self, prompt_id: str, choice: str) -> str:
+        """A close prompt's button: choice is its label, exactly as shown."""
         ...

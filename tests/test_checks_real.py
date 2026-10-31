@@ -223,3 +223,39 @@ def test_in_ng_runners_own_python_the_checks_read_the_same(copy, results, tmp_pa
     own = run_crosscheck(copy, job_folder("F"), conversion("F"), tmp_path, python=None)
 
     assert [(v.checker, v.code) for v in own.verdicts] == [(v.checker, v.code) for v in results["F"].verdicts]
+
+
+# ----- P3: what each real case's check comes to for Jim, as items naming parts by tag
+
+
+ITEMS_TO_FIX = {   # (kind of fault, the parts it names), as measured on 2026-10-31
+    "A": [("doubled_holes", ("R1C8", "R1C10")), ("notch_face", ("R1C9", "R1C11"))],
+    "B": [("doubled_holes", ("R2C4", "R2C8", "R2C10", "R2C12")), ("extra_part", ())],
+    "C": [], "E": [], "F": [], "G": [],
+    "D": [("doubled_holes", ("R1C5",))],
+    "H": [("bore_depth", ("R1C3", "R1C5", "R1C7", "R1C8", "R2C3"))],
+    "I": [("bore_depth", ("R1C5",)), ("extra_part", ()), ("missing_part", ())],
+    "J": [("bridge_cams", ("R1C25",)), ("doubled_holes", ("R2C2", "R2C4", "R2C6", "R2C14", "R2C16")),
+          ("notch_face", ("R2C1", "R2C3", "R2C5", "R2C13", "R2C15")),
+          ("top_off", ("R1C2", "R1C4", "R1C7", "R1C11", "R1C13", "R1C21", "R1C23", "R2C10")), ("wm_banding", ("R2",))],
+}
+
+
+@pytest.mark.parametrize("case", CASES)
+def test_each_real_cases_check_is_items_by_tag_in_jims_format_and_names_no_client(results, case: str) -> None:
+    from ngrunner.checks import findings
+    from ngrunner.messages import Message, templates
+    from ngrunner.messages.lint import lint
+
+    found = findings.findings_of(results[case])
+    key = json.loads((FIXTURES / "p1b" / "case_key.json").read_text(encoding="utf-8"))
+    job = key[case]
+
+    assert sorted((i.what, i.tags) for i in found.items if i.kind in ("fix", "mozaik")) == ITEMS_TO_FIX[case]
+    assert not [i for i in found.items if i.what == "other"]               # every fault line has its kind
+    assert found.code == (FAILED if ITEMS_TO_FIX[case] else CNV)            # Q1 open: nothing passes whole
+    lines = tuple(f"{i.n}. {templates.check_item_line(job, i)}" for i in found.items)
+    assert lint(Message("check_result", f"{job} checked 9:42 PM (trial)", lines)) == []
+    surname = re.split(r"[_ ]", job)[0]
+    stored = json.dumps(findings.to_json(found))
+    assert surname not in stored and surname not in "\n".join(lines).replace(job, "")

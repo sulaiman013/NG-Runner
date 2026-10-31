@@ -20,6 +20,10 @@ write rule at once. A commit guarantees:
   control folder). A file is overwritten only while it still holds what NG Runner last
   wrote there (owned()) and what the caller last read (expected_hash). Content is copied
   once, when the commit is planned, so a buffer the caller changes meanwhile changes nothing.
+  P4's build ("P4 shadow") adds a room's .des fix, which replaces a file Mozaik wrote at the
+  hash its caller read and never makes one, a tracker batch and the job sheet, each written
+  once. It writes only on this PC's own disk, never in a folder named like the tracker's own
+  or Mozaik Shared: shadow copies, until "P4", which has no rules yet, goes live.
 - When it writes. NG Runner's data folder and its record of its own files are checked
   first. The Mozaik interlock is asked next, when the write is planned, and again once the
   temp files are written. Every folder on the way is pinned by identity when planned and
@@ -75,12 +79,13 @@ from ngrunner.store.write_record import record_commit
 _LOG = logging.getLogger(__name__)
 _TMP_SUFFIX = ".ngr-tmp"
 _MAX_NAME = 238  # NTFS allows 255 characters, and a temp name adds 17 to the name it is next to
-_ROOT_NAMES = ("ng_jobs", "mozaik_shared", "control", "app_data")
+_ROOT_NAMES = ("ng_jobs", "mozaik_shared", "control", "app_data", "tracker")
 _LABELS = {
     "ng_jobs": "NG Jobs",
     "mozaik_shared": "Mozaik Shared",
     "control": "the control folder",
     "app_data": "NG Runner's data folder",
+    "tracker": "the tracker's inbox folder",
 }
 _REGISTRY_NAME = "owned_files.json"
 _BACKUP_FOLDER = "backup"
@@ -124,12 +129,14 @@ _BAD_CHARS = frozenset('<>:"/\\|?*') | frozenset(map(chr, range(32)))
 
 @dataclass(frozen=True)
 class Roots:
-    """The folders commit_write knows about. Each must be a full path with a drive."""
+    """The folders commit_write knows about. Each must be a full path with a drive. tracker is
+    where a tracker batch is dropped (P4); None, as in every phase before it, is no folder."""
 
     ng_jobs: Path
     mozaik_shared: Path
     control: Path
     app_data: Path
+    tracker: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -220,6 +227,7 @@ class _Target:
     old: bytes | None = None  # content found on disk; None = a new file
     backup: Path | None = None
     attempted: bool = False  # its rename was started
+    replace: str = "owned"  # what may stand at it already: _OWNED, _AS_READ or _NEW_ONLY
 
 
 # ----- the chokepoint
@@ -304,7 +312,8 @@ def _commit(
 ) -> CommitResult:
     phase_rules = _PHASE_RULES.get(phase)
     if phase_rules is None:
-        return _refused(f"Writes for phase {phase} are not built yet; only P1a is.")
+        built = " and ".join(_PHASE_RULES)
+        return _refused(f"Writes for phase {phase} are not built yet; only {built} are.")
     if not callable(interlock):
         return _refused("No Mozaik safety check was given, so nothing was written.")
     found = _load_roots(roots)
@@ -396,7 +405,7 @@ def _refused(reason: str) -> CommitResult:
     return CommitResult(ok=False, reason=reason)
 
 
-def _plan(writes: list[FileWrite], roots: dict[str, _Root], rules: _Rules) -> list[_Target] | str:
+def _plan(writes: list[FileWrite], roots: dict[str, _Root], rules: _Phase) -> list[_Target] | str:
     reason = _check_inputs(writes)
     if reason:
         return reason
@@ -534,6 +543,8 @@ def _load_roots(roots: Roots) -> dict[str, _Root] | str:
     found: dict[str, _Root] = {}
     spelled: dict[str, Path] = {}
     for name in _ROOT_NAMES:
+        if getattr(roots, name) is None:  # the tracker's folder, before P4: no folder at all
+            continue
         raw = str(Path(getattr(roots, name)))
         if not _is_full_path(raw):
             return (
@@ -632,7 +643,7 @@ def _folded(path: Path) -> tuple[str, ...]:
 # ----- where a write lands
 
 
-def _place(w: FileWrite, roots: dict[str, _Root], phase_rules: _Rules) -> _Target | str:
+def _place(w: FileWrite, roots: dict[str, _Root], phase_rules: _Phase) -> _Target | str:
     """Find the target's root by identity and check every rule, or say why it can't be written."""
     raw = _strip_long_prefix(str(Path(w.path)))
     if not _is_full_path(raw):
@@ -651,8 +662,14 @@ def _place(w: FileWrite, roots: dict[str, _Root], phase_rules: _Rules) -> _Targe
         return f"{path.name} is one of NG Runner's own root folders, not a file."
     if root.name == "app_data":
         return f"{path.name} is in NG Runner's own data folder, which it writes directly."
-    reason = _refused_always(root.name, rel) or phase_rules(root.name, rel)
-    return reason if reason else _pin_target(w, root, rel)
+    reason = (_refused_always(root.name, rel) or phase_rules.root_problem(root)
+              or phase_rules.rules(root.name, rel))
+    if reason:
+        return reason
+    target = _pin_target(w, root, rel)
+    if not isinstance(target, str):
+        target.replace = phase_rules.replaces(root.name, rel)
+    return target
 
 
 def _find_root(path: Path, roots: dict[str, _Root]) -> tuple[_Root, tuple[str, ...]] | str | None:
@@ -815,7 +832,101 @@ def _p1a_rules(where: str, rel: tuple[str, ...]) -> str | None:
     return None
 
 
-_PHASE_RULES: dict[str, _Rules] = {"P1a": _p1a_rules}
+# P4 (design 3.2): a room's .des fix, a tracker batch, and the job sheet when there is none. Its
+# build writes shadow copies only: on this PC's own disk, never in the tracker's own folder or in
+# a folder named Mozaik Shared. "P4" itself, the real drop and the real fix, has no rules yet.
+_OWNED, _AS_READ, _NEW_ONLY = "owned", "as read", "new only"
+_MOZAIK_JOBS = "jobs"
+_ROOM_FILE = re.compile(r"Room[0-9]+\.des", re.IGNORECASE)
+_BATCH_FILE = re.compile(r"tracker_inbox_[0-9A-Za-z-]{1,64}\.csv")
+_JOB_SHEET_SUFFIX = " CNC Job Sheet.docx"
+_TRACKER_OWN_FOLDER = "ng conversion program claude"   # tracker_inbox.TRACKER_FOLDER
+_REAL_MOZAIK_FOLDER = "mozaik shared"
+
+
+def _p4_rules(where: str, rel: tuple[str, ...]) -> str | None:
+    """P4's own writes, then what P1a already writes."""
+    name = rel[-1]
+    if where == "mozaik_shared":
+        if _is_room_fix(rel):
+            return None
+        return (
+            f"{name}: in Mozaik Shared NG Runner writes only a room's .des fix, as"
+            " Jobs\\<Job>\\Room#.des."
+        )
+    if where == "tracker":
+        if len(rel) == 1 and _BATCH_FILE.fullmatch(name):
+            return None
+        return (
+            f"{name}: in the tracker's inbox folder NG Runner writes only a batch of its own,"
+            " tracker_inbox_<id>.csv."
+        )
+    if where == "ng_jobs" and len(rel) == 2 and name.casefold().endswith(_JOB_SHEET_SUFFIX.casefold()):
+        if name.casefold() == (rel[0] + _JOB_SHEET_SUFFIX).casefold() and _JOB_DATE.search(rel[0]):
+            return None
+        return f"{name}: a job sheet is named for its own job folder, <Job> CNC Job Sheet.docx."
+    return _p1a_rules(where, rel)
+
+
+def _p4_replaces(where: str, rel: tuple[str, ...]) -> str:
+    """What may stand at a P4 target already. A room is replaced at the hash its caller read,
+    though Mozaik wrote it; a batch and a job sheet are written once and never again."""
+    if where == "mozaik_shared" and _is_room_fix(rel):
+        return _AS_READ
+    if where == "tracker" or rel[-1].casefold().endswith(_JOB_SHEET_SUFFIX.casefold()):
+        return _NEW_ONLY
+    return _OWNED
+
+
+def _is_room_fix(rel: tuple[str, ...]) -> bool:
+    return (len(rel) == 3 and rel[0].casefold() == _MOZAIK_JOBS
+            and bool(_ROOM_FILE.fullmatch(rel[2])))
+
+
+def _p4_shadow_root(root: _Root) -> str | None:
+    """P4's build writes only copies: none on a cloud or network drive (G: is one), and none in
+    the folders the real drop and the real fix will go to."""
+    from ngrunner.toolkit import on_local_disk  # here: toolkit is heavy, and only P4 asks
+
+    folder = root.path.name.casefold()
+    if root.name == "tracker" and folder == _TRACKER_OWN_FOLDER:
+        return (
+            "The tracker's own folder gets no batch until P4 goes live; NG Runner drops"
+            " only into a test folder until then."
+        )
+    if root.name == "mozaik_shared" and folder == _REAL_MOZAIK_FOLDER:
+        return (
+            "The real Mozaik Shared gets no fix until P4 goes live; NG Runner fixes only a"
+            " shadow copy until then."
+        )
+    if not on_local_disk(root.path):
+        return (
+            f"Until P4 goes live NG Runner writes its shadow copies on this PC's own disk only,"
+            f" and {_LABELS[root.name]} is on a cloud or network drive."
+        )
+    return None
+
+
+@dataclass(frozen=True)
+class _Phase:
+    """A phase's rules: where its writes land, what may stand at a target already, and a root
+    it may not write in at all."""
+
+    rules: _Rules
+    replaces: Callable[[str, tuple[str, ...]], str] = lambda where, rel: _OWNED
+    root_problem: Callable[[_Root], str | None] = lambda root: None
+
+
+def _p1a_tracker_rules(where: str, rel: tuple[str, ...]) -> str | None:
+    if where == "tracker":
+        return f"{rel[-1]} is in the tracker's inbox folder, which NG Runner writes only from P4."
+    return _p1a_rules(where, rel)
+
+
+_PHASE_RULES: dict[str, _Phase] = {
+    "P1a": _Phase(_p1a_tracker_rules),
+    "P4 shadow": _Phase(_p4_rules, _p4_replaces, _p4_shadow_root),
+}
 
 
 # ----- what the target holds now
@@ -829,12 +940,18 @@ def _check_on_disk(t: _Target, owned: Callable[[Path], str | None]) -> str | Non
         return reason
     expected = t.write.expected_hash
     if t.old is None:
+        if expected is None and t.replace == _AS_READ:
+            return f"{name} isn't there, and NG Runner only fixes a room that is there."
         return None if expected is None else f"{name} is gone; the write expected to replace it."
+    if t.replace == _NEW_ONLY:
+        return f"{name} is already there, and NG Runner writes it only once, so it was left as it is."
     current = _sha(t.old)
     if expected is None:
         return f"{name} already exists, but the write expected to create it."
     if current != expected.lower():
         return f"{name} has changed since it was read, so it was not overwritten."
+    if t.replace == _AS_READ:
+        return None  # a room's fix: the very bytes its caller read, which Mozaik wrote
     try:
         ours = owned(t.path)
     except Exception as exc:  # noqa: BLE001 - a lookup that fails means "not known to be ours"

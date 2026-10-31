@@ -214,6 +214,16 @@ code, .mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
   font-size: 13px; }
 .takeoff-label { color: var(--ink-2); }
 .takeoff-lines { flex-basis: 100%; margin: 0; padding-left: 18px; overflow-wrap: anywhere; }
+/* a job's check (P3): its state, Check now, a close prompt, and each item with its chat line */
+.check { margin-top: 10px; font-size: 13px; }
+.check-head, .check-prompt { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
+.check-line { color: var(--ink-2); overflow-wrap: anywhere; }
+.check-prompt { margin-top: 6px; font-weight: 600; }
+.check-items { display: grid; gap: 6px; margin: 8px 0 0; padding: 0; list-style: none; }
+.check-item { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
+.check-text { overflow-wrap: anywhere; }
+.check-chat, .check-settled { flex-basis: 100%; color: var(--ink-2); overflow-wrap: anywhere; }
+.check-chat { font-family: ui-monospace, Consolas, monospace; user-select: all; }
 .next-note { display: flex; align-items: flex-start; gap: 5px; margin: 6px 0 0; color: var(--warn); }
 .next-note .i { flex: none; width: 15px; height: 15px; margin-top: 2px; }
 .lock { margin-top: 6px; }

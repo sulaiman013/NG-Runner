@@ -174,7 +174,8 @@ def guards_database(path: Path) -> Store:
 
 
 def test_the_guards_version_is_the_one_before_the_takeoffs() -> None:
-    assert LATEST == GUARDS_VERSION + 1 == len(MIGRATIONS)
+    assert MIGRATIONS[GUARDS_VERSION][0].lstrip().startswith("CREATE TABLE IF NOT EXISTS takeoffs")
+    assert LATEST >= GUARDS_VERSION + 1
 
 
 def test_a_database_from_the_guards_version_upgrades_with_every_row_intact(tmp_path: Path) -> None:
@@ -189,7 +190,8 @@ def test_a_database_from_the_guards_version_upgrades_with_every_row_intact(tmp_p
 
     after = every_row(path)
     assert store.schema_version() == LATEST
-    assert set(after) - set(before) == {"takeoffs"}
+    p4_tables = {"leases", "tracker_batches", "fixes", "lock_clicks"}       # version 7, after these
+    assert set(after) - set(before) - p4_tables == {"takeoffs", "check_runs", "settles", "check_prompts"}
     assert {table: after[table] for table in before} == before    # nothing old changed at all
     assert after["takeoffs"] == []
     assert get_heads_up(store, FOLDER).json_sha256 == RENDER_A

@@ -1,11 +1,13 @@
 """
 The models the reader evaluation compares, behind one interface (decisions 16 and 17).
 
-Why these two: Sulaiman's first choice is OpenAI GPT-6 Luna, called direct (one processor fewer
-than OpenRouter), and it must pass against one stronger reference on the same walls; the reference
-is one Claude model. OpenRouter is not built: it is optional, and adding it is one more class here.
+Why these: Sulaiman's first choice is OpenAI GPT-6 Luna, and it must pass against one stronger
+reference on the same walls, one Claude model. Luna runs through OpenRouter (Sulaiman, 2026-10-31),
+and OpenRouter is used for Luna only: OpenRouterLuna refuses any other model id. Claude runs direct
+through Anthropic's API, never through OpenRouter. OpenAIResponses (Luna direct) is kept for when an
+OpenAI key exists.
 
-Both are pinned and plain: one model by its exact id (a reply naming another model is an error,
+All are pinned and plain: one model by its exact id (a reply naming another model is an error,
 never a silent swap), structured output against payload.SCHEMA, effort set explicitly, no
 fallbacks, no tools, no sampling parameters, nothing stored by the provider where it can be turned
 off (OpenAI's store=false). A refusal, a cut-off answer or JSON that doesn't parse declines the
@@ -35,8 +37,9 @@ from __future__ import annotations
 import base64
 import json
 import math
+import time
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from tools.reader_eval import payload
@@ -121,19 +124,23 @@ class _Base:
         """Send the request (containment is checked again first) and read the reply."""
         payload.assert_contained(req)
         data = json.dumps(self.body(req)).encode("utf-8")
+        started = time.monotonic()
         try:
             status, raw = self._transport(self.url, self._headers(key), data, TIMEOUT_S)
         except Exception as exc:  # noqa: BLE001 - only the type is kept: a message may carry headers
-            return Reading("error", None, 0.0, f"the call failed ({type(exc).__name__}); not retried")
+            return Reading("error", None, 0.0, f"the call failed ({type(exc).__name__})",
+                           latency_s=time.monotonic() - started, network=True, cost_known=False)
+        latency = time.monotonic() - started
         if status != 200:
-            return Reading("error", None, 0.0, _http_failure(status))
+            return Reading("error", None, 0.0, _http_failure(status), latency_s=latency, cost_known=False)
         try:
             reply = json.loads(raw)
         except ValueError:
-            return Reading("error", None, 0.0, "the reply was not JSON")
+            return Reading("error", None, 0.0, "the reply was not JSON", latency_s=latency, cost_known=False)
         if not isinstance(reply, Mapping):
-            return Reading("error", None, 0.0, "the reply was not a JSON object")
-        return self._parse(reply)
+            return Reading("error", None, 0.0, "the reply was not a JSON object", latency_s=latency,
+                           cost_known=False)
+        return replace(self._parse(reply), latency_s=latency)
 
 
 def _answer(text: str, cost: float) -> Reading:
@@ -257,4 +264,113 @@ class AnthropicMessages(_Base):
         return _answer(text, cost)
 
 
-PROVIDERS: dict[str, type[_Base]] = {"openai": OpenAIResponses, "anthropic": AnthropicMessages}
+class OpenRouterLuna(_Base):
+    """
+    GPT-6 Luna through OpenRouter, and nothing else (Sulaiman, 2026-10-31): any other model id is
+    refused when the provider is made, and again just before anything is sent.
+
+    The host is pinned to OpenRouter's azure/us endpoint (checked 2026-10-31 at
+    openrouter.ai/api/v1/models/openai/gpt-6-luna/endpoints and /api/v1/endpoints/zdr): of Luna's
+    hosts only Azure's three endpoints are on OpenRouter's zero-data-retention list, none with safety
+    retention, and azure/us is the US one (design decision 16: a host that neither keeps nor trains
+    on prompts, US preferred). OpenAI's own endpoint is not on that list. Its price there is $0.11 per
+    million input tokens and $0.55 output. The routing: that one host, no fallbacks, data collection
+    denied, zero retention required, every parameter required of the host (so structured output is
+    honoured, and max_completion_tokens is sent because Azure lists it, not max_tokens), and a price
+    ceiling at the pinned host's, so a dearer endpoint can never serve it. A reply from another host
+    or another model is an error. The cost is what OpenRouter reports in usage.cost.
+    """
+    name = "openrouter"
+    ALLOWED = frozenset({"openai/gpt-6-luna"})
+    SERVED_AS = frozenset({"openai/gpt-6-luna", "openai/gpt-6-luna-20260922"})
+    key_name = "openrouter_key"
+    url = "https://openrouter.ai/api/v1/chat/completions"
+    host, host_name = "azure/us", "Azure"
+    price = Price(0.11, 0.011, 0.1375, 0.55, "2026-10-31",
+                  "openrouter.ai/api/v1/models/openai/gpt-6-luna/endpoints, endpoint azure/us")
+    image_multiplier = 2.0  # ASSUMPTION, as for OpenAI direct: an upper bound for the guard only
+
+    def __init__(self, *, model: str = "openai/gpt-6-luna", effort: str = "high",
+                 transport: Transport | None = None) -> None:
+        self._check(model)
+        super().__init__(effort=effort, transport=transport)
+        self.model = model
+
+    @classmethod
+    def _check(cls, model: str) -> None:
+        if model not in cls.ALLOWED:
+            raise ValueError("OpenRouter is used for openai/gpt-6-luna only")
+
+    def settings(self) -> str:
+        return super().settings() + f"; via OpenRouter, host {self.host} only, zero data retention"
+
+    def _headers(self, key: str) -> dict[str, str]:
+        return {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+
+    def _image_tokens(self, image: payload.Image) -> float:
+        w, h = image.pixels
+        return math.ceil(w / 32) * math.ceil(h / 32) * self.image_multiplier
+
+    def _user(self, turn: payload.Turn) -> dict[str, Any]:
+        return {"role": "user", "content": [
+            {"type": "image_url", "image_url": {"url": _data_url(turn.image), "detail": "original"}},
+            {"type": "text", "text": turn.text}]}
+
+    def body(self, req: payload.WallRequest) -> dict[str, Any]:
+        self._check(self.model)
+        messages: list[dict[str, Any]] = [{"role": "system", "content": req.instructions}]
+        for e in req.examples:
+            messages += [self._user(e.turn), {"role": "assistant", "content": e.answer}]
+        messages.append(self._user(req.target))
+        return {"model": self.model, "messages": messages,
+                "response_format": {"type": "json_schema", "json_schema": {
+                    "name": "wall_reading", "strict": True, "schema": req.schema}},
+                "reasoning": {"effort": self.effort}, "max_completion_tokens": self.max_output_tokens,
+                "provider": {"order": [self.host], "only": [self.host], "allow_fallbacks": False,
+                             "require_parameters": True, "data_collection": "deny", "zdr": True,
+                             "max_price": {"prompt": self.price.input_per_m, "completion": self.price.output_per_m}},
+                "usage": {"include": True}}
+
+    def read(self, req: payload.WallRequest, key: str) -> Reading:
+        self._check(self.model)
+        return super().read(req, key)
+
+    def _cost(self, usage: Mapping[str, Any]) -> float:
+        reported = usage.get("cost")
+        if isinstance(reported, int | float) and math.isfinite(reported) and reported >= 0:
+            return float(reported)
+        cached = float((usage.get("prompt_tokens_details") or {}).get("cached_tokens") or 0)
+        prompt = float(usage.get("prompt_tokens") or 0)
+        p = self.price
+        return ((prompt - cached) * p.input_per_m + cached * p.cached_input_per_m
+                + float(usage.get("completion_tokens") or 0) * p.output_per_m) / 1e6
+
+    def _parse(self, reply: Mapping[str, Any]) -> Reading:
+        usage = reply.get("usage") or {}
+        cost = self._cost(usage)
+        known = bool(usage)
+        if reply.get("error"):
+            return Reading("error", None, cost, "OpenRouter returned an error in the reply", cost_known=known)
+        if reply.get("model") not in self.SERVED_AS:
+            return Reading("error", None, cost, "the reply came from another model than the pinned one",
+                           cost_known=known)
+        if reply.get("provider") != self.host_name:
+            return Reading("error", None, cost, "the reply came from another host than the pinned one",
+                           cost_known=known)
+        choices = reply.get("choices") or []
+        if not choices:
+            return Reading("error", None, cost, "the reply held no answer", cost_known=known)
+        choice = choices[0]
+        message = choice.get("message") or {}
+        finish = choice.get("finish_reason")
+        if message.get("refusal") or finish == "content_filter":
+            return Reading("refused", None, cost, "the model refused", cost_known=known)
+        if finish == "length":
+            return Reading("truncated", None, cost, "the answer was cut off", cost_known=known)
+        if finish != "stop":
+            return Reading("error", None, cost, f"the reply stopped for another reason ({finish})", cost_known=known)
+        return replace(_answer(message.get("content") or "", cost), cost_known=known)
+
+
+PROVIDERS: dict[str, type[_Base]] = {"openai": OpenAIResponses, "anthropic": AnthropicMessages,
+                                     "openrouter": OpenRouterLuna}

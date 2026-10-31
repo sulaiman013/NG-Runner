@@ -56,6 +56,31 @@ TAKEOFFS = {
     "failed": Style("muted", "minus", "No takeoff"),
 }
 
+# A job's check (views.CheckView, P3). Never "OK": a pass is "Checked", and only while it stands.
+CHECKS = {
+    "none": Style("muted", "minus", "Not checked yet"),
+    "asked": Style("info", "clock", "Check asked"),
+    "running": Style("info", "clock", "Checking"),
+    "waiting": Style("info", "clock", "Waiting for Mozaik"),
+    "passed": Style("ok", "check", "Checked"),
+    "failed": Style("bad", "x", "To fix"),
+    "could_not_verify": Style("warn", "alert", "Could not verify"),
+    "stale": Style("warn", "alert", "Changed since checked"),
+    "not_run": Style("muted", "minus", "Not checked"),
+}
+CHECK_ITEMS = {
+    "fix": Style("bad", "x", "To fix"),
+    "mozaik": Style("bad", "x", "Fix in Mozaik"),
+    "could_not_verify": Style("warn", "alert", "Could not verify"),
+    "advisory": Style("info", "info", "Advisory"),
+}
+_SETTLED = Style("muted", "check", "Settled")
+
+
+def check_item_style(kind: str, settled: str) -> Style:
+    """An item of a check: settled ones are no longer to fix."""
+    return _SETTLED if settled else CHECK_ITEMS[kind]
+
 
 def nest_style(state: str, posted: datetime | None) -> Style:
     """A material's state. NOT CHECKED on what was there before NG Runner is no warning: nothing

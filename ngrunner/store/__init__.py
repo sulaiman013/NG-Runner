@@ -43,6 +43,9 @@ Phase 1b's guards:
     snapshots      snapshots: each copy of Jim's toolkit, and what became of it
 Phase 2's converter, wired in for P3's takeoff on intake:
     takeoffs       takeoffs: NG Runner's own takeoff of each summary it files, by rules version
+P3's checks:
+    checks         check_runs, settles, check_prompts: each run of Jim's crosscheck on a job, bound
+                   to what it ran on; Jim's settles; the close prompts
 Store.backup_to(path) copies the whole database with SQLite's online backup API, for the
 supervisor's copy before an upgrade (backup.snapshot gives everything else its copy, as bytes).
 """
@@ -53,6 +56,12 @@ from pathlib import Path
 from ngrunner.store.cards import (
     CARD_STATES, CardRecord, add_card, allocate_card_id, answer_card, get_card, list_cards,
     record_reminder, withdraw_card,
+)
+from ngrunner.store.checks import (
+    CHECK_CODES, CHECK_FEATURES, CHECK_KINDS, CHECK_STATES, CHECK_TRIGGERS, SETTLE_HOWS,
+    CheckRunRecord, PromptRecord, SettleRecord, add_prompt, add_settle, answer_prompt, ask_check,
+    back_to_asked, finish_check, get_check_run, list_check_runs, list_prompts, list_settles,
+    mark_stale, mark_told, not_run_check, start_check,
 )
 from ngrunner.store.clearances import (
     SHEET_SIZE, ClearanceRecord, add_clearance, cleared_programs, list_clearances,
@@ -192,4 +201,9 @@ __all__ = [
     # takeoffs
     "TAKEOFF_BRANCHES", "TAKEOFF_STATES", "TakeoffRecord", "add_takeoff", "get_takeoff",
     "list_takeoffs",
+    # check_runs, settles, check_prompts
+    "CHECK_CODES", "CHECK_FEATURES", "CHECK_KINDS", "CHECK_STATES", "CHECK_TRIGGERS", "SETTLE_HOWS",
+    "CheckRunRecord", "PromptRecord", "SettleRecord", "add_prompt", "add_settle", "answer_prompt",
+    "ask_check", "back_to_asked", "finish_check", "get_check_run", "list_check_runs", "list_prompts",
+    "list_settles", "mark_stale", "mark_told", "not_run_check", "start_check",
 ]

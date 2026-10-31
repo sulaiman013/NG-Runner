@@ -592,3 +592,9 @@ class _NoSecrets:
 
     def remove(self, *_):
         pass
+
+
+def test_every_check_module_is_in_the_list_a_build_is_checked_against():
+    root = Path(selftest.__file__).parent / "checks"
+    made = {f"ngrunner.checks.{path.stem}" for path in root.glob("*.py") if path.stem != "__init__"}
+    assert made and made | {"ngrunner.checks"} <= set(selftest.P1A_MODULES)

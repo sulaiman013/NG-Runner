@@ -14,10 +14,14 @@ Two questions, kept apart:
              position (elev_panels) is not in this evaluation, so accepted here is an upper bound.
   right?     score_wall(): every value the model gave, against the as-cut .des.
              order   the verticals, in order: right when their number is the truth's
-             x, bottom, top   within tol_x (1 in) and tol_y (1.5 in): IC draws a panel about 1.4 in
-                     shorter than its IC height (Jim's elev_panels.py, 82.5 drawn for 83.9), so a
-                     tighter top or bottom would fault a perfect reader. ASSUMPTION: uncalibrated;
-                     every deviation is kept so a re-score with other tolerances costs no calls
+             x, bottom, top   within tol_x (1/8 in) and tol_y (1/4 in), calibrated 2026-10-31 on
+                     the first 10 test walls of both models, before any rate decided anything
+                     (.local-fixtures/reader/calibration.json): a correct reading came within 0.01 in
+                     on x and 0.08 in on top and bottom (both models compute from the printed WIDTH
+                     strip and VT heights, not pixels), IC and cut heights differ by at most 0.045
+                     in on the 26 test walls, and the smallest real shift seen was a whole run moved
+                     1/4 in. The first guesses, 1 in and 1.5 in, would have hidden a 0.6 in drop of
+                     a whole wall. Every deviation is kept, so a re-score costs no calls
              height  the VT height it named, within 0.65 in of the cut height
              radius  yes or no, as cut
            With as many verticals as the truth, they pair by index, left to right. With another
@@ -42,8 +46,8 @@ from tools.reader_eval.pairing import HEIGHT_TOL_IN, Pair
 from tools.reader_eval.payload import FIELDS, UNREADABLE
 from tools.reader_eval.prep import WallCrop
 
-TOL_X_IN = 1.0
-TOL_Y_IN = 1.5
+TOL_X_IN = 0.125  # calibrated 2026-10-31 (module notes)
+TOL_Y_IN = 0.25
 MATCH_WINDOW_IN = 12.0
 INSIDE_IN = 1.0  # how far outside the wall a value may be before the gate calls it outside
 
@@ -56,6 +60,9 @@ class Reading:
     cost_usd: float
     detail: str = ""  # plain words, no names
     cached: bool = False
+    latency_s: float | None = None  # seconds from sending to the whole reply
+    network: bool = False  # the transport failed: the one case run.py retries, once
+    cost_known: bool = True  # False when no usage came back: the guard then charges the worst case
 
 
 @dataclass(frozen=True)
@@ -74,6 +81,7 @@ class WallScore:
     decline: str | None
     outcomes: tuple[Outcome, ...]
     cost_usd: float
+    latency_s: float | None = None
 
     @property
     def wrong(self) -> int:
@@ -194,7 +202,8 @@ def score_wall(pair: Pair, reading: Reading, *, tol_x: float = TOL_X_IN, tol_y: 
     wall_id = f"{pair.case}/{pair.crop.page}"
     decline = gate(reading, pair.crop)
     if reading.status != "answered" or not _valid(reading.answer):
-        return WallScore(pair.case, wall_id, pair.wall.categories, False, decline, (), reading.cost_usd)
+        return WallScore(pair.case, wall_id, pair.wall.categories, False, decline, (), reading.cost_usd,
+                         reading.latency_s)
     assert reading.answer is not None
     given = list(reading.answer["verticals"])
     panels = pair.wall.panels
@@ -233,7 +242,7 @@ def score_wall(pair: Pair, reading: Reading, *, tol_x: float = TOL_X_IN, tol_y: 
         else:
             outcomes.append(Outcome("radius", "wrong_flagged" if exists or "radius" in doubt else "wrong_silent"))
     return WallScore(pair.case, wall_id, pair.wall.categories, decline is None, decline, tuple(outcomes),
-                     reading.cost_usd)
+                     reading.cost_usd, reading.latency_s)
 
 
 # ----- the report
@@ -271,6 +280,7 @@ class Report:
     deviations: dict[str, dict[str, float]] = field(default_factory=dict)
     tolerances: dict[str, float] = field(default_factory=dict)
     walls: list[dict[str, Any]] = field(default_factory=list)
+    latency: dict[str, float] = field(default_factory=dict)  # seconds: median, max, over calls with one
 
     def to_json(self) -> str:
         data = asdict(self)
@@ -298,6 +308,9 @@ class Report:
         for kind, counts in sorted(self.values.items()):
             lines.append(f"  {kind}: {counts.get('right', 0)} / {counts.get('wrong_flagged', 0)} / "
                          f"{counts.get('wrong_silent', 0)} / {counts.get('not_given', 0)}")
+        if self.latency:
+            lines.append(f"Latency: median {self.latency['median']:.1f} s, max {self.latency['max']:.1f} s "
+                         f"over {self.latency['n']:.0f} calls.")
         for kind, dev in sorted(self.deviations.items()):
             lines.append(f"  {kind} deviation, inches: median {dev['median']:.2f}, max {dev['max']:.2f}")
         return "\n".join(lines)
@@ -332,5 +345,7 @@ def summarize(scores: Iterable[WallScore], *, required: Mapping[str, set[str]],
                   {k: {"median": statistics.median(v), "max": max(v)} for k, v in devs.items()},
                   dict(tolerances or {"x": TOL_X_IN, "top_bottom": TOL_Y_IN}),
                   [{"wall": s.wall_id, "categories": list(s.categories), "accepted": s.accepted,
-                    "decline": s.decline, "wrong": s.wrong, "silent": s.silent, "cost_usd": s.cost_usd}
-                   for s in scores])
+                    "decline": s.decline, "wrong": s.wrong, "silent": s.silent, "cost_usd": s.cost_usd,
+                    "latency_s": s.latency_s} for s in scores],
+                  ({"median": statistics.median(lat), "max": max(lat), "n": len(lat)}
+                   if (lat := [s.latency_s for s in scores if s.latency_s is not None]) else {}))

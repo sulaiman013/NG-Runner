@@ -34,6 +34,9 @@ from pathlib import Path
 from tools.reader_eval import budget, cases, keys, pairing, payload, prep, providers, scoring, truth
 
 DEFAULT_WORKED = 4  # worked walls per request: decision 17 says 3 to 5
+# Totals across every run, kept on disk (budget.SpendLedger): Claude $50 for this evaluation, ever;
+# OpenRouter $15 of the key's own $20 limit, so it keeps headroom (Sulaiman, 2026-10-31).
+LEDGER_CAPS = {"anthropic": 50.0, "openrouter": 15.0, "openai": 15.0}
 
 
 @dataclass
@@ -220,9 +223,10 @@ def read_walls(world: World, walls: Sequence[pairing.Pair], worked: Sequence[pai
                call: bool, tol_x: float = scoring.TOL_X_IN, tol_y: float = scoring.TOL_Y_IN,
                say: Callable[[str], object] = print) -> RunResult:
     """
-    Read each wall: its cached answer when this exact request was answered before (no call, no
-    cost), else, when call is set, one call the cost guard allows first. Once the guard refuses,
-    no further call is made in this run. A request containment blocks is never sent.
+    Read each wall: its cached outcome when this exact request was sent before (no call, no cost:
+    nothing is ever sent twice, errors included), else, when call is set, one call the cost guard
+    allows first, and one more only when the network failed (re-reserving its worst case). Once the
+    guard refuses, no further call is made in this run. A request containment blocks is never sent.
     """
     result = RunResult([], Counter(), 0, None)
     for wall in walls:
@@ -234,29 +238,39 @@ def read_walls(world: World, walls: Sequence[pairing.Pair], worked: Sequence[pai
         path = _cache_path(answers, provider, req)
         if path.is_file():
             saved = json.loads(path.read_text(encoding="utf-8"))
-            reading = scoring.Reading(saved["status"], saved["answer"], saved["cost_usd"], saved["detail"], True)
+            reading = scoring.Reading(saved["status"], saved["answer"], saved["cost_usd"], saved["detail"], True,
+                                      saved.get("latency_s"))
         elif not call or result.stopped:
             reading = scoring.Reading("not_run", None, 0.0, result.stopped or "no cached answer")
         else:
-            try:
-                guard.before(provider.worst_case_usd(req))
-            except budget.CapReached as exc:
-                result.stopped = f"stopped by the cost cap: {exc}"
-                say(f"{req.wall_id}: {result.stopped}")
-                reading = scoring.Reading("not_run", None, 0.0, result.stopped)
-            else:
-                if key is None:
-                    raise keys.KeyProblem("no key: nothing may be sent")
+            if key is None:
+                raise keys.KeyProblem("no key: nothing may be sent")
+            reading = scoring.Reading("not_run", None, 0.0, "")
+            for attempt in (1, 2):
+                try:
+                    guard.before(provider.worst_case_usd(req))
+                except budget.CapReached as exc:
+                    result.stopped = f"stopped by the cost cap: {exc}"
+                    say(f"{req.wall_id}: {result.stopped}")
+                    if attempt == 1:
+                        reading = scoring.Reading("not_run", None, 0.0, result.stopped)
+                    break
                 reading = provider.read(req, key)
-                guard.after(None if reading.status == "error" else reading.cost_usd)
-                say(f"{req.wall_id}: {reading.status} (${reading.cost_usd:.4f}; run total ${guard.spent:.4f})")
-                if reading.status != "error":
-                    path.parent.mkdir(parents=True, exist_ok=True)
-                    path.write_text(json.dumps({"wall": req.wall_id, "model": provider.model,
-                                                "effort": provider.effort, "status": reading.status,
-                                                "answer": reading.answer, "cost_usd": reading.cost_usd,
-                                                "detail": reading.detail, "at": datetime.now(UTC).isoformat()}),
-                                    encoding="utf-8")
+                guard.after(reading.cost_usd if reading.cost_known else None)
+                say(f"{req.wall_id}: {reading.status} (${reading.cost_usd:.4f}"
+                    + ("" if reading.cost_known else ", unknown: worst case charged")
+                    + f"; run total ${guard.spent:.4f}"
+                    + (f"; {reading.latency_s:.1f} s" if reading.latency_s is not None else "") + ")")
+                if not reading.network:
+                    break
+                say(f"{req.wall_id}: the network failed" + ("; one retry" if attempt == 1 else "; not retried again"))
+            if reading.status != "not_run":
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(json.dumps({"wall": req.wall_id, "model": provider.model, "effort": provider.effort,
+                                            "status": reading.status, "answer": reading.answer,
+                                            "cost_usd": reading.cost_usd, "cost_known": reading.cost_known,
+                                            "detail": reading.detail, "latency_s": reading.latency_s,
+                                            "at": datetime.now(UTC).isoformat()}), encoding="utf-8")
         if reading.status == "not_run":
             result.not_run += 1
         else:
@@ -273,8 +287,10 @@ def _evaluate(args: argparse.Namespace, *, call: bool) -> int:
         if not key:
             print(f"No key in Windows Credential Manager under {keys.target(provider.key_name)}: nothing was sent.")
             return 2
-    guard = budget.CostGuard(args.cap)
-    result = read_walls(world, test_walls(world)[: args.limit], worked_walls(world, args.worked), provider, key,
+    ledger = budget.SpendLedger(cases.reader_dir() / f"spend_{provider.name}.json", LEDGER_CAPS[provider.name])
+    guard = budget.CostGuard(args.cap, ledger=ledger)
+    walls = test_walls(world)[args.start: args.start + args.limit]
+    result = read_walls(world, walls, worked_walls(world, args.worked), provider, key,
                         guard, answers=cases.reader_dir() / "answers", call=call, tol_x=args.tol_x, tol_y=args.tol_y)
     report = scoring.summarize(result.scores, required=_required(world, {s.wall_id for s in result.scores}),
                                tolerances={"x": args.tol_x, "top_bottom": args.tol_y})
@@ -283,7 +299,8 @@ def _evaluate(args: argparse.Namespace, *, call: bool) -> int:
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     blocked = result.blocked
     head = (f"Provider {provider.name}, model {provider.model}, effort {provider.effort}. "
-            f"Run spend ${guard.spent:.4f} of a ${guard.cap:.2f} cap, {guard.calls} calls, "
+            f"Run spend ${guard.spent:.4f} of a ${guard.cap:.2f} cap, {guard.calls} calls; "
+            f"{provider.name} total, every run: ${ledger.spent:.4f} of ${ledger.cap:.2f}; "
             f"{result.not_run} walls not run. Blocked by the containment scan: {sum(blocked.values())}"
             + (f" ({'; '.join(f'{k}: {v}' for k, v in blocked.items())})" if blocked else "") + ".")
     (out / f"{stamp}-{provider.name}.json").write_text(report.to_json(), encoding="utf-8")
@@ -305,6 +322,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         p.add_argument("--effort", default="high")
         p.add_argument("--worked", type=int, default=DEFAULT_WORKED)
         p.add_argument("--walls", type=int, default=3)
+        p.add_argument("--start", type=int, default=0)
         p.add_argument("--limit", type=int, default=10)
         p.add_argument("--cap", type=float, default=budget.DEFAULT_CAP_USD)
         p.add_argument("--tol-x", type=float, default=scoring.TOL_X_IN)

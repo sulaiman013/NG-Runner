@@ -49,6 +49,11 @@ What each fact means here, which is the contract with whoever writes it:
     state      "paused", as interlock.is_paused reads it, so the digest and the filing never
                disagree. "fab_exported_at" (a time) and "toast_setting" ("on" or "off"), when
                set, decide their alarms whatever the DEV lane says.
+    check_runs checks.jobchecks.job_checks: each job's newest check, its items and settles, and a
+               close prompt still waiting. Check now is on every job's row. A check counts only
+               while its files are those it ran on: something to fix from one that counts is on
+               Your list (one line a job) and in the digest; a stale one is on its row only, saying
+               to check again. An unanswered close prompt is on Your list and in the digest.
 """
 from __future__ import annotations
 
@@ -60,9 +65,10 @@ from pathlib import Path
 from typing import Any
 
 from ngrunner.board.views import (
-    BoardView, CardView, EventView, HealthView, JobRow, ListItem, MaterialRow, TakeoffView, Tick,
-    TrayState, tray_tooltip,
+    BoardView, CardView, CheckItemView, CheckView, EventView, HealthView, JobRow, ListItem, MaterialRow,
+    PromptView, TakeoffView, Tick, TrayState, tray_tooltip,
 )
+from ngrunner.checks.jobchecks import JobCheck, job_checks
 from ngrunner.cards import Card, age_days, card_from_record, reminder_due
 from ngrunner.clock import Clock, fmt_clock, fmt_date, fmt_day, from_iso, pacific_day
 from ngrunner.config import Settings
@@ -166,6 +172,7 @@ class _JobFacts:
     folders: tuple[str, ...] = ()           # the names its NG Jobs folder can go by
     takeoff: TakeoffRecord | None = None    # NG Runner's takeoff of the summary filed now
     chats_list: bool = False                # its order heads-up is the chat's takeoff instead
+    check: JobCheck | None = None           # its newest check, and a close prompt waiting
 
 
 @dataclass(frozen=True)
@@ -203,7 +210,7 @@ def _read(store: Store, now: datetime, settings: Settings | None = None) -> _Fac
     nests = tuple(n for n in list_nests(store) if n.state != "not_posted")
     return _Facts(
         now=now,
-        jobs=_job_facts(store, jobs, rows, records, dev, events, nests),
+        jobs=_job_facts(store, jobs, rows, records, dev, events, nests, checks=job_checks(store, now)),
         free_rows=tuple(r for r in rows
                         if r.studio_id is None and r.state not in _NOT_ON_THE_BOARD),
         cards=tuple(card_from_record(c, job=names.get(c.studio_id or "") or card_folders.get(c.id),
@@ -233,6 +240,8 @@ def _job_facts(
     dev: Iterable[DevRecord],
     events: Iterable[EventRecord],
     nests: Iterable[NestRecord] = (),
+    *,
+    checks: dict[str, JobCheck] | None = None,
 ) -> tuple[_JobFacts, ...]:
     """Grouped once, not searched per job: every page and tray update reads all the jobs, and
     jobs and their nightly re-fetches only pile up. Finished operations are left out but for
@@ -276,6 +285,7 @@ def _job_facts(
             folders=_folders_of(job),
             takeoff=takeoffs_of.get(job.studio_id),
             chats_list=any(name.casefold() in chats for name in _folders_of(job)),
+            check=(checks or {}).get(job.studio_id),
         )
         for job in jobs
     )
@@ -419,6 +429,8 @@ def _still_on_the_board(j: _JobFacts, now: datetime) -> bool:
         return True
     if any(not p.kind.startswith("refetch") for p in j.pending):
         return True
+    if j.check is not None and ((j.check.counts and j.check.to_fix) or j.check.prompt is not None):
+        return True
     return now - (j.filed_at or j.job.updated_at) <= _BOARD_KEEPS
 
 
@@ -442,7 +454,29 @@ def _job_row(store: Store, j: _JobFacts, facts: _Facts, *, paused: bool) -> JobR
         notes=(*_notes(j.folders, facts), *_takeoff_notes(j)),
         lock=_lock_lines(j.folders, facts),
         takeoff=_takeoff_view(j),
+        check=_check_view(j, facts.now),
     )
+
+
+def _check_view(j: _JobFacts, now: datetime) -> CheckView:
+    """The job's check on its row, Check now always beside it (design 4). A settle button only on an
+    item of a check that still counts; a settled item says when and how, and has no chat line."""
+    check = j.check
+    if check is None:
+        return CheckView(j.job.studio_id, "none")
+    prompt = None
+    if check.prompt is not None:
+        prompt = PromptView(check.prompt.id,
+                            templates.close_unanswered(j.job.name, closed_at=check.prompt.closed_at, now=now),
+                            templates.CHECK_CLOSE_FIRST if check.prompt.first else templates.CHECK_CLOSE)
+    items = tuple(CheckItemView(
+        n=shown.item.n, kind=shown.item.kind, text=templates.check_item_words(shown.item),
+        chat=None if shown.settle else templates.check_chat_line(j.job.name, shown.item),
+        settled="" if shown.settle is None else templates.settled_line(at=shown.settle.at,
+                                                                         words=shown.settle.words, now=now),
+        can_settle=check.counts and shown.item.settles and shown.settle is None) for shown in check.items)
+    return CheckView(j.job.studio_id, check.state, check.line, check.run.id if check.run else None, items,
+                     prompt)
 
 
 def _takeoff_view(j: _JobFacts) -> TakeoffView | None:
@@ -774,7 +808,30 @@ def _your_list(facts: _Facts, *, paused: bool) -> list[tuple[datetime, ListItem]
             items.append(blocked)
     items += [_do_not_cut_item(nest, facts) for nest in _do_not_cuts(facts)]
     items += [_save_nest_item(nest, facts) for nest in facts.nests if nest.state == "save_nest"]
+    items += _check_items(facts)
     return sorted(items, key=lambda item: item[0])
+
+
+def _check_items(facts: _Facts) -> list[tuple[datetime, ListItem]]:
+    """Something to fix from a check that counts, one line a job; and a close prompt still waiting. A
+    stale check is no item: its row says to check again."""
+    items = []
+    for j in facts.jobs:
+        check = j.check
+        if check is None:
+            continue
+        if check.counts and check.to_fix and check.run is not None and check.run.finished_at is not None:
+            at = check.run.finished_at
+            said = templates.check_your_list(j.job.name, to_fix=check.to_fix, at=at, trial=check.trial,
+                                             now=facts.now)
+            items.append((at, ListItem(_ended(_fit(said, "A check found something to fix; see the board")),
+                                       job=j.job.name, age_days=(facts.now - at) // timedelta(days=1))))
+        if check.prompt is not None:
+            at = check.prompt.closed_at
+            said = templates.close_unanswered(j.job.name, closed_at=at, now=facts.now)
+            items.append((at, ListItem(_ended(_fit(said, "A job was closed and not checked; see the board")),
+                                       job=j.job.name, age_days=(facts.now - at) // timedelta(days=1))))
+    return items
 
 
 def _do_not_cuts(facts: _Facts) -> list[NestRecord]:
@@ -972,7 +1029,7 @@ def digest_view(store: Store, settings: Settings | None, clock: Clock) -> Digest
     return DigestView(
         now=now,
         owner=(*_nest_lines(facts), *_installing_soon(facts, day),
-               *_alarms(store, facts, paused=None), *_told_stuck(facts, since)),
+               *_alarms(store, facts, paused=None), *_told_stuck(facts, since), *_closes_waiting(facts)),
         jobs=_touched(store, facts, since, paused=paused, day=day),
         cards=facts.cards,
         open_items=len(items),
@@ -993,6 +1050,13 @@ def _nest_lines(facts: _Facts) -> list[str]:
                    templates.more_not_checked(1)) for nest in unchecked[:_NOT_CHECKED_SHOWN]]
     more = len(unchecked) - _NOT_CHECKED_SHOWN
     return [*lines, templates.more_not_checked(more)] if more > 0 else lines
+
+
+def _closes_waiting(facts: _Facts) -> list[str]:
+    """Each close prompt still unanswered (design 4: it goes in the digest)."""
+    return [_fit(templates.close_unanswered(j.job.name, closed_at=j.check.prompt.closed_at, now=facts.now),
+                 "A job was closed and not checked; see the board")
+            for j in facts.jobs if j.check is not None and j.check.prompt is not None]
 
 
 def _told_stuck(facts: _Facts, since: datetime | None) -> list[str]:
@@ -1035,7 +1099,7 @@ def _touched(store: Store, facts: _Facts, since: datetime | None, *, paused: boo
     ids = [e.studio_id for e in facts.events if _touches(e, since)]
     ids += [c.studio_id for c in facts.records if c.studio_id and _since(c.created_at, since)]
     jobs = {j.job.studio_id: j for j in facts.jobs}
-    lines = [_job_line(store, jobs[sid], facts.now, paused=paused, day=day)
+    lines = [_job_line(store, jobs[sid], facts.now, paused=paused, day=day, since=since)
              for sid in dict.fromkeys(ids) if sid in jobs]
     lines += [_fit_line(templates.card_subject(card), _card_digest(card), day=day)
               for card in facts.cards
@@ -1055,18 +1119,27 @@ def _since(when: datetime, since: datetime | None) -> bool:
     return since is None or when >= since
 
 
-def _job_line(store: Store, j: _JobFacts, now: datetime, *, paused: bool, day: date) -> JobLine:
-    """What happened, and for a filed job its takeoff. A takeoff clause the lint would stop costs
-    only itself: the line goes out without it."""
+def _job_line(store: Store, j: _JobFacts, now: datetime, *, paused: bool, day: date,
+              since: datetime | None = None) -> JobLine:
+    """What happened, for a filed job its takeoff, and what a check since the last digest found. A
+    clause the lint would stop costs only itself: the line goes out without it."""
     text = _digest_text(_next_step(store, j, _overlay(j, paused=paused), now))
+    clauses = []
     record = j.takeoff
     if j.filed_at and record is not None and record.state == "made" and record.result is not None:
-        clause = templates.takeoff_digest(record.result["buckets"], complete=record.complete,
-                                          could_not_verify=record.could_not_verify,
-                                          chat=j.chats_list)
+        clauses.append(templates.takeoff_digest(record.result["buckets"], complete=record.complete,
+                                                could_not_verify=record.could_not_verify,
+                                                chat=j.chats_list))
+    check = j.check
+    if (check is not None and check.counts and check.run is not None and check.run.finished_at is not None
+            and _since(check.run.finished_at, since)):
+        clauses.append(templates.check_digest(at=check.run.finished_at, trial=check.trial, audit=check.audit,
+                                              to_fix=check.to_fix, unverified=check.unverified,
+                                              passed=check.state == "passed"))
+    for clause in clauses:
         line = _fit_line(j.job.name, f"{text.rstrip('.')}, {clause}", day=day)
         if line.job == j.job.name and line.text != _CHANGED:
-            return line
+            text = line.text
     return _fit_line(j.job.name, text, day=day)
 
 

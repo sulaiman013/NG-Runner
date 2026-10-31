@@ -132,3 +132,76 @@ def test_with_no_key_eval_says_so_and_sends_nothing(monkeypatch: pytest.MonkeyPa
                         lambda **kw: providers.OpenAIResponses(transport=lambda *a: sent.append(a[2])))
     assert run.main(["eval", "--provider", "openai"]) == 2
     assert sent == [] and "NGRunner/openai_key" in capsys.readouterr().out
+
+
+# ----- nothing is sent twice: one retry on a network error, every outcome cached
+
+
+class Flaky(Transport):
+    def __init__(self, failures: int, status: int = 200) -> None:
+        super().__init__()
+        self.failures, self.status = failures, status
+
+    def __call__(self, url: str, headers: dict[str, str], body: bytes, timeout: float) -> tuple[int, bytes]:
+        if self.failures > 0:
+            self.failures -= 1
+            self.sent.append(body)
+            raise ConnectionError("connection reset")
+        if self.status != 200:
+            self.sent.append(body)
+            return self.status, b'{"error": {"message": "busy"}}'
+        return super().__call__(url, headers, body, timeout)
+
+
+def _one(world: run.World, transport: Transport, tmp_path: Path, ledger: budget.SpendLedger | None = None
+         ) -> tuple[run.RunResult, budget.CostGuard]:
+    guard = budget.CostGuard(3.0, ledger=ledger)
+    walls = [p for p in run.test_walls(world) if p.wall.panels][:1]
+    result = run.read_walls(world, walls, run.worked_walls(world, 3), providers.OpenAIResponses(transport=transport),
+                            "sk-test-NOT-A-REAL-KEY", guard, answers=tmp_path, call=True, say=lambda _: None)
+    return result, guard
+
+
+def test_a_network_error_is_retried_once(tmp_path: Path) -> None:
+    transport = Flaky(failures=1)
+    result, guard = _one(_world("A"), transport, tmp_path)
+    assert len(transport.sent) == 2 and result.scores[0].decline is None and guard.calls == 2
+
+
+def test_a_second_network_error_is_not_retried_and_is_kept(tmp_path: Path) -> None:
+    transport = Flaky(failures=5)
+    world = _world("A")
+    result, _ = _one(world, transport, tmp_path)
+    assert len(transport.sent) == 2 and result.scores[0].decline == "error"
+    _one(world, transport, tmp_path)
+    assert len(transport.sent) == 2  # the error is cached: the crop is never sent again
+
+
+def test_an_http_error_is_never_retried_or_resent(tmp_path: Path) -> None:
+    transport = Flaky(failures=0, status=503)
+    world = _world("A")
+    _one(world, transport, tmp_path)
+    _one(world, transport, tmp_path)
+    assert len(transport.sent) == 1
+
+
+def test_a_network_failure_is_charged_its_worst_case_to_the_ledger(tmp_path: Path) -> None:
+    ledger_path = tmp_path / "spend.json"
+    transport = Flaky(failures=5)
+    _, guard = _one(_world("A"), transport, tmp_path / "answers", budget.SpendLedger(ledger_path, 50.0))
+    assert budget.SpendLedger(ledger_path, 50.0).spent == pytest.approx(guard.spent) and guard.spent > 0
+
+
+def test_the_latency_of_each_call_is_kept_with_its_answer(tmp_path: Path) -> None:
+    _one(_world("A"), Transport(), tmp_path)
+    saved = [json.loads(p.read_text(encoding="utf-8")) for p in tmp_path.rglob("*.json")]
+    assert len(saved) == 1 and saved[0]["latency_s"] >= 0
+
+
+def test_no_key_reaches_a_cached_answer_or_a_report(tmp_path: Path) -> None:
+    from tools.reader_eval import scoring
+    result, _ = _one(_world("A"), Transport(), tmp_path)
+    for p in tmp_path.rglob("*"):
+        if p.is_file():
+            assert b"NOT-A-REAL-KEY" not in p.read_bytes()
+    assert "NOT-A-REAL-KEY" not in scoring.summarize(result.scores, required={}).to_json()

@@ -50,6 +50,7 @@ from ngrunner.board.files import open_inside
 from ngrunner.board.views import BoardActions, BoardView, BoardViews, EventView
 from ngrunner.clock import Clock, SystemClock, fmt_clock, fmt_day, pacific_day
 from ngrunner.config import MODES
+from ngrunner.messages.templates import SETTLE_LABELS
 
 COOKIE = "ngrunner_board"
 TOKEN_FIELD = "token"
@@ -61,6 +62,7 @@ _TOKEN_SHAPE = re.compile(r"[A-Za-z0-9_-]{32,}")
 _READS = ("GET", "HEAD")
 _FAILED = "That didn't go through: NG Runner hit a problem. Try again, or tell Sulaiman."
 _NO_SUCH_MODE = "That didn't go through: NG Runner runs either in shadow or live. Nothing changed."
+_NO_SUCH_SETTLE = "That didn't go through: an item is settled as not a problem, or as told to chat. Nothing changed."
 _log = logging.getLogger(__name__)
 
 
@@ -220,6 +222,9 @@ def _template_values() -> dict[str, object]:
         "overlay_style": display.OVERLAYS.__getitem__,
         "nest_style": display.nest_style,
         "takeoff_style": display.TAKEOFFS.__getitem__,
+        "check_style": display.CHECKS.__getitem__,
+        "check_item_style": display.check_item_style,
+        "settle_labels": SETTLE_LABELS,
         "toasts_style": display.toasts_style,
         "path_style": display.path_style,
         "mode_style": display.mode_style,
@@ -342,6 +347,24 @@ def _actions(app: Flask, actions: BoardActions, roots: tuple[Path, ...],
             flash(_NO_SUCH_MODE, "bad")
             return _back()
         return _run(lambda: actions.set_mode(mode))
+
+    @app.post("/checks/check")
+    def check_job() -> Response:
+        return _run(lambda: actions.check_job(request.form.get("studio_id", "")))
+
+    @app.post("/checks/settle")
+    def settle_item() -> Response:
+        how = request.form.get("how", "")
+        if how not in SETTLE_LABELS:     # a settle is never a guess: only an exact kind gets through
+            flash(_NO_SUCH_SETTLE, "bad")
+            return _back()
+        return _run(lambda: actions.settle_item(request.form.get("studio_id", ""), request.form.get("run_id", ""),
+                                                request.form.get("n", ""), how))
+
+    @app.post("/checks/prompt")
+    def answer_prompt() -> Response:
+        return _run(lambda: actions.answer_prompt(request.form.get("prompt_id", ""),
+                                                  request.form.get("choice", "")))
 
     @app.post("/open")
     def open_file() -> Response:

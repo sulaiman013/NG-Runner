@@ -69,3 +69,58 @@ def test_a_negative_or_unknown_worst_case_is_refused() -> None:
     for bad in (-0.01, float("nan"), float("inf")):
         with pytest.raises(budget.CapReached):
             guard.before(bad)
+
+
+# ----- a total across every run, kept on disk (Claude: $50 for this evaluation, ever)
+
+
+def test_a_ledger_keeps_its_total_across_restarts(tmp_path) -> None:
+    path = tmp_path / "spend.json"
+    ledger = budget.SpendLedger(path, 50.0)
+    ledger.reserve(1.0)
+    ledger.settle(0.4)
+    assert budget.SpendLedger(path, 50.0).spent == pytest.approx(0.4)
+
+
+def test_a_call_that_could_take_the_total_past_the_ledger_cap_is_refused(tmp_path) -> None:
+    ledger = budget.SpendLedger(tmp_path / "spend.json", 50.0)
+    ledger.reserve(49.0)
+    ledger.settle(49.0)
+    with pytest.raises(budget.CapReached):
+        budget.SpendLedger(tmp_path / "spend.json", 50.0).reserve(1.01)
+
+
+def test_a_crash_between_reserve_and_settle_leaves_the_worst_case_counted(tmp_path) -> None:
+    path = tmp_path / "spend.json"
+    budget.SpendLedger(path, 50.0).reserve(2.5)  # the process dies here
+    again = budget.SpendLedger(path, 50.0)
+    assert again.spent == pytest.approx(2.5)
+    with pytest.raises(budget.CapReached):
+        again.reserve(47.6)
+
+
+def test_an_unreadable_ledger_refuses_rather_than_reading_as_zero(tmp_path) -> None:
+    path = tmp_path / "spend.json"
+    path.write_text("{not json", encoding="utf-8")
+    with pytest.raises(budget.CapReached):
+        budget.SpendLedger(path, 50.0).reserve(0.01)
+
+
+def test_a_ledger_cannot_be_reopened_with_a_higher_cap(tmp_path) -> None:
+    path = tmp_path / "spend.json"
+    budget.SpendLedger(path, 50.0).reserve(0.1)
+    with pytest.raises(budget.CapReached):
+        budget.SpendLedger(path, 80.0).reserve(0.1)
+
+
+def test_a_guard_with_a_ledger_refuses_what_fits_the_run_but_not_the_total(tmp_path) -> None:
+    path = tmp_path / "spend.json"
+    old = budget.SpendLedger(path, 50.0)
+    old.reserve(48.0)
+    old.settle(48.0)
+    guard = budget.CostGuard(3.0, ledger=budget.SpendLedger(path, 50.0))
+    guard.before(1.5)
+    guard.after(1.2)
+    with pytest.raises(budget.CapReached):
+        guard.before(1.0)  # 49.2 + 1.0 > 50, though the run has $1.80 left
+    assert budget.SpendLedger(path, 50.0).spent == pytest.approx(49.2)

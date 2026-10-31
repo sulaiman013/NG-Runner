@@ -252,3 +252,9 @@ def test_a_key_that_cannot_be_read_names_the_secret_never_the_value() -> None:
 def test_each_provider_names_its_key() -> None:
     assert providers.OpenAIResponses().key_name == "openai_key"
     assert providers.AnthropicMessages().key_name == "anthropic_key"
+
+
+def test_the_openrouter_key_is_read_and_a_trailing_nul_dropped() -> None:
+    api = FakeCred({"NGRunner/openrouter_key": KEY + "\0"})
+    assert keys.read_key("openrouter_key", api=api) == KEY
+    assert providers.OpenRouterLuna().key_name == "openrouter_key"

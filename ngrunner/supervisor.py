@@ -19,7 +19,9 @@ Jim's PC. The rules that shaped it:
 - One task failing never stops the others: it is logged and opens a DEV item.
 
 The guards run beside the pipeline's tick and never inside it: a guard's failure is its own, and
-their reads of G: are on a worker, whose result is taken up within a second of coming back.
+their reads of G: are on a worker, whose result is taken up within a second of coming back. So do P3's
+checks (checks/jobchecks.py): Jim's crosscheck runs on a worker of its own, one at a time, and what it
+found is taken up within a second; Check now, a settle and a close prompt's answer are the board's.
 
 Quit means quit until the next logon (launcher.record_quit), and pause means filing stops while
 heartbeats, the digest, the guards and messages go on: the interlock decides that, so the pipeline keeps ticking
@@ -303,9 +305,11 @@ class Supervisor:
         browser: Callable[[str], object] = webbrowser.open,
         opener: Callable[[str], None] | None = None,
         toolkit_runs: Any = None,
+        check_runs: Any = None,
     ) -> None:
         self._paths = paths
         self._toolkit_runs = toolkit_runs      # where the night's toolkit copy is tried (a FetchRunner)
+        self._check_runs = check_runs          # where P3's checks run (a FetchRunner), one at a time
         self._clock = clock or SystemClock()
         self._secrets = secrets if secrets is not None else CredentialSecrets()
         self._http = http
@@ -355,6 +359,7 @@ class Supervisor:
             _Task("setup check", MINUTE, self._check_setup),
             _Task("pause files", MINUTE, self._read_pause_files),
             _Task("guards", MINUTE, self._guards),
+            _Task("checks", MINUTE, self._checks),
             _Task("pipeline tick", MINUTE, self._tick),
             _Task("receipts check", MINUTE, self._check_receipts),
             _Task("heartbeat", HEARTBEAT_EVERY, self._heartbeat),
@@ -426,6 +431,8 @@ class Supervisor:
             self._quietly("the pipeline's stop", lambda: self._seams.pipeline.stop_work(self._ctx))
         if self._toolkit_runs is not None:      # a try under way dies with the process, and its job
             self._quietly("the toolkit copy's stop", self._toolkit_runs.stop)
+        if self._check_runs is not None:        # a check under way dies with the process; it is asked again
+            self._quietly("the checks' stop", self._check_runs.stop)
         if self._server is not None:
             self._quietly("the board's stop", self._server.stop)
         if self._tray is not None:
@@ -595,6 +602,9 @@ class Supervisor:
             asked, self._asked = self._asked, set()
         if "check" in asked:
             next(task for task in self._tasks if task.name == "pipeline tick").last = None
+        if "checks" in asked:
+            next(task for task in self._tasks if task.name == "checks").last = None
+        self._take_checks(now)
         if "support" in asked:
             self._guarded("support bundle", self._send_support_bundle, now)
         return self._take_guards(now) or bool(asked)
@@ -794,6 +804,38 @@ class Supervisor:
         reads, so it runs through a pause and with no signing key. Telling people waits for one."""
         if self._ctx is not None and not self._store_problem:
             self._seams.guards.tick(self._ctx)
+
+    def _checks(self, now: datetime) -> None:
+        """P3's checks: what the worker found, closes and newly built jobs, and the next run. Like the
+        guards, they only read, so they run through a pause and with no signing key."""
+        if self._ctx is not None and not self._store_problem:
+            from ngrunner.checks import jobchecks
+
+            jobchecks.tick(self._ctx, self._check_work(), toast=self._toast)
+
+    def _check_work(self) -> Any:
+        if self._check_runs is None:
+            from ngrunner.checks.jobchecks import CHECK_OVERRUN
+            from ngrunner.intake.pipeline import BackgroundFetches
+
+            self._check_runs = BackgroundFetches(1, overrun=CHECK_OVERRUN, name="ngrunner-checks")
+        return self._check_runs
+
+    def _take_checks(self, now: datetime) -> bool:
+        """What a check found, within a second of its coming back, on this thread."""
+        if self._ctx is None or self._store_problem or self._check_runs is None:
+            return False
+        try:
+            from ngrunner.checks import jobchecks
+
+            return jobchecks.take_finished(self._ctx, self._check_runs, toast=self._toast)
+        except StoreError as exc:
+            _log.error("the checks could not use the database: %s", exc)
+            self._store_problem = NO_STORE
+        except Exception as exc:  # noqa: BLE001 - a check's failure must never stop the schedule
+            _log.exception("the checks failed")
+            self._dev(now, "task_failed", f"The checks failed ({type(exc).__name__}).")
+        return False
 
     def _check_receipts(self, now: datetime) -> None:
         if self._ready():
@@ -1340,9 +1382,18 @@ class Supervisor:
         return self._run_command(text, channel="command")
 
     def toast_choice(self, argument: str) -> None:
-        """A click on a toast: its button's "<card ID> <label>", or the toast itself."""
+        """A click on a toast: its button's "<card ID> <label>", a close prompt's
+        "check-prompt <id> <n>", or the toast itself."""
         if argument == toasts.OPEN_BOARD:
             self.open_board()
+            return
+        from ngrunner.checks import jobchecks
+
+        prompt = jobchecks.prompt_choice(argument)
+        if prompt is not None:
+            reply = self._answer_prompt(prompt[0], prompt[1], words=argument.split()[-1], channel="toast")
+            if reply:
+                self._toast(ToastMessage("echo", reply))
             return
         reply = self._run_command(argument, channel="toast")
         if reply:
@@ -1413,9 +1464,56 @@ class Supervisor:
         if self._ctx is not None:
             self._ctx = replace(self._ctx, settings=settings, mode=settings.mode)
 
+    def check_job(self, studio_id: str) -> str:
+        """The board's Check now on one job (P3)."""
+        if self._store is None or self._store_problem or self._ctx is None:
+            return CANT_DO_THAT
+        from ngrunner.checks import jobchecks
+
+        reply = jobchecks.ask(self._ctx, studio_id.strip(), trigger="check_now")
+        with self._asked_lock:
+            self._asked.add("checks")
+        return reply
+
+    def settle_item(self, studio_id: str, run_id: str, n: str, how: str) -> str:
+        """A check item's settle button: "Not a problem for this job" or "I already told chat"."""
+        if self._store is None or self._store_problem or self._ctx is None:
+            return CANT_DO_THAT
+        from ngrunner.checks import jobchecks
+        from ngrunner.messages.templates import SETTLE_GONE, SETTLE_LABELS
+
+        if how not in SETTLE_LABELS or not run_id.strip().isdigit() or not n.strip().isdigit():
+            return SETTLE_GONE
+        return jobchecks.settle(self._ctx, studio_id.strip(), int(run_id), int(n), how=how,
+                                words=SETTLE_LABELS[how], channel="board")
+
+    def answer_prompt(self, prompt_id: str, choice: str) -> str:
+        """A close prompt's button on the board."""
+        if not prompt_id.strip().isdigit():
+            return NOT_OPEN
+        return self._answer_prompt(int(prompt_id), choice, words=choice, channel="board")
+
+    def _answer_prompt(self, prompt_id: int, choice: str | int, *, words: str, channel: str) -> str:
+        if self._store is None or self._store_problem or self._ctx is None:
+            return CANT_DO_THAT
+        from ngrunner.checks import jobchecks
+
+        reply = jobchecks.answer_prompt(self._ctx, prompt_id, choice, words=words, channel=channel)
+        with self._asked_lock:
+            self._asked.add("checks")
+        return reply
+
     def _run_command(self, text: str, *, channel: str) -> str:
         if self._store is None or self._store_problem:
             return CANT_DO_THAT
+        from ngrunner.checks import jobchecks
+
+        named = jobchecks.check_command(self._store, text)
+        if named is not None and self._ctx is not None:
+            reply = jobchecks.ask(self._ctx, named, trigger="check_now") if named else jobchecks.NO_SUCH_JOB
+            with self._asked_lock:
+                self._asked.add("checks")
+            return reply
         parsed = parse_command(text, self._open_cards())
         if isinstance(parsed, Rejection):
             return parsed.text

@@ -26,7 +26,7 @@ from ngrunner.clock import fmt_clock, fmt_day, pacific_day
 from ngrunner.convert import rules as takeoff_rules
 from ngrunner.match import Opportunity
 from ngrunner.messages import Message
-from ngrunner.messages.lint import ABOUT_ITSELF, check_line, lint, redact, subject_line
+from ngrunner.messages.lint import ABOUT_ITSELF, CLEAN, check_line, lint, redact, subject_line
 
 NONE_OF_THESE = "None of these"
 
@@ -792,6 +792,264 @@ def _at(at: datetime | None) -> str:
 def _feet(feet: float) -> str:
     whole = round(feet)
     return "1 foot" if whole == 1 else f"{whole} feet"
+
+
+# ----- P3's checks: what a check found, the close prompt, and their lines on the board and in the digest
+#
+# A check's items (ngrunner/checks/findings.py) hold codes, tags (R2C3), sizes and counts, never what a
+# checker printed. The words are here. Each item names its parts by tag, at most 8 and then how many
+# more, and one that Jim's chat fixes has the line he pastes into it, which names the job, so it reads
+# on its own in a chat that has never seen the board.
+
+CHECKER_WORDS = {   # each checker as Jim reads it: a checker's own name has an underscore
+    "section_align": "section alignment", "section_span": "section span", "drill_depth_check": "bore depth",
+    "outset_check": "outset", "part_geom_check": "part size", "br_cam_check": "bridge and cam",
+    "op_schema_check": "operation format", "wm_variant_check": "WM variant",
+    "notch_check": "notch face and WM banding", "eb_tops": "countertop banding", "top_line": "top line",
+    "parm_check": "parameters", "panel_xcheck": "panel set", "ic_code_check": "IC codes",
+    "hinge_check": "hinge count", "room_files": "room files", "sheet_size_check": "sheet size",
+    "br_cam_check --nest": "nest cam",
+}
+# A fault's kind: what is wrong, and what Jim's chat is to do about it ({tags} the parts). None: only
+# Jim in Mozaik can fix it, and the words say so.
+_CHECK_FIXES = {
+    "off_grid": ("the section sits off the bore grid", "put {tags} back on the bore grid"),
+    "top_off": ("the section's top misses the panels' top line",
+                "bring the tops of {tags} to the panels' top line"),
+    "bore_pitch": ("bore holes on the vertical are closer together than the bore pitch",
+                   "fix the bore rows on {tags}"),
+    "faces_off": ("the bore rows on the vertical's two faces are out of step", "fix the bore rows on {tags}"),
+    "stale_rows": ("a bore row is left from an old section height. Touch the section beside it in Mozaik,"
+                   " as opening and saving won't clear it", None),
+    "span": ("the section doesn't fill its bay from vertical to vertical",
+             "make the sections on {tags} meet their verticals"),
+    "bore_off_panel": ("a line bore runs off the panel. Fix it in Mozaik", None),
+    "bores_stripped": ("the vertical has no line bores though a section is beside it",
+                       "restore the line bores on {tags}"),
+    "bore_depth": ("the line bore depth doesn't match the sections beside the vertical",
+                   "fix the line bore depth on {tags}"),
+    "part_size": ("a panel part doesn't match its product's depth or height",
+                  "fix the parts of {tags} to match their products"),
+    "bridge_cams": ("the bridge's cams are not as the bridge rule says", "rebuild the bridge cams on {tags}"),
+    "doubled_holes": ("two holes sit on top of each other", "fix the doubled holes on {tags}"),
+    "op_schema": ("an operation isn't written the way Mozaik writes it",
+                  "rewrite the operations the operation format check names in {tags}"),
+    "wm_variant": ("the WM panel is the wrong variant for the sections beside it",
+                   "swap {tags} to the variant their sections need"),
+    "wm_groove": ("the WM panel's groove doesn't match the product library", "fix the groove on {tags}"),
+    "notch_face": ("the notch is on the wrong face", "put the notch on its line-bore face on {tags}"),
+    "wm_banding": ("WM panel banding is not taped and locked on top, front and bottom",
+                   "tape and lock the WM panel banding in {tags}"),
+    "room_file": ("the room file isn't written the way Mozaik writes it",
+                  "write the room file of {tags} again the way Mozaik writes it"),
+}
+_CHECK_UNVERIFIED = {   # could not verify: what wasn't checked, after "Could not verify <subject>: "
+    "q1": "how the top is numbered waits for Jim's answer to Q1",
+    "not_run": "Jim's crosscheck doesn't run his hinge check",
+    "outset": "the outset check found {products} not at outset 0, which Jim's crosscheck doesn't flag",
+    "banding": "the countertop banding check would change the countertop banding, which Jim's crosscheck"
+               " doesn't flag",
+    "top_line": "the top line check would move WM panels to the room's top line, which Jim's crosscheck"
+                " doesn't flag",
+    "op_by_hand": "an operation has no Mozaik-written example to compare with, so a person must check it",
+    "variant_deferred": "the WM variant check waits for sections on the wall",
+    "version": "the room file is in a version NG Runner hasn't seen",
+}
+_TAGS_SHOWN = 8
+CHECK_CLOSE_FIRST = ("Opened fine, sections done: check it", "Opened fine, not done yet", "It showed an error")
+CHECK_CLOSE = ("Yes, check it", "Not yet")
+CHECK_THESE = frozenset({CHECK_CLOSE_FIRST[0], CHECK_CLOSE[0]})     # the answers that ask for a check
+NO_TOOLKIT = "No copy of Jim's toolkit is adopted yet, so his checks can't run, and nothing was checked"
+NOT_A_JOB = "NG Runner doesn't know that job, so nothing was checked."
+SETTLE_LABELS = {"not_a_problem": "Not a problem for this job", "told_chat": "I already told chat"}
+
+
+def check_item_words(item: Any) -> str:
+    """One item, as the board and a message say it (findings.Item): its parts by tag, then what."""
+    tags = _tags_said(item.tags)
+    checker = CHECKER_WORDS.get(item.checker, "a")
+    if item.kind == "could_not_verify":
+        if item.what == "not_read":
+            return f"Could not verify any check: {_clause(item.why)}"
+        if item.what == "checker":
+            return f"Could not verify the {checker}: the check {_clause(item.why)}"
+        said = _CHECK_UNVERIFIED.get(item.what, f"the {checker} check could not be read")
+        said = said.format(products="a product" if item.count == 1 else "products")
+        return f"Could not verify {tags or f'the {checker}'}: {said}"
+    if item.kind == "advisory":
+        return (f"The IC codes differ from what is built in {_count(item.count or 1, 'place')}; advisory"
+                " only, as Jim's rules win over the IC codes")
+    if item.what == "parameters":
+        verb = "differs" if item.count == 1 else "differ"
+        return f"{_count(item.count, 'parameter')} {verb} from the template job's"
+    if item.what in ("missing_part", "extra_part"):
+        parts = sum(quan for _, _, quan in item.sizes) or 1
+        where = ("on the IC summary {is_} not in Mozaik's cutlist" if item.what == "missing_part"
+                 else "in Mozaik's cutlist {is_} not on the IC summary")
+        return (f"{_count(parts, 'part')} {where.format(is_='is' if parts == 1 else 'are')}:"
+                f" {_sizes_said(item.sizes)}")
+    problem = _CHECK_FIXES.get(item.what, (f"the {checker} check found something to fix", ""))[0]
+    return f"{tags}: {problem}" if tags else _upper_first(problem)
+
+
+def check_chat_line(job: str, item: Any) -> str | None:
+    """The line Jim pastes into his chat to fix item, naming the job; None when only Mozaik can fix it
+    or it is no fault (could not verify, advisory)."""
+    if item.kind != "fix":
+        return None
+    tags = _tags_said(item.tags)
+    if item.what == "parameters":
+        action = "set the job's parameters to the template job's"
+    elif item.what == "missing_part":
+        action = "add the parts the panel set check says are missing from Mozaik"
+    elif item.what == "extra_part":
+        action = "fix the extra parts the panel set check names"
+    else:
+        known = _CHECK_FIXES.get(item.what, (None, None))[1]
+        action = known or f"fix what the {CHECKER_WORDS.get(item.checker, 'a')} check found on {{tags}}"
+        if not tags:
+            for joined in (" on {tags}", " in {tags}", " of {tags}"):
+                action = action.replace(joined, "")
+        action = action.format(tags=tags)
+    return f"{job}: {action}, then run crosscheck"
+
+
+def check_item_line(job: str, item: Any) -> str:
+    """An item as one line of a message: what, then the chat line in quotes, or nothing more."""
+    chat = check_chat_line(job, item)
+    words = _ended(check_item_words(item))
+    return f'{words} In chat: "{chat}".' if chat else words
+
+
+def check_result(job: str, *, at: datetime, trial: bool, audit: bool, items: Sequence[Any],
+                 passed: bool) -> Message:
+    """What a check Jim asked for found: a toast at his PC, or Sulaiman's email in shadow mode. One
+    numbered line per open item, could-not-verify ones included; exactly the clean line when every
+    check passed and nothing is open. Advisory items are on the board only, as are settled ones."""
+    title = f"{job} {'build checked' if audit else 'checked'} {fmt_clock(at)}{_trial(trial)}"
+    shown = [item for item in items if item.kind != "advisory"]
+    if passed and not shown:
+        return Message("check_result", title, (CLEAN,))
+    if not shown:
+        return Message("check_result", title, (f"{job}: every finding is one you settled for this job.",))
+    return Message("check_result", title, _numbered(check_item_line(job, item) for item in shown))
+
+
+def check_state_words(*, state: str, at: datetime | None = None, now: datetime | None = None,
+                      trial: bool = False, audit: bool = False, to_fix: int = 0, unverified: int = 0,
+                      settled: int = 0, words: str = "") -> str:
+    """The check's one line on the board. state: asked, running, waiting, passed, failed,
+    could_not_verify, stale or not_run."""
+    when = "" if at is None else (_clock_on(at, pacific_day(now)) if now is not None else fmt_clock(at))
+    what = "Build checked" if audit else "Checked"
+    if state == "asked":
+        return "A check is asked for, and runs next"
+    if state == "running":
+        return "Checking now"
+    if state == "waiting":
+        return "Waiting for Mozaik to close the job, then it checks"
+    if state == "not_run":
+        return f"Not checked {when}: {_clause(words)}" if when else f"Not checked: {_clause(words)}"
+    if state == "stale":
+        return f"{what} {when}, and the job changed since; check it again"
+    parts = [f"{to_fix} to fix"] if to_fix else []
+    parts += [f"{unverified} could not verify"] if unverified else []
+    parts += [f"{settled} settled"] if settled else []
+    head = f"{what} {when}{_trial(trial)}"
+    if state == "passed" and not parts:
+        return f"{head}: every check passed"
+    return f"{head}: {', '.join(parts) or 'could not verify'}"
+
+
+def check_your_list(job: str, *, to_fix: int, at: datetime, trial: bool, now: datetime) -> str:
+    """Your list: a job with something to fix from its check."""
+    return (f"{job}: {to_fix} to fix from its check at {_clock_on(at, pacific_day(now))}{_trial(trial)};"
+            " see the board")
+
+
+def check_digest(*, at: datetime, trial: bool, audit: bool, to_fix: int, unverified: int,
+                 passed: bool) -> str:
+    """The check's clause on a job's digest line: checked 9:42 PM (trial): 2 to fix."""
+    what = "build checked" if audit else "checked"
+    if passed:
+        return f"{what} {fmt_clock(at)}{_trial(trial)}, every check passed"
+    parts = [f"{to_fix} to fix"] if to_fix else []
+    parts += [f"{unverified} could not verify"] if unverified else []
+    return f"{what} {fmt_clock(at)}{_trial(trial)}: {' and '.join(parts) or 'could not verify'}"
+
+
+def close_prompt(job: str, *, closed_at: datetime, first: bool) -> Message:
+    """The toast when Jim closes a job in Mozaik (design 4, "The close prompt"). Its buttons are
+    CHECK_CLOSE_FIRST the first time, then CHECK_CLOSE; ignoring it means "not yet"."""
+    return Message("close_prompt", f"{job} closed {fmt_clock(closed_at)}", ("Sections done?",))
+
+
+def close_unanswered(job: str, *, closed_at: datetime, now: datetime) -> str:
+    """Your list and the digest, while a close prompt waits: design 4's words."""
+    return f"{job}: closed {_clock_on(closed_at, pacific_day(now))}, not checked. Sections done?"
+
+
+def check_asked(job: str) -> str:
+    return f"Checking {job} now: the board shows what it finds."
+
+
+def check_already_asked(job: str) -> str:
+    return f"{job} is already waiting for its check."
+
+
+def settled_echo(job: str, *, n: int, how: str) -> str:
+    if how == "told_chat":
+        return f"Noted for {job}: you told chat about item {n}. It isn't asked again unless the job changes."
+    return f"Settled for {job}: item {n} isn't asked again unless the job changes."
+
+
+def settled_line(*, at: datetime, words: str, now: datetime) -> str:
+    """A settled item on the board: when, and Jim's words as he gave them (a button's label)."""
+    return f"Settled {_clock_on(at, pacific_day(now))}: {_clause(words)}"
+
+
+SETTLE_GONE = "That item is no longer on the board, so nothing changed."
+SETTLE_STALE = "The job changed since that check, so nothing was settled: check it again first."
+SETTLE_NEVER = "That item can't be settled: it is something NG Runner must always say, so nothing changed."
+PROMPT_ANSWERED = "That question is no longer open, so nothing changed."
+PROMPT_NOT_A_CHOICE = "That isn't one of the question's answers, so nothing changed."
+
+
+def mozaik_error_echo(job: str) -> str:
+    """Jim's "It showed an error" on a close prompt: Sulaiman hears, and the job is his chat's as before."""
+    return f"Noted: {job} showed an error in Mozaik. Sulaiman will look; work it in chat as before."
+
+
+def not_yet_echo(job: str) -> str:
+    return f"Noted: {job} isn't ready to check. Check now on the board when it is."
+
+
+def _tags_said(tags: Sequence[str]) -> str:
+    shown = list(tags[:_TAGS_SHOWN])
+    if len(tags) > _TAGS_SHOWN:
+        return f"{', '.join(shown)} and {len(tags) - _TAGS_SHOWN} more"
+    return _and(shown) if shown else ""
+
+
+def _sizes_said(sizes: Sequence[tuple[float, float, int]]) -> str:
+    said = []
+    for width, length, quan in sizes[:4]:
+        one = f"{_inches(width)} by {_inches(length)}"
+        said.append(f"{one}, {quan} of them" if quan > 1 else one)
+    more = len(sizes) - 4
+    return "; ".join(said) + (f"; and {_count(more, 'other size')}" if more > 0 else "")
+
+
+def _inches(mm: float) -> str:
+    """157.5 mm as 6 3/16" (157.5 mm): inches to the nearest 1/16, then the mm Jim's files hold."""
+    whole, part = divmod(round(mm / 25.4 * 16), 16)
+    fraction = Fraction(part, 16)
+    inches = (f"{whole} {fraction}" if whole else f"{fraction}") if part else f"{whole}"
+    return f'{inches}" ({mm:g} mm)'
+
+
+def _upper_first(text: str) -> str:
+    return text[:1].upper() + text[1:]
 
 
 # ----- Sulaiman's lines: the DEV lane (Jim never sees it) and the daily "ran" line

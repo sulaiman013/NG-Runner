@@ -3,8 +3,8 @@ The reader evaluation's provider keys, from Windows Credential Manager.
 
 Why not ngrunner.secrets: its names are a closed list owned by the app, and the evaluation is a dev
 tool whose keys the app must never hold. The rules are the same (AGENTS.md rule 6; design 6,
-"Secrets"): a generic credential per key, NGRunner/openai_key and NGRunner/anthropic_key, stored as
-UTF-16 text; a value is never printed, logged, put in a repr or in an error. Only these two names
+"Secrets"): a generic credential per key, NGRunner/openai_key, NGRunner/anthropic_key and
+NGRunner/openrouter_key, stored as UTF-16 text (cmdkey's blob; a trailing NUL is dropped); a value is never printed, logged, put in a repr or in an error. Only these names
 can be read, so a typo is refused instead of reading as "not set".
 
 To store one (Sulaiman, by hand, never in a script that echoes it): Credential Manager > Windows
@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from typing import Any
 
-NAMES = ("openai_key", "anthropic_key")
+NAMES = ("openai_key", "anthropic_key", "openrouter_key")
 TARGET_PREFIX = "NGRunner"
 _NOT_FOUND = 1168  # ERROR_NOT_FOUND
 
@@ -53,6 +53,7 @@ def read_key(name: str, *, api: Any = None) -> str | None:
             text = bytes(blob).decode("utf-16-le")
         except UnicodeDecodeError:
             text = None
-    if not text or not text.strip():
+    text = (text or "").strip().strip("\0").strip()
+    if not text:
         raise KeyProblem(f"{where} in Windows Credential Manager is not readable text")
-    return text.strip()
+    return text

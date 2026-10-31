@@ -63,6 +63,8 @@ P1A_MODULES: tuple[str, ...] = (
     "ngrunner.guards.sheets", "ngrunner.guards.takeoffs", "ngrunner.guards.tap",
     "ngrunner.guards.tool_checks", "ngrunner.guards.tracker", "ngrunner.guards.watch",
     "ngrunner.toolkit",
+    "ngrunner.checks", "ngrunner.checks.crosscheck", "ngrunner.checks.readers", "ngrunner.checks.findings",
+    "ngrunner.checks.jobchecks",
     "flask", "waitress", "requests", "pystray", "PIL", "psutil", "win32api", "pywintypes",
     "pythoncom", "win32com", "win32com.shell", "win32com.propsys", "win32cred", "win32timezone",
     "win32job", "runpy", "pkgutil", "windows_toasts",
@@ -437,6 +439,7 @@ def message_samples() -> list[object]:
         *(Message("echo", "NG Runner", (line,)) for line in echoes),
         *_nest_samples(t, job),
         *_takeoff_samples(t, job),
+        *_check_samples(t, job),
     ]
 
 
@@ -532,6 +535,57 @@ def _takeoff_samples(t: Any, job: str) -> list[object]:
             t.takeoff_digest([white], complete=False, could_not_verify=2, chat=True),
             t.could_not_verify_lines(3), t.CHATS_TAKEOFF,
             *t.takeoff_lines([white, inch, tafisa]))),
+    ]
+
+
+def _check_samples(t: Any, job: str) -> list[object]:
+    """P3's checks: what a check found, item by item in every kind there is, the check's message, its
+    lines on the board, Your list and in the digest, the close prompt and every echo."""
+    from ngrunner.checks.findings import Item
+    from ngrunner.messages import Message
+
+    at = datetime(2026, 10, 31, 4, 42, tzinfo=timezone.utc)          # 9:42 PM Pacific
+    fixes = [Item(n, "mozaik" if what in ("stale_rows", "bore_off_panel") else "fix", "notch_check", what,
+                  ("R1C3", "R2C5"), settles=True) for n, what in enumerate(t._CHECK_FIXES, start=1)]
+    fixes += [Item(0, "fix", "parm_check", "parameters", count=2),
+              Item(0, "fix", "panel_xcheck", "missing_part", sizes=((157.5, 447.0, 1), (304.8, 2438.4, 2))),
+              Item(0, "fix", "panel_xcheck", "extra_part", sizes=((158.5, 447.8, 1),)),
+              Item(0, "fix", "section_span", "other", ("R1C4",)), Item(0, "fix", "op_schema_check", "op_schema")]
+    unverified = [Item(0, "could_not_verify", "outset_check", what, ("R1C7",), count=1)
+                  for what in t._CHECK_UNVERIFIED]
+    unverified += [Item(0, "could_not_verify", "wm_variant_check", "checker",
+                        why="reads its product library from a path this PC doesn't have"),
+                   Item(0, "could_not_verify", "", "not_read", why="Jim's crosscheck stopped with an error."),
+                   Item(0, "advisory", "ic_code_check", "ic_code", count=3)]
+    items = [*fixes, *unverified]
+    title = f"{job} checked 9:42 PM (trial)"
+    states = [t.check_state_words(state=state, at=at, now=at, trial=True, to_fix=2, unverified=1, settled=1,
+                                  words=t.NO_TOOLKIT)
+              for state in ("asked", "running", "waiting", "passed", "failed", "could_not_verify", "stale",
+                            "not_run")]
+    states += [t.check_state_words(state="passed", at=at, now=at), t.check_state_words(state="not_run", words="x y"),
+               t.check_state_words(state="stale", at=at, now=at, audit=True)]
+    lines = [t.check_item_words(item) for item in items] + [line for line in (
+        t.check_chat_line(job, item) for item in items) if line]
+    return [
+        t.check_result(job, at=at, trial=True, audit=False, items=items, passed=False),
+        t.check_result(job, at=at, trial=False, audit=True, items=(), passed=True),
+        t.check_result(job, at=at, trial=False, audit=False, items=(), passed=False),
+        t.close_prompt(job, closed_at=at, first=True),
+        Message("check_lines", title, tuple(f"{n}. {t.check_item_line(job, item)}"
+                                            for n, item in enumerate(items, start=1))),
+        Message("check_lines", title, tuple(f"{n}. {line}" for n, line in enumerate((*lines, *states), start=1))),
+        *(Message("check_line", "NG Runner", (f"1. {line}",)) for line in (
+            t.check_your_list(job, to_fix=2, at=at, trial=True, now=at),
+            f"{job}: {t.check_digest(at=at, trial=True, audit=False, to_fix=2, unverified=1, passed=False)}",
+            f"{job}: {t.check_digest(at=at, trial=False, audit=True, to_fix=0, unverified=0, passed=True)}",
+            t.close_unanswered(job, closed_at=at, now=at),
+            f"{job}: {t.settled_line(at=at, words=t.SETTLE_LABELS['told_chat'], now=at)}")),
+        *(Message("echo", "NG Runner", (line,)) for line in (
+            t.check_asked(job), t.check_already_asked(job), t.settled_echo(job, n=1, how="told_chat"),
+            t.settled_echo(job, n=2, how="not_a_problem"), t.mozaik_error_echo(job), t.not_yet_echo(job),
+            f"{t.NO_TOOLKIT}.", t.NOT_A_JOB, t.SETTLE_GONE, t.SETTLE_STALE, t.SETTLE_NEVER, t.PROMPT_ANSWERED,
+            t.PROMPT_NOT_A_CHOICE)),
     ]
 
 

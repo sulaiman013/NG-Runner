@@ -324,7 +324,122 @@ _V5 = (
     ) STRICT""",
 )
 
-MIGRATIONS: tuple[tuple[str, ...], ...] = (_V1, _V2, _V3, _V4, _V5)
+# Version 6: P3's checks (store/checks.py): each run of Jim's crosscheck on a job, bound to the bytes it
+# ran on; Jim's settles of what one found, bound to the finding and to the rooms' design identities; and
+# the close prompts. New tables only, so nothing an older row holds changes.
+_V6 = (
+    """CREATE TABLE IF NOT EXISTS check_runs (
+        id                INTEGER PRIMARY KEY,
+        studio_id         TEXT NOT NULL REFERENCES jobs (studio_id),
+        folder            TEXT NOT NULL,
+        kind              TEXT NOT NULL,
+        trigger           TEXT NOT NULL,
+        state             TEXT NOT NULL,
+        asked_at          TEXT NOT NULL,
+        started_at        TEXT,
+        finished_at       TEXT,
+        code              TEXT,
+        words             TEXT,
+        snapshot_sha256   TEXT,
+        conversion_sha256 TEXT,
+        rooms             TEXT NOT NULL DEFAULT '{}',
+        identities        TEXT NOT NULL DEFAULT '{}',
+        stats             TEXT NOT NULL DEFAULT '{}',
+        result            TEXT,
+        features          TEXT NOT NULL DEFAULT '[]',
+        trial             INTEGER NOT NULL DEFAULT 1,
+        stale_at          TEXT,
+        told_at           TEXT
+    ) STRICT""",
+    "CREATE INDEX IF NOT EXISTS check_runs_by_job ON check_runs (studio_id, id)",
+    """CREATE TABLE IF NOT EXISTS settles (
+        id                INTEGER PRIMARY KEY,
+        studio_id         TEXT NOT NULL REFERENCES jobs (studio_id),
+        run_id            INTEGER NOT NULL REFERENCES check_runs (id),
+        fingerprint       TEXT NOT NULL,
+        identities        TEXT NOT NULL,
+        conversion_sha256 TEXT NOT NULL,
+        how               TEXT NOT NULL,
+        words             TEXT NOT NULL,
+        channel           TEXT NOT NULL,
+        at                TEXT NOT NULL
+    ) STRICT""",
+    """CREATE TABLE IF NOT EXISTS check_prompts (
+        id           INTEGER PRIMARY KEY,
+        studio_id    TEXT NOT NULL REFERENCES jobs (studio_id),
+        folder       TEXT NOT NULL,
+        closed_at    TEXT NOT NULL,
+        first        INTEGER NOT NULL,
+        answer       TEXT,
+        answer_words TEXT,
+        answered_at  TEXT,
+        channel      TEXT
+    ) STRICT""",
+)
+
+# Version 7: P4's lock and fixes (store/locks.py): the lease NG Runner last wrote in each job's folder,
+# every tracker batch it dropped and what the snapshots said after it, every fix with its patch and its
+# survival, and Jim's lock clicks. New tables only, so nothing an older row holds changes.
+_V7 = (
+    """CREATE TABLE IF NOT EXISTS leases (
+        folder      TEXT PRIMARY KEY NOT NULL,
+        holder      TEXT NOT NULL,
+        state       TEXT NOT NULL,
+        taken_at    TEXT NOT NULL,
+        expires_at  TEXT NOT NULL,
+        released_at TEXT,
+        sha256      TEXT NOT NULL
+    ) STRICT""",
+    """CREATE TABLE IF NOT EXISTS tracker_batches (
+        id           TEXT PRIMARY KEY NOT NULL,
+        folder       TEXT NOT NULL,
+        kind         TEXT NOT NULL,
+        verb         TEXT NOT NULL,
+        material     TEXT,
+        rows         TEXT NOT NULL,
+        rows_sha256  TEXT NOT NULL,
+        file         TEXT NOT NULL,
+        state        TEXT NOT NULL,
+        dropped_at   TEXT NOT NULL,
+        archived_at  TEXT,
+        first_ok_at  TEXT,
+        first_taken  TEXT,
+        confirmed_at TEXT,
+        words        TEXT,
+        resend_of    TEXT
+    ) STRICT""",
+    "CREATE INDEX IF NOT EXISTS tracker_batches_by_rows ON tracker_batches (rows_sha256)",
+    """CREATE TABLE IF NOT EXISTS fixes (
+        id             INTEGER PRIMARY KEY,
+        folder         TEXT NOT NULL,
+        room           TEXT NOT NULL,
+        fixer          TEXT NOT NULL,
+        fingerprint    TEXT NOT NULL,
+        base_sha256    TEXT NOT NULL,
+        result_sha256  TEXT NOT NULL,
+        patch          TEXT NOT NULL,
+        elements       TEXT NOT NULL,
+        programs       TEXT NOT NULL,
+        backups        TEXT NOT NULL,
+        state          TEXT NOT NULL,
+        applied_at     TEXT NOT NULL,
+        undone_at      TEXT,
+        survival       TEXT,
+        survival_at    TEXT,
+        survival_words TEXT
+    ) STRICT""",
+    """CREATE TABLE IF NOT EXISTS lock_clicks (
+        id            INTEGER PRIMARY KEY,
+        folder        TEXT NOT NULL,
+        click         TEXT NOT NULL,
+        material      TEXT,
+        without_check INTEGER NOT NULL,
+        at            TEXT NOT NULL,
+        batch_id      TEXT
+    ) STRICT""",
+)
+
+MIGRATIONS: tuple[tuple[str, ...], ...] = (_V1, _V2, _V3, _V4, _V5, _V6, _V7)
 LATEST = len(MIGRATIONS)
 
 

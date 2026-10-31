@@ -78,8 +78,9 @@ from ngrunner.guards.scan import Plan
 from ngrunner.guards.scan import scan as guard_scan
 from ngrunner.store import (
     LATEST, MIGRATIONS, ProgramRecord, Store, add_card, add_snapshot, answer_card, ensure_job,
-    get_heads_up, get_list_state, get_nest, get_outbox, get_program, get_state, list_clearances,
-    list_events, list_nests, list_owner_log, list_programs, list_takeoffs, migrate, set_state,
+    get_heads_up, get_list_state, get_nest, get_outbox, get_program, get_state, list_check_runs,
+    list_clearances, list_events, list_nests, list_owner_log, list_programs, list_prompts, list_takeoffs,
+    migrate, set_state,
 )
 from ngrunner.tray import COLOURS, draw_icon
 
@@ -3534,3 +3535,160 @@ def test_scenario_74_a_converter_that_crashes_stops_no_filing_and_the_chats_take
     # Two days on, it is still Sulaiman's alone: the night never tells Jim the job is stuck.
     world.run(minutes=50 * 60, step=3600)
     assert not any(e.kind == "dev_told_jim" for e in world.events())
+
+
+# ----- P3's checks: "sections done", Check now, a failure, its repair item, a settle, and a change
+#
+# A made-up toolkit's crosscheck (tests/helpers_checks.py) reads the rooms it is handed, as Jim's does:
+# a room holding helpers_checks.NOTCH_WRONG fails notch_check on R1C3. The close of a job in Mozaik is
+# its MozaikJob.LCK going, as the guards keep it: ASSUMPTION, until the Mozaik lab (group 2).
+
+
+def checks_ready(world: World, *, fault: bool = True, adopt_toolkit: bool = True) -> Path:
+    """Testerson filed, its build in Mozaik Shared and its IC Conversion in NG Jobs, and a toolkit adopted."""
+    from helpers_checks import adopt, conversion, fake_toolkit, mozaik_job, room
+
+    (world.mozaik / "Jobs").mkdir(exist_ok=True)
+    installed(world, TESTERSON)
+    world.script.add_row("Testerson", "PE")
+    world.run_until(is_filed(world, GUARD_JOB) if world.settings.mode == "live"
+                    else (lambda: (world.control / "shadow" / GUARD_JOB / f"{GUARD_JOB}_summary.pdf").exists()),
+                    within=minutes(45))
+    if adopt_toolkit:
+        adopt(world.store, world.paths.toolkit, fake_toolkit(world.tmp / "jims", log=world.tmp / "runs.jsonl"),
+              at=world.clock.now())
+    conversion(world.ng_jobs, GUARD_JOB)
+    job = mozaik_job(world.mozaik, GUARD_JOB, room1=room(fault=fault))
+    world.run(minutes=4)                        # the guards list it, and its rooms settle
+    return job
+
+
+def close_in_mozaik(world: World, job: Path) -> None:
+    """Jim opens the job in Mozaik and closes it: its lock comes and goes."""
+    lock = job / "MozaikJob.LCK"
+    lock.write_bytes(b"JDELA\r\n")
+    world.run(minutes=2)
+    lock.unlink()
+    world.run(minutes=2)
+
+
+def check_of(world: World) -> Any:
+    from ngrunner.checks import jobchecks
+
+    return jobchecks.job_checks(world.store, world.clock.now()).get("4242")
+
+
+def check_toasts(world: World, kind: str) -> list[Any]:
+    return [toast for toast in world.toasts.shown if toast.kind == kind]
+
+
+def test_scenario_75_sections_done_then_a_check_a_repair_item_a_settle_and_a_change_that_asks_again(
+        make_world):
+    from helpers_checks import room
+
+    world = make_world()
+    job = checks_ready(world)
+
+    # The chat's build landed after install: it is audited once, before the sections go in.
+    audit, = list_check_runs(world.store, "4242")
+    assert (audit.kind, audit.state) == ("audit", "done") and world.toasts.shown == []
+
+    # Jim adds the sections and closes the job: the first close asks with three answers.
+    close_in_mozaik(world, job)
+    prompt, = check_toasts(world, "close_prompt")
+    assert [c.label for c in prompt.choices] == list(templates.CHECK_CLOSE_FIRST)
+    assert world.tray_state().colour == "amber"
+    assert any("not checked. Sections done?" in item.text for item in world.board().your_list)
+
+    # "Sections done: check it": the check runs, and finds the notch on the wrong face.
+    world.sup.toast_choice(prompt.choices[0].argument)
+    world.run(minutes=2)
+    check = check_of(world)
+    assert check.run.trigger == "sections_done" and check.state == "failed" and check.to_fix == 1
+    told, = check_toasts(world, "check_result")
+    assert told.title.startswith(f"{GUARD_JOB} checked") and told.title.endswith("(trial)")
+    assert told.lines[0] == (f'1. R1C3: the notch is on the wrong face. In chat: "{GUARD_JOB}: put the notch on'
+                             ' its line-bore face on R1C3, then run crosscheck".')
+    row = world.board_row(GUARD_JOB)
+    assert row.check.items[0].chat == f"{GUARD_JOB}: put the notch on its line-bore face on R1C3, then run crosscheck"
+    your_list = [item.text for item in world.board().your_list]
+    assert f"{GUARD_JOB}: 1 to fix from its check at" in your_list[0]
+
+    # Jim already told his chat: the item is settled for this job, and leaves Your list.
+    reply = world.actions.settle_item("4242", str(check.run.id), "1", "told_chat")
+    assert reply == templates.settled_echo(GUARD_JOB, n=1, how="told_chat")
+    assert world.board().your_list == () and world.tray_state().colour == "green"
+
+    # The design changes after the settle: the check is stale at the next look, and the next check
+    # asks again.
+    (job / "Room1.des").write_bytes(room(fault=True, width=400))
+    world.run(minutes=2)
+    assert check_of(world).state == "stale"
+    assert world.actions.check_job("4242") == templates.check_asked(GUARD_JOB)
+    world.run(minutes=2)
+    again = check_of(world)
+    assert again.run.id != check.run.id and again.to_fix == 1 and again.settled == 0
+    assert any(f"{GUARD_JOB}: 1 to fix" in item.text for item in world.board().your_list)
+    assert not {"check_failed", "check_stuck", "task_failed"} & {d.code for d in world.dev()}
+
+
+def test_scenario_76_the_same_design_saved_again_keeps_the_settle_through_a_new_check(make_world):
+    from helpers_checks import room
+
+    world = make_world()
+    job = checks_ready(world)
+    world.actions.check_job("4242")
+    world.run(minutes=2)
+    run = check_of(world).run
+    world.actions.settle_item("4242", str(run.id), "1", "not_a_problem")
+
+    (job / "Room1.des").write_bytes(room(fault=True, note="Mozaik saved it again"))
+    world.run(minutes=2)
+    assert check_of(world).state == "stale"            # a save makes the run stale, whatever it changed
+    world.actions.check_job("4242")
+    world.run(minutes=2)
+
+    again = check_of(world)
+    assert again.run.id != run.id and again.to_fix == 0 and again.settled == 1
+    assert world.board().your_list == ()
+
+
+def test_scenario_77_with_no_toolkit_check_now_says_so_plainly_and_runs_nothing(make_world):
+    world = make_world()
+    checks_ready(world, adopt_toolkit=False)
+
+    reply = world.actions.check_job("4242")
+    world.run(minutes=2)
+
+    assert reply == f"{templates.NO_TOOLKIT}."
+    row = world.board_row(GUARD_JOB)
+    assert row.check.state == "not_run" and templates.NO_TOOLKIT in row.check.line
+    assert not (world.tmp / "runs.jsonl").exists()
+
+
+def test_scenario_78_in_shadow_mode_a_check_goes_only_to_sulaiman_marked_and_no_toast_shows(make_world):
+    world = make_world(mode="shadow")
+    job = checks_ready(world)
+
+    close_in_mozaik(world, job)
+    prompt, = list_prompts(world.store, "4242")
+    world.actions.answer_prompt(str(prompt.id), templates.CHECK_CLOSE_FIRST[0])
+    world.run(minutes=2)
+
+    assert world.toasts.shown == []
+    sent = world.outbox(to="sulaiman", subject=f"SHADOW {GUARD_JOB} checked")
+    assert len(sent) == 1 and sent[0].lines[0].startswith("1. R1C3: the notch is on the wrong face.")
+    assert world.outbox(to="jim", subject=f"{GUARD_JOB} checked") == []
+
+
+def test_scenario_79_a_close_left_unanswered_checks_nothing_and_is_in_the_digest(make_world):
+    world = make_world()
+    job = checks_ready(world)
+
+    close_in_mozaik(world, job)
+    world.run_to(pacific_at(10, 28, 6, 32), step=600)
+
+    assert check_of(world).run.kind == "audit"          # only the build's audit ran: never on silence
+    digest, = [m for m in world.outbox(to="jim") if m.ref == "digest:2026-10-28"]
+    assert any(f"{GUARD_JOB}: closed" in line and "Sections done?" in line for line in digest.lines)
+    assert lint(Message("digest", digest.subject, digest.lines)) == []

@@ -61,6 +61,54 @@
             {% if job.takeoff.lines %}<ul class="takeoff-lines">{% for line in job.takeoff.lines %}<li>{{ line }}</li>{% endfor %}</ul>{% endif %}
           </div>
           {% endif %}
+          {% if job.check %}{% set c = job.check %}
+          <div class="check">
+            <div class="check-head">
+              {{ m.tag(check_style(c.state)) }}
+              {% if c.line %}<span class="check-line">{{ c.line }}</span>{% endif %}
+              <form class="inline-form" method="post" action="{{ url_for('check_job') }}">
+                {{ m.token_field() }}{{ m.back_field(page) }}
+                <input type="hidden" name="studio_id" value="{{ c.studio_id }}">
+                <button class="btn btn--secondary btn--sm" type="submit">{{ m.icon("refresh") }}<span>Check now</span></button>
+              </form>
+            </div>
+            {% if c.prompt %}
+            <div class="check-prompt">
+              <span>{{ c.prompt.text }}</span>
+              {% for choice in c.prompt.choices %}
+              <form class="inline-form" method="post" action="{{ url_for('answer_prompt') }}">
+                {{ m.token_field() }}{{ m.back_field(page) }}
+                <input type="hidden" name="prompt_id" value="{{ c.prompt.id }}">
+                <input type="hidden" name="choice" value="{{ choice }}">
+                <button class="btn btn--secondary btn--sm" type="submit">{{ choice }}</button>
+              </form>
+              {% endfor %}
+            </div>
+            {% endif %}
+            {% if c.items %}
+            <ul class="check-items">
+            {% for item in c.items %}
+              <li class="check-item">
+                {{ m.tag(check_item_style(item.kind, item.settled)) }}
+                <span class="check-text">{{ item.n }}. {{ item.text }}</span>
+                {% if item.chat %}<span class="check-chat">In chat: "{{ item.chat }}"</span>{% endif %}
+                {% if item.settled %}<span class="check-settled">{{ item.settled }}</span>{% endif %}
+                {% if item.can_settle %}{% for how, label in settle_labels.items() %}
+                <form class="inline-form" method="post" action="{{ url_for('settle_item') }}">
+                  {{ m.token_field() }}{{ m.back_field(page) }}
+                  <input type="hidden" name="studio_id" value="{{ c.studio_id }}">
+                  <input type="hidden" name="run_id" value="{{ c.run_id }}">
+                  <input type="hidden" name="n" value="{{ item.n }}">
+                  <input type="hidden" name="how" value="{{ how }}">
+                  <button class="btn btn--secondary btn--sm" type="submit">{{ label }}</button>
+                </form>
+                {% endfor %}{% endif %}
+              </li>
+            {% endfor %}
+            </ul>
+            {% endif %}
+          </div>
+          {% endif %}
         </td>
         <td class="next" data-label="Next step">
           {{ job.next_step }}

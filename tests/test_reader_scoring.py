@@ -119,11 +119,18 @@ def test_an_invented_vertical_is_silent_wrong_order_and_silent_wrong_values() ->
 
 
 def test_tolerances_decide_and_the_deviation_is_kept() -> None:
-    near = scoring.score_wall(_pair(), _read(_with({"x_in": 35.9, "top_in": 97.4})))
+    near = scoring.score_wall(_pair(), _read(_with({"x_in": 35.1, "top_in": 96.2})))
     assert near.wrong == 0
-    assert max(o.deviation or 0 for o in near.outcomes if o.kind == "x") == pytest.approx(0.9, abs=0.01)
+    assert max(o.deviation or 0 for o in near.outcomes if o.kind == "x") == pytest.approx(0.1, abs=0.01)
     far = scoring.score_wall(_pair(), _read(_with({"x_in": 35.9})), tol_x=0.5)
     assert far.silent == 1
+
+
+def test_the_calibrated_tolerances_fail_a_quarter_inch_shift_and_pass_print_rounding() -> None:
+    assert (scoring.TOL_X_IN, scoring.TOL_Y_IN) == (0.125, 0.25)
+    assert scoring.score_wall(_pair(), _read(_with({"x_in": 35.06, "bottom_in": 36.08}))).wrong == 0
+    assert scoring.score_wall(_pair(), _read(_with({"x_in": 35.25}))).silent == 1
+    assert scoring.score_wall(_pair(), _read(_with({"bottom_in": 35.4}))).silent == 1
 
 
 def test_a_refused_wall_gives_no_values_and_no_errors() -> None:
