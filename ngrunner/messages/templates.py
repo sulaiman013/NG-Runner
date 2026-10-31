@@ -1,5 +1,5 @@
 """
-The words of every P1a message, in one place (design section 4; build spec 6.5).
+The words of every message, in one place (design section 4; build spec 6.5; P1b build spec 5.6).
 
 Each template is a function of plain facts that returns a Message, or, for a question to Jim, a
 CardSpec that becomes a card and then a Message through card_message(). Wording lives only
@@ -7,9 +7,14 @@ here, so the lint can hold all of it to Jim's format at test time. At runtime, v
 each message once more: one that fails (a reason from elsewhere carried a path, say) goes out as
 its kind's fixed template instead, and the problems are returned for a DEV item, so nothing
 waits on Sulaiman.
+
+The nest guard's board notes live here too, since a DO NOT CUT says the same words on the board and
+in its message. No message ever says OK to cut: the strongest thing NG Runner can say is "Nest
+checked", and until the toolkit is here it can't say even that.
 """
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, replace
 from datetime import date, datetime
@@ -31,6 +36,7 @@ QUESTIONS = {
     "row_changed": "Row changed: which job?",
     "remake": "Is this a remake?",
     "design_mismatch": "The report and Studio's proposal differ",
+    "sheet_size": "A program is past its sheet size",
 }
 
 
@@ -125,6 +131,8 @@ _CARD_BACK = {   # an open card, as it comes back in the digest
     "row_changed": "{row} changed after {job} was filed; which job is it?",
     "remake": "is {row} a remake of {job}?",
     "design_mismatch": "the report of {job} and Studio's proposal still list different designs.",
+    "sheet_size": "{job} still has a program past its sheet size; did you add that sheet on"
+                  " purpose?",
 }
 
 
@@ -294,6 +302,26 @@ def design_mismatch_card(job: str, *, report: int, proposal: int) -> CardSpec:
     )
 
 
+# The sheet size card's choices, in order: the first clears that one program, by its hash, and is
+# the only answer store.add_clearance takes. Its choice_ids are None: it means no other job.
+SHEET_SIZE_CHOICES = ("I added this sheet on purpose", "Re-nest it")
+
+
+def sheet_size_card(job: str, *, material: str, program: str, on: str | None,
+                    expected: str) -> CardSpec:
+    """Jim's "A program is past its sheet size": program, read from its cutting moves, is on a sheet
+    this material's rule doesn't expect, or on none NG Runner knows (on is None). Mixed sizes are
+    legal, so only Jim can say it was on purpose, and a file's name can't: one such program was
+    re-posted with a plain name. It stays DO NOT CUT meanwhile."""
+    shown = _program_said(program)
+    sheet = _sheet_clause(on, expected, singular=True)
+    return CardSpec(
+        "sheet_size", job=job, row=None, choices=SHEET_SIZE_CHOICES,
+        text=f"{shown[0].upper()}{shown[1:]} of {_material(material)} {sheet}. It stays DO NOT CUT"
+             " until you choose, and a re-post asks again.",
+    )
+
+
 def card_message(card: Card) -> Message:
     """A card as a message for Jim's phone or email: its ID, job and question, the one-line
     text, then the choices numbered, so "TES-2 2" or "TES-2 3rd" answers it at the PC."""
@@ -305,6 +333,218 @@ def card_subject(card: Card) -> str:
     """What a card is about, as a person reads it: its job, or the Fab row it asks about. A
     which-job card has no job yet, so this is what the board shows in its place."""
     return card.job or _fab_row(card.row or "")
+
+
+# ----- the nest guard: what a verdict says on the board (guards.nest_state.decide)
+
+POSTED_BEFORE = "Posted before NG Runner; not checked"
+SAVE_THE_NEST = "Save the nest in the Optimizer so I can check it"
+NO_PROGRAMS_YET = "No programs read yet; the nest itself is not checked"
+LABELS_NOT_VERIFIED = "Could not verify the labels against the design"
+_NOT_CHECKED = "the nest itself is not checked"
+
+
+def doubled_holes(holes: int, programs: Sequence[str]) -> str:
+    """8 cam holes are doubled in programs TESS02 and TESS03"""
+    verb = "hole is" if holes == 1 else "holes are"
+    return f"{holes} cam {verb} doubled in {_programs_said(programs)}"
+
+
+def past_its_size(count: int, on: str | None, expected: str) -> str:
+    """A program is on 61x109 and this colour is 49x97. on is None for a reach past every sheet NG
+    Runner knows, which is said as that, never as a guess at a sheet."""
+    who = "A program" if count == 1 else f"{count} programs"
+    return f"{who} {_sheet_clause(on, expected, singular=count == 1)}"
+
+
+def nest_checked_note(at: datetime | None, programs: Sequence[str]) -> str:
+    """Nest checked 9:42 PM, programs TESS01-06"""
+    return f"Nest checked{_at(at)}, {_programs_said(programs)}"
+
+
+def programs_read_note(*, at: datetime | None, sheet: str | None, cleared: int = 0,
+                       merged: int = 0) -> str:
+    """What a clean read of the programs says, and no more. A fit is a lower bound: a small program
+    fits any sheet, so it reads "nothing past 49x97", never "on 49x97" (P1b build spec 3.1, 5.2).
+    sheet is None when no rule covers this material. Merged programs overlay several sheets, so
+    their holes aren't compared, and "0 doubled holes" says so."""
+    if sheet is None:
+        size = "sheet size could not be verified"
+    elif cleared:
+        size = f"{cleared} cleared past {sheet}"
+    else:
+        size = f"nothing past {sheet}"
+    holes = "0 doubled holes"
+    if merged:
+        holes += f" outside {_count(merged, 'merged program')}"
+    return f"Programs read{_at(at)}, {size}, {holes}; {_NOT_CHECKED}"
+
+
+def programs_unread_note(programs: Sequence[str]) -> str:
+    """Could not read program TESS02 yet; the nest itself is not checked"""
+    return f"Could not read {_programs_said(programs)} yet; {_NOT_CHECKED}"
+
+
+# ----- the nest guard's messages (P1b build spec 5.6)
+
+
+def do_not_cut(job: str, material: str, *, reasons: Sequence[str], trial: bool) -> Message:
+    """Jim's phone and George's email, at once, any hour: quiet hours let it through by the first
+    words of its title, so those stay exactly DO NOT CUT. reasons are the verdict's notes."""
+    shown = _material(material)
+    head = f"{job}: DO NOT CUT {shown}{_trial(trial)}."
+    items = [f"{head} {_ended(reason)}" for reason in reasons] or [head]
+    return Message("do_not_cut", f"DO NOT CUT · {job} · {shown}", _numbered(items), urgent=True)
+
+
+def not_checked(job: str, material: str, *, posted: datetime, now: datetime) -> Message:
+    """A nest posted while NG Runner was off: the digest, when it comes back. Not a verdict, since
+    nothing has looked at it, so it never says trial."""
+    shown = _material(material)
+    when = _clock_on(posted, pacific_day(now))
+    return Message("not_checked", f"NOT CHECKED · {job} · {shown}", _numbered(
+        (f"{job}: NOT CHECKED {shown}, posted {when}. NG Runner is offline.",)))
+
+
+def nest_checked(job: str, material: str, *, at: datetime, programs: Sequence[str], trial: bool,
+                 open_items: int = 0) -> Message:
+    """George's email, in business hours. "Jim still has N open items" only when true. It says what
+    was checked and when, and leaves what to do about it to the people cutting."""
+    shown = _material(material)
+    items = [f"{job}: Nest checked {fmt_clock(at)} for {shown}{_trial(trial)},"
+             f" {_programs_said(programs)}."]
+    if open_items:
+        items.append(f"{job}: Jim still has {_count(open_items, 'open item')}.")
+    return Message("nest_checked", f"Nest checked · {job} · {shown}", _numbered(items))
+
+
+def sheet_cleared(job: str, material: str, *, program: str, on: str | None,
+                  at: datetime) -> Message:
+    """George's "Cleared by Jim": Jim said one program's sheet was on purpose. Doubled holes, a
+    failed check and the nest itself are untouched, so it says it clears the size and nothing
+    else."""
+    shown = _material(material)
+    sheet = f" on {on}" if on else ""
+    return Message("sheet_cleared", f"Cleared by Jim · {job} · {shown}", _numbered((
+        f"{job}: Cleared by Jim {fmt_clock(at)}, {_program_said(program)} of {shown}{sheet}: he"
+        f" added that sheet on purpose. This clears the sheet size only; {_NOT_CHECKED}.",)))
+
+
+_ESTIMATE = "(takeoff estimate; the nest decides)"
+
+
+def order_heads_up(job: str, *, sheets: Sequence[tuple[int, str]],
+                   tape: Sequence[tuple[float, str, str]], flags: Sequence[str] = (),
+                   revised: bool = False, basis: str = "sheets with 10% waste") -> Message:
+    """Barbara's and Will's heads-up, in business hours. sheets: (count, material), all on one line;
+    tape: (feet, width as it reads, colour); flags: lines worth saying (P1b build spec 5.8). It
+    takes only these, so no client, address or site can travel on it. basis names which of the
+    tracker's two sheet counts this is. The title says "revised" when the takeoff changed."""
+    items = []
+    if sheets:
+        listed = ", ".join(f"{_count(count, 'sheet')} {material}" for count, material in sheets)
+        items.append(f"{job}: {listed} {_ESTIMATE}.")
+    items += [f"{job}: {_feet(feet)} of {width} tape, {colour} {_ESTIMATE}."
+              for feet, width, colour in tape]
+    items += [f"{job}: {_ended(flag)}" for flag in flags]
+    kind = "Revised order heads-up" if revised else "Order heads-up"
+    return Message("heads_up", f"{kind} · {job} · {basis}", _numbered(items))
+
+
+def before_you_lock(job: str, *, items: Sequence[str]) -> Message:
+    """What the pre-flight found, one line each. It says, and blocks nothing: Lock stays in chat."""
+    return Message("before_you_lock", f"Before you lock · {job}",
+                   _numbered(f"{job}: before you lock: {_ended(item)}" for item in items))
+
+
+def program_names(names: Sequence[str]) -> str:
+    """Program names as Jim reads them: no extension, in order, each once, a run of three or more
+    together. TESS01-06, TESS02 and TESS03, TESS01-03 and TESS07. Two in a row stay two names, so a
+    range always means at least three programs. An underscore reads as a space, which the lint
+    passes: 21 of 541 real program names have one, most of them long-form names."""
+    short = sorted({_PROGRAM_EXTENSION.sub("", name).replace("_", " ") for name in names})
+    return _and(_runs(short))
+
+
+_PROGRAM_EXTENSION = re.compile(r"\.tap$", re.IGNORECASE)
+_NUMBERED_PROGRAM = re.compile(r"(?P<stem>.*?)(?P<number>[0-9]+)")
+_LEADING_THICKNESS = re.compile(r"^([0-9])-([0-9])(?= )")
+_WORD_JOINED = re.compile(r"(?<=[A-Za-z0-9])[-_](?=[A-Za-z])|_")
+
+
+def _runs(names: Sequence[str]) -> list[str]:
+    """names, sorted, with each run of three or more in a row as one TESS01-06."""
+    shown: list[str] = []
+    start = 0
+    while start < len(names):
+        end = start
+        while end + 1 < len(names) and _follows(names[end], names[end + 1]):
+            end += 1
+        if end - start >= 2:
+            shown.append(f"{names[start]}-{_NUMBERED_PROGRAM.fullmatch(names[end])['number']}")
+        else:
+            shown.extend(names[start:end + 1])
+        start = end + 1
+    return shown
+
+
+def _follows(name: str, following: str) -> bool:
+    """TESS02 follows TESS01: the same stem, the same width of number, and the next number."""
+    one, other = _NUMBERED_PROGRAM.fullmatch(name), _NUMBERED_PROGRAM.fullmatch(following)
+    return bool(one and other and one["stem"] == other["stem"]
+                and len(one["number"]) == len(other["number"])
+                and int(other["number"]) == int(one["number"]) + 1)
+
+
+def _and(parts: Sequence[str]) -> str:
+    if len(parts) < 2:
+        return "".join(parts)
+    return f"{', '.join(parts[:-1])} and {parts[-1]}"
+
+
+def _programs_said(names: Sequence[str]) -> str:
+    """programs TESS02 and TESS03. 65 of 551 real programs are hand-named, so a name may be one the
+    lint stops, and that must not cost the whole message its job and material: then they are
+    counted."""
+    shown = program_names(names)
+    if check_line(shown):
+        return _count(len(names), "program")
+    return f"{'program' if len(names) == 1 else 'programs'} {shown}"
+
+
+def _program_said(name: str) -> str:
+    return _programs_said((name,))
+
+
+def _sheet_clause(on: str | None, expected: str, *, singular: bool) -> str:
+    if on is None:
+        verb = "runs" if singular else "run"
+        return f"{verb} past every sheet NG Runner knows, and this colour is {expected}"
+    return f"{'is' if singular else 'are'} on {on} and this colour is {expected}"
+
+
+def _material(name: str) -> str:
+    """A material folder as Jim reads it: 3-4 Egger Classic White is 3/4 Egger Classic White. A
+    hyphen or underscore joining words becomes a space, since real folders are named like Tafisa
+    Spring Blossom_L543 and AraucoPrism-SF210-Antique-White-Suede, which the lint would stop as a
+    code name and a key. A folder in NG Jobs can be named anything, so one the lint still stops
+    reads "one material": a DO NOT CUT must reach people naming its job, and the board has the
+    rest."""
+    shown = _LEADING_THICKNESS.sub(r"\1/\2", " ".join(_WORD_JOINED.sub(" ", name).split()))
+    return "one material" if check_line(shown) else shown
+
+
+def _trial(trial: bool) -> str:
+    return " (trial)" if trial else ""
+
+
+def _at(at: datetime | None) -> str:
+    return "" if at is None else f" {fmt_clock(at)}"
+
+
+def _feet(feet: float) -> str:
+    whole = round(feet)
+    return "1 foot" if whole == 1 else f"{whole} feet"
 
 
 # ----- Sulaiman's lines: the DEV lane (Jim never sees it) and the daily "ran" line
@@ -414,9 +654,23 @@ FIXED = {
             " check."),
     "cant_send": ("NG Runner can't send messages", "Messages are not being confirmed sent. The"
                   " board still shows everything."),
+    # Its title keeps quiet hours letting it through, and George has no board of his own.
+    "do_not_cut": ("DO NOT CUT", "NG Runner raised a DO NOT CUT, but could not name the job in this"
+                   " message. Jim can see it on his board; check with him before cutting anything"
+                   " newly posted."),
+    "not_checked": ("NOT CHECKED", "A nest was posted that NG Runner has not checked, and it could"
+                    " not name the job in this message. Jim can see it on his board."),
+    "nest_checked": ("Nest checked", "NG Runner checked a nest, but could not name it in this"
+                     " email. Jim can see which on his board."),
+    "sheet_cleared": ("Cleared by Jim", "Jim cleared one program's sheet size, but NG Runner could"
+                      " not name it in this email. He can see which on his board."),
+    "heads_up": ("Order heads-up", "NG Runner has an order heads-up, but could not list it in this"
+                 " email; the job's takeoff has the numbers."),
+    "before_you_lock": ("Before you lock", "NG Runner found something to settle before a lock, but"
+                        " could not name it in this message; it is on the board."),
 }
 _ANY_OTHER = ("NG Runner", "NG Runner has a message for you on the board.")
-_URGENT_KINDS = frozenset({"cant_send"})
+_URGENT_KINDS = frozenset({"cant_send", "do_not_cut"})
 
 
 @dataclass(frozen=True)

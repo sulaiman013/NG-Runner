@@ -11,6 +11,11 @@ from ngrunner.cards import (
     CARD_KINDS, CardSpec, Command, Rejection, age_days, answered, card_from_record, card_prefix,
     new_card, parse_command, reminder_due,
 )
+from ngrunner.messages import templates as t
+from ngrunner.messages.templates import SHEET_SIZE_CHOICES
+from ngrunner.store import (
+    SHEET_SIZE, add_card, add_clearance, answer_card, cleared_programs, open_store,
+)
 
 WHEN = datetime(2026, 10, 30, 22, 5, tzinfo=timezone.utc)   # Fri 10/30 3:05 PM Pacific
 
@@ -395,3 +400,52 @@ def test_a_design_card_is_answered_by_number_or_label(typed, choice):
                     created_at=WHEN, allocate=counter())
     parsed = parse_command(typed, [card])
     assert isinstance(parsed, Command) and parsed.choice == choice
+
+
+# ----- P1b: a program past its sheet size
+
+
+def test_the_sheet_size_card_is_a_kind_of_its_own():
+    assert "sheet_size" in CARD_KINDS
+
+
+def test_a_clearance_is_of_the_same_kind_as_the_card_that_asks_for_it():
+    assert SHEET_SIZE == "sheet_size" and SHEET_SIZE in CARD_KINDS
+
+
+def sheet_size_card():
+    made = spec("sheet_size", choices=SHEET_SIZE_CHOICES)
+    return new_card(made, created_at=WHEN, allocate=counter())
+
+
+@pytest.mark.parametrize("typed, choice", [
+    ("TES-1 1", "I added this sheet on purpose"), ("TES-1 2", "Re-nest it"),
+    ("tes-1 re-nest it", "Re-nest it"),
+    ("TES-1  i added this sheet on purpose", "I added this sheet on purpose"),
+])
+def test_a_sheet_size_card_is_answered_by_number_or_label(typed, choice):
+    parsed = parse_command(typed, [sheet_size_card()])
+    assert isinstance(parsed, Command) and parsed.choice == choice
+
+
+@pytest.mark.parametrize("typed", ["TES-1 3", "TES-1 yes", "TES-1 clear it", "TES-1 ok to cut"])
+def test_anything_else_typed_at_a_sheet_size_card_is_refused_and_it_stays_open(typed):
+    made = sheet_size_card()
+    parsed = parse_command(typed, [made])
+    assert isinstance(parsed, Rejection) and made.state == "open"
+
+
+def test_a_sheet_size_card_goes_through_the_store_and_its_answer_clears_only_its_hash(tmp_path):
+    store = open_store(tmp_path / "ngrunner.db")
+    made = t.sheet_size_card("Testerson_101426", material="3-4 Classic White",
+                             program="TESS07.TAP", on="61x109", expected="49x97")
+    record = add_card(store, prefix=made.prefix, kind=made.kind, text=made.text,
+                      choices=made.choices, created_at=WHEN, choice_ids=made.choice_ids)
+    assert card_from_record(record, job=made.job).choice_ids == (None, None)
+    answer_card(store, record.id, answer=SHEET_SIZE_CHOICES[0], answer_words="1",
+                answered_by="jim", answered_at=WHEN, channel="board")
+
+    add_clearance(store, folder="Testerson_101426", material="3-4 Classic White",
+                  program_sha256="a" * 64, card_id=record.id, at=WHEN)
+
+    assert cleared_programs(store, "Testerson_101426", "3-4 Classic White") == {"a" * 64}

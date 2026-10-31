@@ -16,11 +16,15 @@ from pathlib import Path
 import pytest
 
 from ngrunner.clock import to_iso
-from ngrunner.match import FabRow
+from ngrunner.match import FabRow, Opportunity
 from ngrunner.store import (
-    LATEST, MIGRATIONS, Store, StoreError, add_card, allocate_card_id, ensure_job, get_card,
-    get_render, get_state, list_cards, list_dev, list_fab_rows, list_jobs, migrate, open_dev,
-    open_store, render_fingerprint, set_state,
+    LATEST, MIGRATIONS, Store, StoreError, add_alias, add_card, add_clearance, add_fab_row,
+    add_nest, add_outbox, add_pending, add_program, add_render, add_snapshot, allocate_card_id,
+    answer_card, cleared_programs, ensure_job, get_card, get_heads_up, get_job, get_nest,
+    get_program, get_render, get_state, list_cards, list_dev, list_fab_rows, list_jobs,
+    list_nests, list_owner_log, list_programs, list_snapshots, log_event, log_owner, migrate,
+    next_seq, open_dev, open_store, record_heads_up, render_fingerprint, replace_opportunities,
+    set_state, start_run,
 )
 
 T0 = datetime(2026, 10, 30, 13, 30, tzinfo=timezone.utc)
@@ -169,6 +173,221 @@ def test_renders_from_version_1_have_no_pypdf_version_so_their_fingerprints_are_
 
     assert get_render(store, 1).pypdf is None
     assert render_fingerprint(store, 1, pypdf="6.21.4", read=lambda path: "2" * 64) == "2" * 64
+
+
+# ----- version 4, the guards' tables, on a database an earlier version made
+
+
+GUARD_TABLES = {"programs", "nests", "clearances", "owner_log", "heads_ups", "snapshots"}
+SHIPPED = {
+    1: "f325fd0fa849d8ec5fbfc3de1d0fc1b196d6490ee46aa509240fb8722bb5bb5f",
+    2: "05b016f42d28a460810997b6bce62d62322762831b670cfd43684aa06a988167",
+    3: "ea9d620982fd9c3b7b961d1cae07bed9f8b1b0866f8adfcfc0b334f0a8ff0e78",
+}
+FOLDER, MATERIAL, PROGRAM = "Testerson_101426", "3-4 Classic White", "TESS01.TAP"
+SHA = "a" * 64
+
+
+@pytest.mark.parametrize("version", sorted(SHIPPED))
+def test_a_migration_that_shipped_has_not_changed(version: int) -> None:
+    # The real shadow run's database went through these, so they can only ever be appended to.
+    text = "\n".join(MIGRATIONS[version - 1])
+
+    assert hashlib.sha256(text.encode("utf-8")).hexdigest() == SHIPPED[version]
+
+
+def filled_database(path: Path, version: int) -> Store:
+    """A database as that earlier version left it, built by its own schema and holding rows in
+    every table group, written by the store's own functions (version 2 on: they write columns
+    version 1 didn't have)."""
+    assert migrate(Store(path), MIGRATIONS[:version]) == version
+    store = Store(path)
+    with store.transaction() as tx:
+        ensure_job(tx, "101", FOLDER, now=T0, designer="AB")
+        add_alias(tx, "101", "Testerson_Fakeley_101426", seen_at=T1)
+        add_fab_row(tx, first_seen=T0, text="Testerson", designer="AB")
+        replace_opportunities(tx, [Opportunity(FOLDER, "101", "AB", "Ready to Order")],
+                              synced_at=T0, fetched_at=T1)
+        add_pending(tx, "fetch_1", due_at=T1, studio_id="101")
+        start_run(tx, stage="file", trigger="fab_row", started_at=T0, app_version="0.0.1")
+        add_card(tx, prefix="TES", kind="closet_or_garage", text="Its designs disagree.",
+                 choices=("Closet", "Garage"), created_at=T0, studio_id="101")
+        log_event(tx, at=T0, kind="filed", text="Filed.")
+        open_dev(tx, at=T0, code="no_receipt", text="No receipt.")
+        add_outbox(tx, id="b" * 32, seq=next_seq(tx, "outbox", start=1), channel="email",
+                   recipient="jim", subject=f"Filed as {FOLDER}", lines=("Filed.",), urgent=False,
+                   created_at=T0)
+        set_state(tx, "installed_at", "kept")
+        add_render(tx, studio_id="101", fetched_at=T0, check_ok=True, sha256=SHA, page_count=3)
+    return store
+
+
+def every_row(path: Path) -> dict[str, list[tuple[object, ...]]]:
+    """Every row of every table, read with no store code in between."""
+    with closing(sqlite3.connect(path)) as raw:
+        tables = [row[0] for row in raw.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'")]
+        return {table: raw.execute(f"SELECT * FROM {table} ORDER BY rowid").fetchall()
+                for table in tables}
+
+
+def test_a_database_from_before_the_guards_upgrades_with_every_row_intact(db_path: Path) -> None:
+    filled_database(db_path, 3)
+    before = every_row(db_path)
+    assert before["jobs"] and before["cards"] and before["outbox"] and before["renders"]
+
+    store = open_store(db_path)
+
+    after = every_row(db_path)
+    assert store.schema_version() == LATEST
+    assert set(after) - set(before) == GUARD_TABLES
+    assert {table: after[table] for table in before} == before     # nothing old changed at all
+    assert all(after[table] == [] for table in GUARD_TABLES)       # and the new ones start empty
+
+
+@pytest.mark.parametrize("version", [2, 3])
+def test_every_older_version_comes_up_to_the_latest_keeping_its_rows(
+    db_path: Path, version: int,
+) -> None:
+    filled_database(db_path, version)
+    jobs_before = every_row(db_path)["jobs"]
+
+    store = open_store(db_path)
+
+    assert store.schema_version() == LATEST
+    assert every_row(db_path)["jobs"] == jobs_before
+    assert get_job(store, "101").aliases == ("Testerson_Fakeley_101426",)
+    assert GUARD_TABLES <= set(every_row(db_path))
+
+
+def test_the_oldest_version_comes_all_the_way_up_too(db_path: Path) -> None:
+    version_1_database(db_path, (
+        "INSERT INTO jobs (studio_id, name, mode, created_at, updated_at)"
+        " VALUES ('101', 'Testerson_101426', 'auto', ?, ?)", (ISO_T0, ISO_T0)))
+
+    store = open_store(db_path)
+
+    assert store.schema_version() == LATEST
+    assert get_job(store, "101").name == "Testerson_101426"
+    assert GUARD_TABLES <= set(every_row(db_path))
+
+
+def test_an_upgraded_database_goes_on_working_for_what_it_already_did(db_path: Path) -> None:
+    filled_database(db_path, 3)
+
+    store = open_store(db_path)
+
+    card, = list_cards(store)
+    assert answer_card(store, card.id, answer="Closet", answer_words="1", answered_by="jim",
+                       answered_at=T1, channel="board")
+    assert allocate_card_id(store, "TES") == "TES-2"   # its numbers carried on, none reused
+    assert get_state(store, "installed_at") == "kept"
+    assert get_render(store, 1).sha256 == SHA
+    set_state(store, "paused", "no")
+    assert get_state(store, "paused") == "no"
+
+
+def test_a_database_not_upgraded_yet_goes_on_working_for_what_it_already_did(db_path: Path) -> None:
+    store = filled_database(db_path, 3)
+
+    assert store.schema_version() == 3
+    assert [job.name for job in list_jobs(store)] == [FOLDER]
+    set_state(store, "paused", "yes")
+    assert get_state(store, "paused") == "yes"
+    assert store.schema_version() == 3                 # nothing but open_store migrates
+
+
+def test_the_guards_tables_are_ready_to_use_once_upgraded(db_path: Path) -> None:
+    filled_database(db_path, 3)
+
+    store = open_store(db_path)
+
+    add_program(store, folder=FOLDER, material=MATERIAL, name=PROGRAM, size=10, mtime=T0,
+                seen_at=T0)
+    assert get_program(store, FOLDER, MATERIAL, PROGRAM).state == "new"
+    add_nest(store, folder=FOLDER, material=MATERIAL, studio_id="101", state="not_checked",
+             basis="programs", updated_at=T0)
+    assert get_nest(store, FOLDER, MATERIAL).studio_id == "101"   # the job from the old rows
+    log_owner(store, at=T0, folder=FOLDER, file="MozaikJob.UNS", owner="JDELA")
+    assert list_owner_log(store)[0].owner == "JDELA"
+    record_heads_up(store, folder=FOLDER, json_sha256=SHA, sent_at=T0, outbox_id="c" * 32)
+    assert get_heads_up(store, FOLDER).json_sha256 == SHA
+    add_snapshot(store, taken_at=T0, sha256=SHA)
+    assert not list_snapshots(store)[0].adopted
+
+
+def test_a_clearance_can_name_a_card_from_before_the_upgrade(db_path: Path) -> None:
+    store = filled_database(db_path, 3)
+    made = add_card(store, prefix="TES", kind="sheet_size", text="A program is past its size.",
+                    choices=("I added this sheet on purpose", "Re-nest it"), created_at=T0,
+                    studio_id="101")
+    answer_card(store, made.id, answer="I added this sheet on purpose", answer_words="1",
+                answered_by="jim", answered_at=T1, channel="board")
+
+    upgraded = open_store(db_path)
+
+    add_clearance(upgraded, folder=FOLDER, material=MATERIAL, program_sha256=SHA, card_id=made.id,
+                  at=T2)
+    assert cleared_programs(upgraded, FOLDER, MATERIAL) == {SHA}
+
+
+def test_the_guards_tables_are_strict_like_every_other(db_path: Path) -> None:
+    open_store(db_path)
+
+    with closing(sqlite3.connect(db_path)) as raw:
+        strict = {row[1]: row[5] for row in raw.execute("PRAGMA table_list")}
+
+    assert all(strict[table] == 1 for table in GUARD_TABLES)
+
+
+def test_a_table_of_the_guards_before_the_upgrade_is_a_plain_store_error(db_path: Path) -> None:
+    store = filled_database(db_path, 3)
+
+    for read in (lambda: list_programs(store), lambda: list_nests(store)):
+        with pytest.raises(StoreError, match="NG Runner's database failed"):
+            read()
+
+
+def test_a_guards_migration_that_fails_leaves_the_old_database_as_it_was(db_path: Path) -> None:
+    filled_database(db_path, 3)
+    before = every_row(db_path)
+    broken = (*MIGRATIONS[:3], (*MIGRATIONS[3], "THIS IS NOT SQL"))
+
+    with pytest.raises(StoreError):
+        migrate(Store(db_path), broken)
+
+    assert Store(db_path).schema_version() == 3
+    assert every_row(db_path) == before                # none of the new tables stayed behind
+    assert open_store(db_path).schema_version() == LATEST  # and it still upgrades
+
+
+def test_opening_an_upgraded_database_again_changes_nothing(db_path: Path) -> None:
+    filled_database(db_path, 3)
+    open_store(db_path)
+    add_snapshot(open_store(db_path), taken_at=T0, sha256=SHA)
+    before = every_row(db_path)
+
+    open_store(db_path)
+
+    assert every_row(db_path) == before
+
+
+def test_a_copy_from_before_the_guards_stays_usable_by_the_version_that_made_it(
+    tmp_path: Path,
+) -> None:
+    folder = tmp_path / "NGRunner"
+    (folder / "backup").mkdir(parents=True)
+    path, copy = folder / "ngrunner.db", folder / "backup" / "before-the-guards.db"
+    filled_database(path, 3)
+
+    Store(path).backup_to(copy)
+    assert open_store(path).schema_version() == LATEST
+
+    assert Store(copy).schema_version() == 3
+    assert migrate(Store(copy), MIGRATIONS[:3]) == 3     # the older NG Runner goes on from the copy
+    assert [job.name for job in list_jobs(Store(copy))] == [FOLDER]
+    with pytest.raises(StoreError, match="newer version"):
+        migrate(Store(path), MIGRATIONS[:3])             # and it refuses the upgraded file
 
 
 # ----- databases the store refuses, each left exactly as it was

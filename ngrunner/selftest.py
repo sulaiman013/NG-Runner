@@ -31,6 +31,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path, PureWindowsPath
+from typing import Any
 
 from ngrunner.backup import BackupError, DatabaseFacts, describe, remove_own_tree, snapshot
 from ngrunner.config import AppPaths
@@ -373,6 +374,8 @@ def message_samples() -> list[object]:
         t.remake_card(job, row="Testerson"),
         t.design_mismatch_card(job, report=3, proposal=4),
         t.design_mismatch_card(other, report=3, proposal=3),
+        t.sheet_size_card(job, material="3-4 Classic White", program="TESS07.TAP", on="61x109",
+                          expected="49x97"),
     )]
     echoes = [t.echo(parse_command(typed, cards)) for typed in (
         f"{cards[2].id} 2", "pause", "resume", f"add job {job}", "add job 84213")]
@@ -397,6 +400,41 @@ def message_samples() -> list[object]:
         t.cant_send(since=at, now=at, waiting=2),
         *(t.fixed(kind, day=day) for kind in (*t.FIXED, "any_other_kind")),
         *(Message("echo", "NG Runner", (line,)) for line in echoes),
+        *_nest_samples(t, job),
+    ]
+
+
+def _nest_samples(t: Any, job: str) -> list[object]:
+    """The nest guard's messages and board notes (P1b build spec 5.3 and 5.6): the shapes the spec
+    gives, word for word, so a template that drifts from them fails here."""
+    from ngrunner.messages import Message
+
+    classic = "3/4 Classic White"
+    posted = datetime(2026, 10, 31, 6, 40, tzinfo=timezone.utc)      # 11:40 PM Pacific
+    checked = datetime(2026, 10, 31, 4, 42, tzinfo=timezone.utc)     # 9:42 PM Pacific
+    doubled, six = ("TESS02.TAP", "TESS03.TAP"), tuple(f"TESS0{n}.TAP" for n in range(1, 7))
+    skis = "Tafisa Apres Skis"
+    notes = (t.POSTED_BEFORE, t.SAVE_THE_NEST, t.NO_PROGRAMS_YET, t.LABELS_NOT_VERIFIED,
+             t.nest_checked_note(checked, six),
+             t.programs_read_note(at=checked, sheet="49x97"),
+             t.programs_read_note(at=checked, sheet=None, merged=1),
+             t.programs_read_note(at=None, sheet="49x97", cleared=1),
+             t.programs_unread_note(doubled))
+    return [
+        t.do_not_cut(job, classic, trial=True, reasons=(t.past_its_size(1, "61x109", "49x97"),)),
+        t.do_not_cut(job, classic, trial=False, reasons=(t.doubled_holes(8, doubled),)),
+        t.do_not_cut(job, classic, trial=False, reasons=(t.past_its_size(2, None, "49x97"),)),
+        t.not_checked(job, classic, posted=posted, now=posted),
+        t.nest_checked(job, classic, at=checked, programs=six, trial=False),
+        t.nest_checked(job, classic, at=checked, programs=six, trial=True, open_items=2),
+        t.sheet_cleared(job, classic, program="TESS07.TAP", on="61x109", at=checked),
+        t.order_heads_up(job, sheets=((12, f"3/4 {skis}"), (4, f"1/4 {skis}")),
+                         tape=((240, '15/16"', skis),)),
+        t.order_heads_up(job, sheets=((12, f"3/4 {skis}"),), tape=(), revised=True,
+                         flags=("IC Arctic White, built as Egger Classic White",)),
+        t.before_you_lock(job, items=("2 sheets of 3/4 Spring Blossom have no price in the"
+                                      " tracker",)),
+        *(Message("nest_note", "NG Runner", (note,)) for note in notes),
     ]
 
 

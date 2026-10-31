@@ -3,17 +3,22 @@ from __future__ import annotations
 
 import dataclasses
 import random
+import re
 from datetime import date, datetime, time, timedelta, timezone
+from pathlib import Path
 
 import pytest
 
+from ngrunner import selftest
 from ngrunner.cards import CARD_KINDS, CardSpec, new_card, parse_command
-from ngrunner.clock import at_pacific, fmt_clock, fmt_day
+from ngrunner.clock import PACIFIC, at_pacific, fmt_clock, fmt_day
+from ngrunner.config import Settings
 from ngrunner.digest import DigestView, compose
 from ngrunner.match import Opportunity
 from ngrunner.messages import Message
 from ngrunner.messages import templates as t
 from ngrunner.messages.lint import SUBJECT_LIMIT, check_line, lint
+from ngrunner.messenger import waits_for_morning
 
 NOW = datetime(2026, 10, 30, 22, 5, tzinfo=timezone.utc)        # Fri 10/30 3:05 PM Pacific
 INSTALL = date(2026, 11, 6)                                      # Fri 11/6
@@ -587,6 +592,38 @@ def every_template() -> list[tuple[str, Message]]:
         ("ran", t.ran(day, version="0.1.10", new_rows=1, filed=1, cards_opened=0,
                       cards_answered=2, writes_refused=1, dev_open=0)),
         ("can't send", t.cant_send(since=NOW, now=NOW, waiting=0)),
+        *nest_templates(),
+    ]
+
+
+def nest_templates() -> list[tuple[str, Message]]:
+    """Every P1b message, with awkward but realistic data: a Mozaik folder name, a hand-named
+    program, and a job name with an apostrophe."""
+    job, material = "O'Testa_101426_Gar", "3-4 Egger Classic White"
+    names = ("TESS01.TAP", "TESS02.TAP", "O'Testa_101426_3-4_S01R01-Flip.tap", "4x10 fix.TAP")
+    return [
+        ("DO NOT CUT, size", t.do_not_cut(job, material, trial=True, reasons=(
+            t.past_its_size(2, "61x109", "49x97"), t.past_its_size(1, None, "49x97")))),
+        ("DO NOT CUT, doubled", t.do_not_cut(job, material, trial=False, reasons=(
+            t.doubled_holes(1, names[:1]), t.doubled_holes(8, names)))),
+        ("NOT CHECKED", t.not_checked(job, material, posted=NOW, now=NOW)),
+        ("NOT CHECKED, a day late", t.not_checked(job, material, posted=NOW - timedelta(days=1),
+                                                  now=NOW)),
+        ("Nest checked", t.nest_checked(job, material, at=NOW, programs=names, trial=True)),
+        ("Nest checked, open items", t.nest_checked(job, material, at=NOW, programs=names[:1],
+                                                    trial=False, open_items=2)),
+        ("cleared", t.sheet_cleared(job, material, program=names[0], on="61x109", at=NOW)),
+        ("heads-up", t.order_heads_up(job, sheets=((1, "3/4 Tafisa Apres Skis"),),
+                                      tape=((1, '15/16"', "Tafisa Apres Skis"),),
+                                      flags=("IC Arctic White, built as Egger Classic White",))),
+        ("revised heads-up", t.order_heads_up(job, sheets=((12, "3/4 Tafisa Apres Skis"),),
+                                              tape=(), revised=True)),
+        ("before you lock", t.before_you_lock(job, items=(
+            "2 sheets of 3/4 Spring Blossom have no price in the tracker",))),
+        ("sheet size card", t.card_message(card(t.sheet_size_card(
+            job, material=material, program=names[0], on="61x109", expected="49x97")))),
+        ("sheet size card, no known sheet", t.card_message(card(t.sheet_size_card(
+            job, material=material, program=names[3], on=None, expected="49x97")))),
     ]
 
 
@@ -742,3 +779,494 @@ def test_synthetic_job_names_of_every_shape_pass_through_every_template():
             t.dev((t.DevLine(at, "Studio did not answer", job),), day=when),
         ):
             assert lint(message) == [], message.text
+
+
+# ----- P1b: the nest guard's messages, word for word as the build spec gives them (5.6)
+
+
+JOB = "Testerson_101426"
+CLASSIC = "3/4 Classic White"
+SIZE_NOTE = "A program is on 61x109 and this colour is 49x97"
+DOUBLED_NOTE = "8 cam holes are doubled in programs TESS02 and TESS03"
+NIGHT = datetime(2026, 10, 30, 23, 30, tzinfo=PACIFIC)            # 11:30 PM, in quiet hours
+SIX_PROGRAMS = tuple(f"TESS0{n}.TAP" for n in range(1, 7))
+
+
+def test_do_not_cut_for_a_size_reads_as_the_build_spec_gives_it():
+    message = t.do_not_cut(JOB, CLASSIC, reasons=(SIZE_NOTE,), trial=True)
+    assert_clean(message)
+    assert message.lines == (
+        "1. Testerson_101426: DO NOT CUT 3/4 Classic White (trial). A program is on 61x109 and this"
+        " colour is 49x97.",)
+    assert message.title == "DO NOT CUT · Testerson_101426 · 3/4 Classic White"
+    assert (message.kind, message.urgent) == ("do_not_cut", True)
+
+
+def test_do_not_cut_for_doubled_holes_reads_as_the_build_spec_gives_it():
+    message = t.do_not_cut(JOB, CLASSIC, reasons=(DOUBLED_NOTE,), trial=False)
+    assert_clean(message)
+    assert message.lines == (
+        "1. Testerson_101426: DO NOT CUT 3/4 Classic White. 8 cam holes are doubled in programs"
+        " TESS02 and TESS03.",)
+
+
+def test_do_not_cut_gives_each_reason_its_own_numbered_line():
+    message = t.do_not_cut(JOB, CLASSIC, reasons=(SIZE_NOTE, DOUBLED_NOTE), trial=False)
+    assert_clean(message)
+    assert message.lines == (
+        f"1. {JOB}: DO NOT CUT {CLASSIC}. {SIZE_NOTE}.",
+        f"2. {JOB}: DO NOT CUT {CLASSIC}. {DOUBLED_NOTE}.",
+    )
+
+
+def test_do_not_cut_with_no_reason_still_says_do_not_cut():
+    message = t.do_not_cut(JOB, CLASSIC, reasons=(), trial=False)
+    assert_clean(message)
+    assert message.lines == (f"1. {JOB}: DO NOT CUT {CLASSIC}.",)
+
+
+def test_not_checked_reads_as_the_build_spec_gives_it():
+    posted = datetime(2026, 10, 30, 23, 40, tzinfo=PACIFIC)
+    message = t.not_checked(JOB, CLASSIC, posted=posted, now=posted + timedelta(minutes=5))
+    assert_clean(message)
+    assert message.lines == (
+        "1. Testerson_101426: NOT CHECKED 3/4 Classic White, posted 11:40 PM. NG Runner is"
+        " offline.",)
+    assert message.title == "NOT CHECKED · Testerson_101426 · 3/4 Classic White"
+    assert message.kind == "not_checked" and not message.urgent
+
+
+def test_not_checked_says_the_day_when_it_comes_a_day_late():
+    posted = datetime(2026, 10, 29, 23, 40, tzinfo=PACIFIC)
+    message = t.not_checked(JOB, CLASSIC, posted=posted, now=NOW)
+    assert_clean(message)
+    assert "posted Thu 10/29 11:40 PM." in message.lines[0]
+
+
+def test_nest_checked_reads_as_the_build_spec_gives_it():
+    checked = datetime(2026, 10, 30, 21, 42, tzinfo=PACIFIC)
+    message = t.nest_checked(JOB, CLASSIC, at=checked, programs=SIX_PROGRAMS, trial=False)
+    assert_clean(message)
+    assert message.lines == (
+        "1. Testerson_101426: Nest checked 9:42 PM for 3/4 Classic White, programs TESS01-06.",)
+    assert message.title == "Nest checked · Testerson_101426 · 3/4 Classic White"
+    assert message.kind == "nest_checked" and not message.urgent
+
+
+def test_nest_checked_says_trial_while_it_is_one():
+    checked = datetime(2026, 10, 30, 21, 42, tzinfo=PACIFIC)
+    message = t.nest_checked(JOB, CLASSIC, at=checked, programs=SIX_PROGRAMS, trial=True)
+    assert_clean(message)
+    assert message.lines[0] == (
+        f"1. {JOB}: Nest checked 9:42 PM for {CLASSIC} (trial), programs TESS01-06.")
+
+
+@pytest.mark.parametrize("open_items, line", [
+    (0, None),
+    (1, f"2. {JOB}: Jim still has 1 open item."),
+    (2, f"2. {JOB}: Jim still has 2 open items."),
+])
+def test_nest_checked_adds_jims_open_items_only_when_there_are_some(open_items, line):
+    message = t.nest_checked(JOB, CLASSIC, at=NOW, programs=SIX_PROGRAMS, trial=False,
+                             open_items=open_items)
+    assert_clean(message)
+    assert message.lines[1:] == (() if line is None else (line,))
+
+
+def test_cleared_by_jim_says_only_that_the_size_was_cleared():
+    at = datetime(2026, 10, 30, 21, 42, tzinfo=PACIFIC)
+    message = t.sheet_cleared(JOB, CLASSIC, program="TESS07.TAP", on="61x109", at=at)
+    assert_clean(message)
+    assert message.title == "Cleared by Jim · Testerson_101426 · 3/4 Classic White"
+    assert message.lines == (
+        "1. Testerson_101426: Cleared by Jim 9:42 PM, program TESS07 of 3/4 Classic White on"
+        " 61x109: he added that sheet on purpose. This clears the sheet size only; the nest itself"
+        " is not checked.",)
+
+
+def test_the_order_heads_up_reads_as_the_build_spec_gives_it():
+    message = t.order_heads_up(
+        JOB, sheets=((12, "3/4 Tafisa Apres Skis"), (4, "1/4 Tafisa Apres Skis")),
+        tape=((240, '15/16"', "Tafisa Apres Skis"),))
+    assert_clean(message)
+    assert message.lines == (
+        "1. Testerson_101426: 12 sheets 3/4 Tafisa Apres Skis, 4 sheets 1/4 Tafisa Apres Skis"
+        " (takeoff estimate; the nest decides).",
+        '2. Testerson_101426: 240 feet of 15/16" tape, Tafisa Apres Skis (takeoff estimate; the'
+        " nest decides).",
+    )
+    assert message.title == "Order heads-up · Testerson_101426 · sheets with 10% waste"
+    assert message.kind == "heads_up" and not message.urgent
+
+
+def test_a_revised_heads_up_says_so_and_can_name_its_basis():
+    message = t.order_heads_up(JOB, sheets=((1, "3/4 Classic White"),), tape=(), revised=True,
+                               basis="sheets as calculated, no waste")
+    assert_clean(message)
+    assert message.title == (
+        "Revised order heads-up · Testerson_101426 · sheets as calculated, no waste")
+    assert message.lines == (
+        f"1. {JOB}: 1 sheet 3/4 Classic White (takeoff estimate; the nest decides).",)
+
+
+def test_a_heads_up_gives_each_tape_and_each_flag_a_line_of_its_own():
+    message = t.order_heads_up(
+        JOB, sheets=((1, "3/4 Classic White"),),
+        tape=((1, '15/16"', "Classic White"), (240.4, '1"', "Classic White")),
+        flags=("IC Arctic White, built as Egger Classic White", "The total is over $25,000"))
+    assert_clean(message)
+    assert message.lines[1:] == (
+        f'2. {JOB}: 1 foot of 15/16" tape, Classic White (takeoff estimate; the nest decides).',
+        f'3. {JOB}: 240 feet of 1" tape, Classic White (takeoff estimate; the nest decides).',
+        f"4. {JOB}: IC Arctic White, built as Egger Classic White.",
+        f"5. {JOB}: The total is over $25,000.",
+    )
+
+
+def test_a_heads_up_with_no_sheet_rows_says_only_the_tape():
+    message = t.order_heads_up(JOB, sheets=(), tape=((240, '15/16"', "Classic White"),))
+    assert_clean(message)
+    assert message.lines == (
+        f'1. {JOB}: 240 feet of 15/16" tape, Classic White (takeoff estimate; the nest decides).',)
+
+
+def test_before_you_lock_reads_as_the_build_spec_gives_it():
+    message = t.before_you_lock(JOB, items=(
+        "2 sheets of 3/4 Spring Blossom have no price in the tracker",))
+    assert_clean(message)
+    assert message.lines == (
+        "1. Testerson_101426: before you lock: 2 sheets of 3/4 Spring Blossom have no price in the"
+        " tracker.",)
+    assert message.title == "Before you lock · Testerson_101426"
+    assert message.kind == "before_you_lock"
+
+
+@pytest.mark.parametrize("shape", [
+    "1. Testerson_101426: DO NOT CUT 3/4 Classic White (trial). A program is on 61x109 and this"
+    " colour is 49x97.",
+    "1. Testerson_101426: DO NOT CUT 3/4 Classic White. 8 cam holes are doubled in programs TESS02"
+    " and TESS03.",
+    "1. Testerson_101426: NOT CHECKED 3/4 Classic White, posted 11:40 PM. NG Runner is offline.",
+    "1. Testerson_101426: Nest checked 9:42 PM for 3/4 Classic White, programs TESS01-06.",
+    "1. Testerson_101426: 12 sheets 3/4 Tafisa Apres Skis, 4 sheets 1/4 Tafisa Apres Skis (takeoff"
+    " estimate; the nest decides).",
+    '2. Testerson_101426: 240 feet of 15/16" tape, Tafisa Apres Skis (takeoff estimate; the nest'
+    " decides).",
+    "1. Testerson_101426: before you lock: 2 sheets of 3/4 Spring Blossom have no price in the"
+    " tracker.",
+])
+def test_each_shape_in_the_build_spec_comes_out_of_a_template_and_passes_the_lint(shape):
+    assert check_line(shape) == []
+    assert shape in {line for sample in selftest.message_samples() for line in sample.lines}
+
+
+# ----- P1b: how names are shown
+
+
+@pytest.mark.parametrize("names, shown", [
+    (("TESS02.TAP",), "TESS02"),
+    (("TESS03.tap", "TESS02.TAP"), "TESS02 and TESS03"),    # in order, either extension
+    (("TESS01.TAP", "TESS02.TAP", "TESS03.TAP"), "TESS01-03"),
+    (SIX_PROGRAMS, "TESS01-06"),
+    (("TESS01.TAP", "TESS02.TAP", "TESS03.TAP", "TESS07.TAP"), "TESS01-03 and TESS07"),
+    (("TESS01.TAP", "TESS05.TAP", "TESS09.TAP"), "TESS01, TESS05 and TESS09"),
+    (("TESS09.TAP", "TESS10.TAP", "TESS11.TAP"), "TESS09-11"),
+    (("TESS1.TAP", "TESS2.TAP", "TESS3.TAP"), "TESS1-3"),
+    (("TESS01.TAP", "FAKS02.TAP", "TESS02.TAP"), "FAKS02, TESS01 and TESS02"),
+    (("pile 3.TAP",), "pile 3"),
+    (("Classic_White_S01.TAP",), "Classic White S01"),      # the lint stops an underscore
+    (("Classic_White_S01.TAP", "Classic_White_S02.TAP", "Classic_White_S03.TAP"),
+     "Classic White S01-03"),
+    (("TESS01.TAP", "TESS01.tap"), "TESS01"),               # one program, twice
+    ((), ""),
+])
+def test_program_names_are_shown_short_and_in_order(names, shown):
+    assert t.program_names(names) == shown
+
+
+@pytest.mark.parametrize("name", [
+    r"G:\NG Jobs\TESS01.TAP", "TESS01 310-555-0123.TAP", "3f" * 32 + ".TAP",
+    "k3Yv9QzR7mT2wX8pL4nB6cD1fG5hJ0.TAP",
+], ids=["path", "phone", "hash", "key"])
+def test_a_hand_named_program_the_lint_would_stop_is_counted_so_the_alarm_still_goes(name):
+    # 65 of 551 real programs are hand-named. The DO NOT CUT must still name its job and material.
+    note = t.doubled_holes(4, (name, "TESS02.TAP"))
+    message = t.do_not_cut(JOB, CLASSIC, reasons=(note,), trial=False)
+    assert note == "4 cam holes are doubled in 2 programs"
+    assert t.vetted(message, now=NOW) == t.Vetted(message, ())
+    assert name not in message.text
+
+
+@pytest.mark.parametrize("folder, shown", [
+    ("3-4 Egger Classic White", "3/4 Egger Classic White"),
+    ("1-4 Tafisa Apres Skis", "1/4 Tafisa Apres Skis"),
+    ("3/4 Classic White", "3/4 Classic White"),
+    ("New folder", "New folder"),
+    ("Testerson 3-4 fix", "Testerson 3-4 fix"),          # only a leading thickness
+])
+def test_a_material_folders_name_reads_as_a_thickness(folder, shown):
+    message = t.do_not_cut(JOB, folder, reasons=(SIZE_NOTE,), trial=False)
+    assert_clean(message)
+    assert message.title == f"DO NOT CUT · {JOB} · {shown}"
+    assert message.lines[0].startswith(f"1. {JOB}: DO NOT CUT {shown}. ")
+
+
+@pytest.mark.parametrize("folder, shown", [
+    ("3-4 Tafisa Spring Blossom_L543", "3/4 Tafisa Spring Blossom L543"),
+    ("1-4 Tafisa Apris Ski_M2015", "1/4 Tafisa Apris Ski M2015"),
+    ("3-4 Tafisa Casting at First Light_M2007", "3/4 Tafisa Casting at First Light M2007"),
+    ("3-4 AraucoPrism-SF210-Antique-White-Suede", "3/4 AraucoPrism SF210 Antique White Suede"),
+    ("3-4 Egger Black U999 ST19 Woodgrain", "3/4 Egger Black U999 ST19 Woodgrain"),
+    ("1 in Egger Classic White", "1 in Egger Classic White"),
+    ("White 1-4 Vinyl", "White 1-4 Vinyl"),
+    ("GCode", "GCode"),
+])
+def test_each_real_kind_of_material_folder_reaches_people_by_name(folder, shown):
+    # A DO NOT CUT is no use without its material, so none of these may fall to the fixed template.
+    # Measured on the real NG Jobs folder names: the Arauco one would otherwise read as a key.
+    for message in (t.do_not_cut(JOB, folder, reasons=(SIZE_NOTE,), trial=True),
+                    t.not_checked(JOB, folder, posted=NOW, now=NOW),
+                    t.nest_checked(JOB, folder, at=NOW, programs=SIX_PROGRAMS, trial=False),
+                    t.sheet_cleared(JOB, folder, program="TESS07.TAP", on="61x109", at=NOW),
+                    t.card_message(card(t.sheet_size_card(
+                        JOB, material=folder, program="TESS07.TAP", on="61x109",
+                        expected="49x97")))):
+        assert t.vetted(message, now=NOW) == t.Vetted(message, ()), message.text
+        assert shown in message.text
+
+
+@pytest.mark.parametrize("folder", [
+    "Testerson 10-14-26", "Testerson 10/14/26", r"G:\NG Jobs\x", "3f" * 32, "Call 310-555-0123",
+], ids=["a date", "a slashed date", "a path", "a hash", "a phone number"])
+def test_a_folder_the_lint_would_stop_still_lets_the_alarm_name_its_job(folder):
+    # A folder in NG Jobs can be named anything. The job is what the alarm can't do without.
+    message = t.do_not_cut(JOB, folder, reasons=(SIZE_NOTE,), trial=True)
+    assert t.vetted(message, now=NOW) == t.Vetted(message, ())
+    assert message.title == f"DO NOT CUT · {JOB} · one material"
+    assert folder not in message.text
+
+
+@pytest.mark.parametrize("count, on, note", [
+    (1, "61x109", "A program is on 61x109 and this colour is 49x97"),
+    (2, "61x109", "2 programs are on 61x109 and this colour is 49x97"),
+    (1, None, "A program runs past every sheet NG Runner knows, and this colour is 49x97"),
+    (3, None, "3 programs run past every sheet NG Runner knows, and this colour is 49x97"),
+])
+def test_past_its_size_counts_programs_and_never_guesses_a_sheet(count, on, note):
+    assert t.past_its_size(count, on, "49x97") == note
+    assert check_line(note) == []
+
+
+def test_the_doubled_holes_note_reads_in_the_singular():
+    assert t.doubled_holes(1, ("TESS02.TAP",)) == "1 cam hole is doubled in program TESS02"
+    assert t.doubled_holes(2, ("TESS02.TAP",)) == "2 cam holes are doubled in program TESS02"
+
+
+# ----- P1b: the board's notes
+
+
+AT = datetime(2026, 10, 30, 21, 42, tzinfo=PACIFIC)
+
+
+@pytest.mark.parametrize("note, words", [
+    (t.nest_checked_note(AT, SIX_PROGRAMS), "Nest checked 9:42 PM, programs TESS01-06"),
+    (t.nest_checked_note(None, SIX_PROGRAMS), "Nest checked, programs TESS01-06"),
+    (t.programs_read_note(at=AT, sheet="49x97"),
+     "Programs read 9:42 PM, nothing past 49x97, 0 doubled holes; the nest itself is not checked"),
+    (t.programs_read_note(at=None, sheet="49x97"),
+     "Programs read, nothing past 49x97, 0 doubled holes; the nest itself is not checked"),
+    (t.programs_read_note(at=AT, sheet=None),
+     "Programs read 9:42 PM, sheet size could not be verified, 0 doubled holes; the nest itself is"
+     " not checked"),
+    (t.programs_read_note(at=AT, sheet="49x97", cleared=1),
+     "Programs read 9:42 PM, 1 cleared past 49x97, 0 doubled holes; the nest itself is not"
+     " checked"),
+    (t.programs_read_note(at=AT, sheet="49x97", merged=2),
+     "Programs read 9:42 PM, nothing past 49x97, 0 doubled holes outside 2 merged programs; the"
+     " nest itself is not checked"),
+    (t.programs_read_note(at=AT, sheet="49x97", merged=1),
+     "Programs read 9:42 PM, nothing past 49x97, 0 doubled holes outside 1 merged program; the"
+     " nest itself is not checked"),
+    (t.programs_unread_note(("TESS02.TAP",)),
+     "Could not read program TESS02 yet; the nest itself is not checked"),
+    (t.programs_unread_note(("TESS02.TAP", "TESS03.TAP")),
+     "Could not read programs TESS02 and TESS03 yet; the nest itself is not checked"),
+    (t.POSTED_BEFORE, "Posted before NG Runner; not checked"),
+    (t.SAVE_THE_NEST, "Save the nest in the Optimizer so I can check it"),
+])
+def test_each_board_note_says_what_the_build_spec_says_and_passes_the_lint(note, words):
+    assert note == words
+    assert check_line(note) == []
+
+
+def test_every_fixed_note_passes_the_lint():
+    for note in (t.POSTED_BEFORE, t.SAVE_THE_NEST, t.NO_PROGRAMS_YET, t.LABELS_NOT_VERIFIED):
+        assert check_line(note) == [], note
+
+
+def test_a_clean_program_read_never_claims_the_right_sheet():
+    # Build spec 3.1 and 5.2: a fit is a lower bound, so it can only prove a wrong sheet.
+    note = t.programs_read_note(at=AT, sheet="49x97")
+    assert " on 49x97" not in note and "nothing past 49x97" in note
+
+
+# ----- P1b: the sheet size card
+
+
+def sheet_card(on: str | None = "61x109"):
+    return card(t.sheet_size_card(JOB, material="3-4 Classic White", program="TESS07.TAP", on=on,
+                                  expected="49x97"))
+
+
+def test_the_sheet_size_card_offers_jims_two_choices_and_points_at_no_job():
+    made = sheet_card()
+    assert made.kind == "sheet_size" and made.job == JOB and made.id == "TES-2"
+    assert made.choices == t.SHEET_SIZE_CHOICES == ("I added this sheet on purpose", "Re-nest it")
+    assert made.choice_ids == (None, None) and made.default_choice is None
+
+
+def test_the_sheet_size_card_says_which_program_on_which_sheet():
+    message = t.card_message(sheet_card())
+    assert_clean(message)
+    assert message.title == "TES-2 · Testerson_101426 · A program is past its sheet size"
+    assert message.lines == (
+        "Program TESS07 of 3/4 Classic White is on 61x109 and this colour is 49x97. It stays DO NOT"
+        " CUT until you choose, and a re-post asks again.",
+        "1. I added this sheet on purpose", "2. Re-nest it")
+
+
+def test_the_sheet_size_card_says_so_when_the_sheet_is_not_one_it_knows():
+    message = t.card_message(sheet_card(on=None))
+    assert_clean(message)
+    assert message.lines[0].startswith(
+        "Program TESS07 of 3/4 Classic White runs past every sheet NG Runner knows, and this colour"
+        " is 49x97.")
+
+
+def test_the_sheet_size_card_comes_back_in_the_digest():
+    message = t.digest(date(2026, 10, 30), cards=((sheet_card(), 3),), open_items=1, oldest_days=3)
+    assert_clean(message)
+    assert message.lines[0] == (
+        "1. Card TES-2, open 3 days: Testerson_101426 still has a program past its sheet size; did"
+        " you add that sheet on purpose?")
+
+
+# ----- P1b: quiet hours, and what a message that fails the lint turns into
+
+
+SETTINGS = Settings(ng_jobs=Path(r"C:\NG Jobs"), mozaik_shared=Path(r"C:\Mozaik Shared"),
+                    control=Path(r"C:\control"))
+
+
+def waits(message: Message, to: str = "jim", channel: str = "pushover") -> bool:
+    return waits_for_morning(message.title, to=to, channel=channel, now=NIGHT, settings=SETTINGS)
+
+
+def test_do_not_cut_goes_through_quiet_hours_by_its_title_alone():
+    message = t.do_not_cut(JOB, CLASSIC, reasons=(SIZE_NOTE,), trial=True)
+    assert not waits(message)                                   # Jim's phone, in the night
+    assert not waits(message, to="george", channel="email")     # George, "at once, any hour"
+    assert not waits(t.shadow(message), to="sulaiman")          # and marked for Sulaiman
+
+
+def test_do_not_cut_goes_through_quiet_hours_even_once_replaced_by_its_fixed_template():
+    bad = t.do_not_cut(JOB, CLASSIC, reasons=(r"Saved in G:\NG Jobs\TESS01.TAP",), trial=True)
+    assert lint(bad)
+
+    for sent in (bad, t.shadow(bad)):
+        replaced = t.vetted(sent, now=NOW)
+        assert replaced.replaced and replaced.message.urgent
+        assert not waits(replaced.message)
+        assert "NG Jobs" not in replaced.message.text
+
+
+def test_only_do_not_cut_goes_through_quiet_hours():
+    # Sanity on the check above: a phone message of any other kind does wait the night out.
+    for message in (t.not_checked(JOB, CLASSIC, posted=NOW, now=NOW),
+                    t.nest_checked(JOB, CLASSIC, at=NOW, programs=SIX_PROGRAMS, trial=False),
+                    t.sheet_cleared(JOB, CLASSIC, program="TESS07.TAP", on="61x109", at=NOW),
+                    t.card_message(sheet_card())):
+        assert waits(message), message.kind
+
+
+def test_a_fixed_do_not_cut_is_urgent_of_itself():
+    assert t.fixed("do_not_cut", day=date(2026, 10, 30)).urgent
+
+
+def test_every_new_kind_has_a_fixed_template_that_carries_no_outside_data():
+    kinds = {message.kind for _, message in nest_templates()} - {"card"}
+    assert kinds == {"do_not_cut", "not_checked", "nest_checked", "sheet_cleared", "heads_up",
+                     "before_you_lock"}
+    assert kinds <= set(t.FIXED)
+    for kind in kinds:
+        assert_clean(t.fixed(kind, day=date(2026, 10, 30)))
+        assert JOB not in t.fixed(kind, day=date(2026, 10, 30)).text
+
+
+@pytest.mark.parametrize("kind", ["heads_up", "before_you_lock", "nest_checked", "sheet_cleared",
+                                  "not_checked", "do_not_cut"])
+def test_the_fixed_templates_tell_people_with_no_board_where_to_look(kind):
+    # George, Barbara and Will have no board of their own, so a bare "on the board" helps nobody.
+    line = t.fixed(kind, day=date(2026, 10, 30)).lines[0]
+    if kind == "heads_up":
+        assert "board" not in line and "Jim" not in line
+    elif kind == "before_you_lock":
+        assert "on the board" in line                 # this one is Jim's own
+    else:
+        assert "his board" in line
+
+
+def test_a_heads_up_can_only_carry_what_it_is_given():
+    # Its reader picks named fields (build spec 5.8), so an address can't reach this template. The
+    # lint still stands behind it, for anything else a flag may say.
+    message = t.order_heads_up(JOB, sheets=((1, "3/4 Classic White"),), tape=(),
+                               flags=("Call 310-555-0123 first",))
+    vetted = t.vetted(message, now=NOW)
+    assert vetted.replaced and "310-555-0123" not in vetted.message.text
+
+
+# ----- P1b: no message ever says OK to cut
+
+
+OK_TO_CUT = re.compile(
+    r"\b(?:ok|okay|safe|clear|cleared|good|fine|ready|free|allowed|go(?: ahead)?|proceed|can|may)\b"
+    r"(?:\W+\w+){0,3}?\W+cut(?:ting)?\b"
+    r"|\bcut(?:ting)?\b(?:\W+\w+){0,3}?\W+(?:ok|okay|safe|allowed|fine|away)\b",
+    re.IGNORECASE,
+)
+
+
+@pytest.mark.parametrize("line", [
+    "OK to cut", "Okay to cut", "ok to cut 3/4 Classic White", "Safe to cut", "Clear to cut",
+    "Cleared to cut", "Good to cut", "Ready to cut", "Fine to cut", "Free to cut",
+    "Go ahead and cut", "Go cut it", "You can cut", "You may cut this", "Proceed to cut", "Allowed to cut",
+    "Cutting is OK", "Cut away",
+])
+def test_the_check_below_would_catch_every_way_of_saying_it(line):
+    assert OK_TO_CUT.search(line)
+
+
+@pytest.mark.parametrize("line", [
+    "1. Testerson_101426: DO NOT CUT 3/4 Classic White.", "It stays DO NOT CUT until you choose.",
+    "Cleared by Jim", "Nest checked 9:42 PM",
+])
+def test_the_check_below_passes_what_nest_messages_do_say(line):
+    assert not OK_TO_CUT.search(line)
+
+
+def said_about_nests() -> list[str]:
+    """Every word the guards' templates can put in front of a person."""
+    fixed = [t.fixed(kind, day=date(2026, 10, 30)) for kind in t.FIXED]
+    samples = [*selftest.message_samples(), *(message for _, message in nest_templates()), *fixed]
+    return [
+        *(line for message in samples for line in (message.title, *message.lines)),
+        t.QUESTIONS["sheet_size"], t._CARD_BACK["sheet_size"], *t.SHEET_SIZE_CHOICES,
+        t.POSTED_BEFORE, t.SAVE_THE_NEST, t.NO_PROGRAMS_YET, t.LABELS_NOT_VERIFIED,
+        t.programs_read_note(at=NOW, sheet="49x97"), t.nest_checked_note(NOW, SIX_PROGRAMS),
+    ]
+
+
+def test_no_message_ever_says_ok_to_cut():
+    lines = said_about_nests()
+    assert len(lines) > 100
+    assert [line for line in lines if OK_TO_CUT.search(line)] == []

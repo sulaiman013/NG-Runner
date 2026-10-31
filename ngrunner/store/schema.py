@@ -238,7 +238,75 @@ _V3 = (
     ) STRICT""",
 )
 
-MIGRATIONS: tuple[tuple[str, ...], ...] = (_V1, _V2, _V3)
+# Version 4: Phase 1b's read-only guards (P1b build spec section 4). New tables only, so nothing an
+# older row holds changes. A program's facts from reading it are NULL until it has been read.
+_V4 = (
+    """CREATE TABLE IF NOT EXISTS programs (
+        folder     TEXT NOT NULL,
+        material   TEXT NOT NULL,
+        name       TEXT NOT NULL,
+        sha256     TEXT,
+        size       INTEGER NOT NULL,
+        mtime      TEXT NOT NULL,
+        family     TEXT,
+        reach_x    REAL,
+        reach_y    REAL,
+        holes      INTEGER,
+        near_pairs INTEGER,
+        seen_at    TEXT NOT NULL,
+        state      TEXT NOT NULL,
+        PRIMARY KEY (folder, material, name)
+    ) STRICT""",
+    """CREATE TABLE IF NOT EXISTS nests (
+        folder         TEXT NOT NULL,
+        material       TEXT NOT NULL,
+        studio_id      TEXT REFERENCES jobs (studio_id),
+        state          TEXT NOT NULL,
+        basis          TEXT NOT NULL,
+        reasons        TEXT NOT NULL DEFAULT '[]',
+        opt_sha256     TEXT,
+        manifest       TEXT NOT NULL DEFAULT '{}',
+        room_hashes    TEXT NOT NULL DEFAULT '{}',
+        posted_at      TEXT,
+        checked_at     TEXT,
+        trial          INTEGER NOT NULL DEFAULT 1,
+        george_told_at TEXT,
+        updated_at     TEXT NOT NULL,
+        PRIMARY KEY (folder, material)
+    ) STRICT""",
+    """CREATE TABLE IF NOT EXISTS clearances (
+        id             INTEGER PRIMARY KEY,
+        folder         TEXT NOT NULL,
+        material       TEXT NOT NULL,
+        program_sha256 TEXT NOT NULL,
+        what           TEXT NOT NULL,
+        card_id        TEXT NOT NULL REFERENCES cards (id),
+        at             TEXT NOT NULL
+    ) STRICT""",
+    "CREATE INDEX IF NOT EXISTS clearances_by_material ON clearances (folder, material)",
+    """CREATE TABLE IF NOT EXISTS owner_log (
+        id     INTEGER PRIMARY KEY,
+        at     TEXT NOT NULL,
+        folder TEXT NOT NULL,
+        file   TEXT NOT NULL,
+        owner  TEXT NOT NULL
+    ) STRICT""",
+    """CREATE TABLE IF NOT EXISTS heads_ups (
+        folder      TEXT PRIMARY KEY NOT NULL,
+        json_sha256 TEXT NOT NULL,
+        sent_at     TEXT,
+        outbox_id   TEXT
+    ) STRICT""",
+    """CREATE TABLE IF NOT EXISTS snapshots (
+        id       INTEGER PRIMARY KEY,
+        taken_at TEXT NOT NULL,
+        sha256   TEXT NOT NULL,
+        adopted  INTEGER NOT NULL DEFAULT 0,
+        result   TEXT
+    ) STRICT""",
+)
+
+MIGRATIONS: tuple[tuple[str, ...], ...] = (_V1, _V2, _V3, _V4)
 LATEST = len(MIGRATIONS)
 
 

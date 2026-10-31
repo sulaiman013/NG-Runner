@@ -19,9 +19,10 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 
-# The P1a cards (design section 3.4 and the integration spec's filing pipeline).
+# The P1a cards (design section 3.4 and the integration spec's filing pipeline), then P1b's: a
+# program past its sheet size, which Jim's answer can clear (P1b build spec 5.6).
 CARD_KINDS = ("which_job", "closet_or_garage", "fetch_failed", "ic_changed", "row_changed",
-              "remake", "design_mismatch")
+              "remake", "design_mismatch", "sheet_size")
 STATES = ("open", "answered", "withdrawn")
 REMIND_AT_DAYS = (1, 3, 7)         # open cards come back in the digest (design 4, "Timing")
 NO_LETTERS_PREFIX = "ROW"          # for a Fab row typed with no letters at all

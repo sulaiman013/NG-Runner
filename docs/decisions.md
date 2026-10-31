@@ -214,6 +214,27 @@ Three reviews of the running app (safety, the running app itself, and breaking t
 | What does an "IC changed" card say? | What differs (`intake/report_diff.py`), since Studio's report changes with its catalog: part numbers or names only, text, or drawings. It describes and never decides |
 | A multi-day install (`10/29-30`)? | It counts as its first day, the day the job must be ready |
 
+## Phase 1b's rulings (2026-10-30)
+
+The recommended defaults, adopted as Sulaiman asked for decisions, and he can overrule any of them. The reasons and the measurements are in `docs/p1b/build-spec.md`, section 9.
+
+| Question | Ruling |
+|---|---|
+| Sheet size a nest must be on (Q3) | The RULES table's lines only, until the material library is here. Any other name reads "could not verify" |
+| A sheet Jim added by hand (Q3a) | DO NOT CUT, plus one card that clears that one program on that one job. A re-post asks again |
+| IC "Charcoal" (Q4) | Egger Black U999 ST19 Woodgrain on 61x109, as RULES says. An old `3-4 Charcoal` folder has no rule |
+| Order call-outs (Q12) | By email to Barbara and Will, never in Jim's work list |
+| Colour flag (12a) | Any material but Classic White gets a line, not an alarm |
+| Substitutions (12b) | A colour swap is named once, unflagged. A size swap isn't flagged in P1b, because the takeoff has no field for it |
+| Total flag (12c) | $25,000 on the estimate's total, and it's a setting |
+| The takeoff's shape | One RULES line and a skill line for Jim's chat, through his approval process. Until then an unreadable takeoff says "could not verify", never a partial list |
+| Checking the programs without the toolkit (departure) | Built first, as an extra check that never replaces Jim's scripts. A fault raises DO NOT CUT, and a clean read stays NOT CHECKED. Once the toolkit is adopted both run, and a disagreement goes to DEV |
+| "DO NOT CUT is never silenceable" (departure) | It holds, except for the Q3a click on a size |
+| P1b's exit test (departure) | The design's named bad nests aren't shown to exist on disk, so section 11 of the spec replaces that line |
+| What reaches a phone (departure) | Job names, dates, material and sheet size, since DO NOT CUT is useless without the material. **Jim's consent is still needed before any of it goes to his phone** |
+| The interlock | Unchanged in P1b, which writes nothing a Mozaik job reads |
+| Bringing this PC's stopped OneDrive back | No, by Sulaiman's call. The team works in Google Drive, so this PC's OneDrive stays as it is, and what lives only on Jim's PC arrives as a zip on Google Drive |
+
 ## Matching (settled)
 
 | Decision | Ruling | Why |

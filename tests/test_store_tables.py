@@ -5,6 +5,8 @@ public functions only, on a database under tmp_path. Job names are synthetic.
 from __future__ import annotations
 
 import hashlib
+import sqlite3
+from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import MappingProxyType
@@ -17,20 +19,27 @@ from ngrunner.intake.summary_check import check_summary, content_fingerprint
 from ngrunner.joblist import JobList
 from ngrunner.match import FabRow, Opportunity, match_fab_row, match_file_to_job
 from ngrunner.store import (
-    AliasRecord, Db, ListState, OpportunityRecord, Store, StoreError, accept_envelope, accept_seq,
-    add_alias, add_card, add_fab_row, add_outbox, add_pending, add_render, allocate_card_id,
-    answer_card, clear_state, close_dev, due_pending, end_run, ensure_job, finish_pending,
-    freeze_name, get_card, get_dev, get_fab_row, get_job, get_job_list, get_list_state,
+    AliasRecord, ClearanceRecord, Db, HeadsUpRecord, ListState, NestRecord, OpportunityRecord,
+    OwnerRecord, ProgramRecord, SnapshotRecord, Store, StoreError, accept_envelope, accept_seq,
+    add_alias, add_card, add_clearance, add_fab_row, add_nest, add_outbox, add_pending,
+    add_program, add_render, add_snapshot, allocate_card_id,
+    answer_card, clear_state, cleared_programs, close_dev, due_pending, end_run, ensure_job,
+    finish_pending,
+    freeze_name, get_card, get_dev, get_fab_row, get_heads_up, get_job, get_job_list,
+    get_list_state, get_nest, get_program, get_snapshot,
     states_under, get_opportunity, get_outbox, get_pending, get_render, get_run, get_state, get_state_time,
     governing_render, jump_after_restore, last_accepted_seq, last_sent_seq, list_aliases,
-    list_cards, list_dev,
-    list_events, list_fab_rows, list_jobs, list_outbox, list_pending, list_renders, list_runs,
-    list_write_records, log_event, mark_dev_told_jim, mark_outbox_fallback, mark_outbox_written,
+    list_cards, list_clearances, list_dev,
+    list_events, list_fab_rows, list_heads_ups, list_jobs, list_nests, list_outbox,
+    list_owner_log, list_pending, list_programs, list_renders, list_runs, list_snapshots,
+    list_write_records, log_event, log_owner, mark_dev_told_jim, mark_outbox_fallback,
+    mark_outbox_written,
     next_seq, open_dev, open_store, outbox_without_receipt, owned_sha, past_deadline_pending,
-    path_key, prune_seen_ids, record_commit, record_owned, record_receipt, record_reminder,
+    path_key, prune_seen_ids, record_commit, record_heads_up, record_owned, record_receipt,
+    record_reminder, remove_program,
     replace_opportunities,
     render_fingerprint, retry_pending, seen_id, set_governing, set_state, set_state_time, start_run,
-    update_fab_row, update_job, withdraw_card,
+    update_fab_row, update_job, update_nest, update_program, update_snapshot, withdraw_card,
 )
 from ngrunner.writes import CommitResult, FileWrite, Roots, commit_write
 
@@ -1500,3 +1509,516 @@ def test_a_time_that_is_not_a_datetime_is_refused(store: Store) -> None:
             ensure_job(store, SID, JOB, now=not_a_time)
 
     assert list_jobs(store) == []
+
+
+# ----- P1b: programs, one row per CNC program seen in NG Jobs
+
+
+MATERIAL, OTHER_MATERIAL, TAP = "3-4 Classic White", "1-4 Classic White", "TESS01.TAP"
+SHA_C = "c" * 64
+
+
+def program(store: Db, name: str = TAP, *, folder: str = JOB, material: str = MATERIAL, **fields):
+    defaults = dict(size=2048, mtime=T0, seen_at=T1)
+    return add_program(store, folder=folder, material=material, name=name,
+                       **{**defaults, **fields})
+
+
+READ_FACTS = dict(state="read", sha256=SHA_A, family="sheet", reach=(48.75, 96.75), holes=120,
+                  near_pairs=0)
+
+
+def test_a_program_read_is_stored_and_read_back_whole(store: Store) -> None:
+    made = program(store, **READ_FACTS)
+
+    assert get_program(store, JOB, MATERIAL, TAP) == made
+    assert made == ProgramRecord(folder=JOB, material=MATERIAL, name=TAP, sha256=SHA_A, size=2048,
+                                 mtime=T0, family="sheet", reach=(48.75, 96.75), holes=120,
+                                 near_pairs=0, seen_at=T1, state="read")
+    assert get_program(store, JOB, MATERIAL, "TESS02.TAP") is None
+
+
+def test_a_program_only_listed_so_far_holds_no_facts_from_its_contents(store: Store) -> None:
+    made = program(store)
+
+    assert made.state == "new"
+    assert (made.sha256, made.family, made.reach, made.holes, made.near_pairs) == (
+        None, None, None, None, None)
+    assert (made.size, made.mtime, made.seen_at) == (2048, T0, T1)
+
+
+def test_a_program_there_at_install_says_so(store: Store) -> None:
+    assert program(store, state="seen_at_install").state == "seen_at_install"
+
+
+def test_a_program_with_no_cutting_moves_has_no_reach(store: Store) -> None:
+    assert program(store, **{**READ_FACTS, "reach": None}).reach is None
+
+
+@pytest.mark.parametrize("missing", ["sha256", "family", "holes", "near_pairs"])
+def test_a_program_marked_read_must_have_what_reading_it_gives(store: Store, missing: str) -> None:
+    with pytest.raises(ValueError, match="read"):
+        program(store, **{**READ_FACTS, missing: None})
+
+    assert list_programs(store) == []
+
+
+def test_a_program_changes_only_the_fields_given(store: Store) -> None:
+    program(store)
+
+    read = update_program(store, JOB, MATERIAL, TAP, **READ_FACTS)
+    assert (read.state, read.sha256, read.holes, read.size, read.mtime) == (
+        "read", SHA_A, 120, 2048, T0)
+    assert get_program(store, JOB, MATERIAL, TAP) == read
+
+    moved = update_program(store, JOB, MATERIAL, TAP, size=4096, mtime=T2)
+    assert (moved.size, moved.mtime, moved.sha256, moved.state) == (4096, T2, SHA_A, "read")
+
+
+def test_a_program_that_changes_goes_back_to_new_with_nothing_left_from_its_old_contents(
+    store: Store,
+) -> None:
+    program(store, **READ_FACTS)
+
+    changed = update_program(store, JOB, MATERIAL, TAP, state="new", size=4096, mtime=T2,
+                             sha256=None, family=None, reach=None, holes=None, near_pairs=None)
+
+    assert (changed.state, changed.sha256, changed.reach, changed.near_pairs) == (
+        "new", None, None, None)
+
+
+def test_a_read_program_cant_lose_its_facts_and_stay_read(store: Store) -> None:
+    before = program(store, **READ_FACTS)
+
+    with pytest.raises(ValueError, match="read"):
+        update_program(store, JOB, MATERIAL, TAP, sha256=None)
+
+    assert get_program(store, JOB, MATERIAL, TAP) == before
+
+
+def test_the_same_name_in_another_material_or_job_is_another_program(store: Store) -> None:
+    program(store, sha256=SHA_A)
+    program(store, material=OTHER_MATERIAL, sha256=SHA_B)
+    program(store, folder="Fakeley_102026", sha256=SHA_C)
+
+    assert [p.sha256 for p in list_programs(store, folder=JOB, material=MATERIAL)] == [SHA_A]
+    assert [p.sha256 for p in list_programs(store, folder=JOB, material=OTHER_MATERIAL)] == [SHA_B]
+    assert [p.sha256 for p in list_programs(store, folder="Fakeley_102026")] == [SHA_C]
+    assert len(list_programs(store)) == 3
+
+
+def test_the_same_program_twice_is_refused(store: Store) -> None:
+    program(store)
+
+    with pytest.raises(StoreError, match="refused"):
+        program(store)
+
+
+def test_programs_are_listed_in_order_and_by_state(store: Store) -> None:
+    program(store, "TESS02.TAP", state="seen_at_install")
+    program(store, "TESS01.TAP", **READ_FACTS)
+    program(store, "TESS03.TAP")
+
+    assert [p.name for p in list_programs(store)] == ["TESS01.TAP", "TESS02.TAP", "TESS03.TAP"]
+    assert [p.name for p in list_programs(store, state="seen_at_install")] == ["TESS02.TAP"]
+    assert [p.name for p in list_programs(store, state="read")] == ["TESS01.TAP"]
+
+
+def test_a_program_that_leaves_its_folder_can_be_removed(store: Store) -> None:
+    program(store)
+    program(store, "TESS02.TAP")
+
+    assert remove_program(store, JOB, MATERIAL, TAP) is True
+    assert remove_program(store, JOB, MATERIAL, TAP) is False
+
+    assert [p.name for p in list_programs(store)] == ["TESS02.TAP"]
+
+
+def test_a_change_to_a_program_the_store_doesnt_have_is_a_lookup_error(store: Store) -> None:
+    with pytest.raises(LookupError):
+        update_program(store, JOB, MATERIAL, TAP, size=1)
+
+
+@pytest.mark.parametrize("fields", [
+    {"state": "unknown"}, {"family": "other"}, {"size": -1}, {"size": 1.5}, {"size": True},
+    {"sha256": "not a hash"}, {"holes": -1}, {"near_pairs": -1}, {"reach": (1.0,)},
+    {"reach": ("48", "96")}, {"reach": (True, 96.0)}, {"reach": (float("nan"), 96.0)},
+    {"reach": (float("inf"), 96.0)}, {"mtime": "2026-10-30"}, {"seen_at": None},
+    {"folder": " "}, {"material": ""}, {"name": ""},
+])
+def test_a_program_with_a_bad_value_is_refused_and_nothing_is_stored(
+    store: Store, fields: dict[str, object],
+) -> None:
+    values = dict(folder=JOB, material=MATERIAL, name=TAP, size=1, mtime=T0, seen_at=T0)
+
+    with pytest.raises(ValueError):
+        add_program(store, **{**values, **fields})
+
+    assert list_programs(store) == []
+
+
+def test_a_program_update_with_a_bad_value_changes_nothing(store: Store) -> None:
+    before = program(store)
+
+    for fields in ({"state": "unknown"}, {"sha256": "x"}, {"size": -1}, {"reach": (1.0,)}):
+        with pytest.raises(ValueError):
+            update_program(store, JOB, MATERIAL, TAP, **fields)
+
+    assert get_program(store, JOB, MATERIAL, TAP) == before
+
+
+# ----- P1b: nests, one row per material of a job
+
+
+MANIFEST = {"TESS01.TAP": SHA_A, "TESS02.TAP": SHA_B}
+ROOMS = {"Room1.des": SHA_C}
+
+
+def nest(store: Db, *, folder: str = JOB, material: str = MATERIAL, **fields):
+    defaults = dict(state="not_checked", basis="programs", updated_at=T0)
+    return add_nest(store, folder=folder, material=material, **{**defaults, **fields})
+
+
+def test_a_material_is_stored_and_read_back_whole(store: Store) -> None:
+    ensure_job(store, SID, JOB, now=T0)
+
+    made = nest(store, studio_id=SID, state="nest_checked", basis="nest",
+                reasons=("Nest checked 9:42 PM, programs TESS01-06",), opt_sha256=SHA_A,
+                manifest=MANIFEST, room_hashes=ROOMS, posted_at=T1, checked_at=T2, trial=False,
+                george_told_at=T3)
+
+    assert get_nest(store, JOB, MATERIAL) == made
+    assert made == NestRecord(
+        folder=JOB, material=MATERIAL, studio_id=SID, state="nest_checked", basis="nest",
+        reasons=("Nest checked 9:42 PM, programs TESS01-06",), opt_sha256=SHA_A, manifest=MANIFEST,
+        room_hashes=ROOMS, posted_at=T1, checked_at=T2, trial=False, george_told_at=T3,
+        updated_at=T0)
+    assert get_nest(store, JOB, OTHER_MATERIAL) is None
+
+
+def test_a_material_starts_as_trial_and_bound_to_nothing(store: Store) -> None:
+    made = nest(store)
+
+    assert made.trial is True
+    assert (made.opt_sha256, made.manifest, made.room_hashes) == (None, {}, {})
+    assert (made.studio_id, made.reasons, made.posted_at, made.checked_at) == (None, (), None, None)
+    assert made.george_told_at is None
+
+
+def test_a_folder_with_no_fab_row_still_counts(store: Store) -> None:
+    assert nest(store, studio_id=None).studio_id is None
+
+
+def test_a_material_naming_a_job_the_store_doesnt_have_is_refused(store: Store) -> None:
+    with pytest.raises(StoreError, match="refused"):
+        nest(store, studio_id="99999")
+
+    assert list_nests(store) == []
+
+
+def test_a_material_changes_only_the_fields_given_and_stamps_the_time(store: Store) -> None:
+    nest(store, posted_at=T0, reasons=("Posted before NG Runner; not checked",))
+
+    changed = update_nest(store, JOB, MATERIAL, now=T1, state="do_not_cut",
+                          reasons=("A program is on 61x109 and this colour is 49x97",))
+
+    assert (changed.state, changed.basis, changed.posted_at, changed.updated_at) == (
+        "do_not_cut", "programs", T0, T1)
+    assert changed.reasons == ("A program is on 61x109 and this colour is 49x97",)
+    assert get_nest(store, JOB, MATERIAL) == changed
+
+    told = update_nest(store, JOB, MATERIAL, now=T2, george_told_at=T2, posted_at=None)
+    assert (told.george_told_at, told.posted_at, told.state) == (T2, None, "do_not_cut")
+
+
+@pytest.mark.parametrize("missing", [
+    {"opt_sha256": None}, {"manifest": {}}, {"room_hashes": {}}, {"checked_at": None},
+])
+def test_a_pass_must_say_what_it_passed_on(store: Store, missing: dict[str, object]) -> None:
+    # A change to any of the three puts the material back to NOT CHECKED: a pass with no hashes
+    # could never be seen to change.
+    passed = dict(state="nest_checked", basis="nest", opt_sha256=SHA_A, manifest=MANIFEST,
+                  room_hashes=ROOMS, checked_at=T1)
+
+    with pytest.raises(ValueError, match="pass"):
+        nest(store, **{**passed, **missing})
+
+    assert list_nests(store) == []
+
+
+def test_a_material_cant_become_a_pass_without_what_it_passed_on(store: Store) -> None:
+    before = nest(store)
+
+    with pytest.raises(ValueError, match="pass"):
+        update_nest(store, JOB, MATERIAL, now=T1, state="nest_checked")
+
+    assert get_nest(store, JOB, MATERIAL) == before
+    after = update_nest(store, JOB, MATERIAL, now=T1, state="nest_checked", basis="nest",
+                        opt_sha256=SHA_A, manifest=MANIFEST, room_hashes=ROOMS, checked_at=T1)
+    assert after.state == "nest_checked"
+
+
+def test_a_pass_cant_lose_what_it_passed_on_and_stay_a_pass(store: Store) -> None:
+    before = nest(store, state="nest_checked", basis="nest", opt_sha256=SHA_A, manifest=MANIFEST,
+                  room_hashes=ROOMS, checked_at=T1)
+
+    with pytest.raises(ValueError, match="pass"):
+        update_nest(store, JOB, MATERIAL, now=T2, opt_sha256=None)
+
+    assert get_nest(store, JOB, MATERIAL) == before
+    back = update_nest(store, JOB, MATERIAL, now=T2, state="not_checked", opt_sha256=None,
+                       manifest={}, room_hashes={}, checked_at=None)
+    assert (back.state, back.opt_sha256, back.manifest) == ("not_checked", None, {})
+
+
+def test_materials_are_listed_by_job_folder_and_state(store: Store) -> None:
+    ensure_job(store, SID, JOB, now=T0)
+    nest(store, material=OTHER_MATERIAL, studio_id=SID, state="do_not_cut")
+    nest(store, studio_id=SID)
+    nest(store, folder="Fakeley_102026")
+
+    assert [(n.folder, n.material) for n in list_nests(store)] == [
+        ("Fakeley_102026", MATERIAL), (JOB, OTHER_MATERIAL), (JOB, MATERIAL)]
+    assert [n.material for n in list_nests(store, folder=JOB)] == [OTHER_MATERIAL, MATERIAL]
+    assert [n.folder for n in list_nests(store, studio_id=SID)] == [JOB, JOB]
+    assert [n.material for n in list_nests(store, state="do_not_cut")] == [OTHER_MATERIAL]
+
+
+def test_a_change_to_a_material_the_store_doesnt_have_is_a_lookup_error(store: Store) -> None:
+    with pytest.raises(LookupError):
+        update_nest(store, JOB, MATERIAL, now=T0, state="not_checked")
+
+
+@pytest.mark.parametrize("fields", [
+    {"state": "ok_to_cut"}, {"basis": "guess"}, {"reasons": "one string"}, {"reasons": (1,)},
+    {"opt_sha256": "x"}, {"manifest": {"TESS01.TAP": "x"}}, {"manifest": ["TESS01.TAP"]},
+    {"room_hashes": {"Room1.des": "x"}}, {"trial": 1}, {"updated_at": "2026-10-30"},
+    {"posted_at": "today"}, {"checked_at": "today"}, {"george_told_at": "today"},
+])
+def test_a_material_with_a_bad_value_is_refused_and_nothing_is_stored(
+    store: Store, fields: dict[str, object],
+) -> None:
+    with pytest.raises(ValueError):
+        nest(store, **fields)
+
+    assert list_nests(store) == []
+
+
+# ----- P1b: clearances, Jim's click on one program's sheet size
+
+
+CLEARS, RE_NEST = "I added this sheet on purpose", "Re-nest it"
+
+
+def sheet_card(store: Db, *, answer: str | None = CLEARS, kind: str = "sheet_size") -> str:
+    made = add_card(store, prefix="TES", kind=kind, text="A program is past its size.",
+                    choices=(CLEARS, RE_NEST), created_at=T0)
+    if answer is not None:
+        answer_card(store, made.id, answer=answer, answer_words=answer, answered_by="jim",
+                    answered_at=T1, channel="board")
+    return made.id
+
+
+def clearance(store: Db, card_id: str, *, sha: str = SHA_A, folder: str = JOB,
+              material: str = MATERIAL, at: datetime = T2) -> ClearanceRecord:
+    return add_clearance(store, folder=folder, material=material, program_sha256=sha,
+                         card_id=card_id, at=at)
+
+
+def test_a_clearance_is_stored_bound_to_that_programs_hash(store: Store) -> None:
+    card_id = sheet_card(store)
+
+    made = clearance(store, card_id)
+
+    assert list_clearances(store) == [made]
+    assert made == ClearanceRecord(id=made.id, folder=JOB, material=MATERIAL, program_sha256=SHA_A,
+                                   what="sheet_size", card_id=card_id, at=T2)
+    assert cleared_programs(store, JOB, MATERIAL) == frozenset({SHA_A})
+
+
+def test_a_clearance_counts_only_for_that_job_that_material_and_that_hash(store: Store) -> None:
+    clearance(store, sheet_card(store))
+
+    assert cleared_programs(store, "Fakeley_102026", MATERIAL) == frozenset()
+    assert cleared_programs(store, JOB, OTHER_MATERIAL) == frozenset()
+    assert SHA_B not in cleared_programs(store, JOB, MATERIAL)
+
+
+def test_two_programs_of_one_material_are_cleared_one_by_one(store: Store) -> None:
+    clearance(store, sheet_card(store), sha=SHA_A)
+    clearance(store, sheet_card(store), sha=SHA_B)
+
+    assert cleared_programs(store, JOB, MATERIAL) == frozenset({SHA_A, SHA_B})
+    assert [c.program_sha256 for c in list_clearances(store, folder=JOB, material=MATERIAL)] == [
+        SHA_A, SHA_B]
+
+
+@pytest.mark.parametrize("what", ["doubled_holes", "near_pairs", "tool_failed", "anything"])
+def test_only_a_sheet_size_can_ever_be_cleared(store: Store, what: str) -> None:
+    card_id = sheet_card(store)
+
+    with pytest.raises(ValueError, match="sheet size"):
+        add_clearance(store, folder=JOB, material=MATERIAL, program_sha256=SHA_A, card_id=card_id,
+                      at=T2, what=what)
+
+    assert list_clearances(store) == []
+
+
+def test_cleared_programs_reads_only_clearances_of_a_sheet_size(store: Store) -> None:
+    # However a row of another kind got there, it clears nothing.
+    card_id = sheet_card(store)
+    with closing(sqlite3.connect(store.path)) as raw, raw:
+        raw.execute("INSERT INTO clearances (folder, material, program_sha256, what, card_id, at)"
+                    " VALUES (?, ?, ?, 'doubled_holes', ?, '2026-10-30T13:30:00+00:00')",
+                    (JOB, MATERIAL, SHA_A, card_id))
+
+    assert cleared_programs(store, JOB, MATERIAL) == frozenset()
+
+
+def test_a_clearance_comes_only_from_jims_answer_that_clears(store: Store) -> None:
+    for card_id, why in (
+        (sheet_card(store, answer=None), "answered"),
+        (sheet_card(store, answer=RE_NEST), "added"),
+        (sheet_card(store, kind="closet_or_garage"), "sheet size"),
+    ):
+        with pytest.raises(ValueError, match=why):
+            clearance(store, card_id)
+    with pytest.raises(LookupError):
+        clearance(store, "TES-99")
+
+    assert list_clearances(store) == []
+    assert cleared_programs(store, JOB, MATERIAL) == frozenset()
+
+
+def test_a_clearance_is_written_in_the_transaction_that_acts_on_the_answer(store: Store) -> None:
+    card_id = sheet_card(store)
+
+    with pytest.raises(RuntimeError):
+        with store.transaction() as tx:
+            clearance(tx, card_id)
+            raise RuntimeError("stopped half-way")
+
+    assert list_clearances(store) == []
+    with store.transaction() as tx:
+        clearance(tx, card_id)
+    assert cleared_programs(store, JOB, MATERIAL) == frozenset({SHA_A})
+
+
+def test_a_clearance_with_a_bad_value_is_refused(store: Store) -> None:
+    card_id = sheet_card(store)
+
+    for call in (lambda: clearance(store, card_id, sha="not a hash"),
+                 lambda: clearance(store, card_id, folder=" "),
+                 lambda: clearance(store, card_id, material=""),
+                 lambda: clearance(store, card_id, at=NAIVE)):
+        with pytest.raises(ValueError):
+            call()
+
+    assert list_clearances(store) == []
+
+
+# ----- P1b: the owner log
+
+
+def test_each_owner_string_seen_is_kept_in_order(store: Store) -> None:
+    first = log_owner(store, at=T0, folder=JOB, file="MozaikJob.UNS", owner="JDELA")
+    second = log_owner(store, at=T1, folder="Fakeley_102026", file="OptimizeJob.LCK",
+                       owner="GEORGE")
+
+    assert list_owner_log(store) == [first, second]
+    assert first == OwnerRecord(id=first.id, at=T0, folder=JOB, file="MozaikJob.UNS", owner="JDELA")
+    assert list_owner_log(store, folder="Fakeley_102026") == [second]
+
+
+def test_an_empty_lock_file_is_logged_as_it_is(store: Store) -> None:
+    assert log_owner(store, at=T0, folder=JOB, file="MozaikJob.LCK", owner="").owner == ""
+
+
+def test_an_owner_row_with_a_bad_value_is_refused(store: Store) -> None:
+    for fields in ({"at": NAIVE}, {"folder": " "}, {"file": ""}, {"owner": None}):
+        with pytest.raises(ValueError):
+            log_owner(store, **{**dict(at=T0, folder=JOB, file="MozaikJob.UNS", owner="JDELA"),
+                                **fields})
+
+    assert list_owner_log(store) == []
+
+
+# ----- P1b: heads-ups, one per JSON content
+
+
+def test_a_heads_up_is_stored_and_read_back_whole(store: Store) -> None:
+    made = record_heads_up(store, folder=JOB, json_sha256=SHA_A, sent_at=T0, outbox_id=ID_1)
+
+    assert get_heads_up(store, JOB) == made == HeadsUpRecord(JOB, SHA_A, T0, ID_1)
+    assert get_heads_up(store, "Fakeley_102026") is None
+
+
+def test_a_changed_takeoff_replaces_the_jobs_heads_up(store: Store) -> None:
+    record_heads_up(store, folder=JOB, json_sha256=SHA_A, sent_at=T0, outbox_id=ID_1)
+
+    made = record_heads_up(store, folder=JOB, json_sha256=SHA_B, sent_at=T1, outbox_id=ID_2)
+
+    assert list_heads_ups(store) == [made] == [HeadsUpRecord(JOB, SHA_B, T1, ID_2)]
+
+
+def test_a_takeoff_read_and_not_sent_is_remembered_with_no_message(store: Store) -> None:
+    made = record_heads_up(store, folder=JOB, json_sha256=SHA_A)
+
+    assert (made.sent_at, made.outbox_id) == (None, None)
+
+
+def test_a_heads_up_with_a_bad_value_is_refused(store: Store) -> None:
+    for fields in ({"json_sha256": "x"}, {"sent_at": NAIVE}, {"folder": " "}, {"outbox_id": 1}):
+        with pytest.raises(ValueError):
+            record_heads_up(store, **{**dict(folder=JOB, json_sha256=SHA_A), **fields})
+
+    assert list_heads_ups(store) == []
+
+
+# ----- P1b: toolkit snapshots
+
+
+def test_a_snapshot_is_stored_and_read_back_whole(store: Store) -> None:
+    made = add_snapshot(store, taken_at=T0, sha256=SHA_A, result="baseline matched")
+
+    assert get_snapshot(store, made.id) == made
+    assert made == SnapshotRecord(id=made.id, taken_at=T0, sha256=SHA_A, adopted=False,
+                                  result="baseline matched")
+    assert get_snapshot(store, made.id + 1) is None
+
+
+def test_a_snapshot_changes_only_the_fields_given(store: Store) -> None:
+    made = add_snapshot(store, taken_at=T0, sha256=SHA_A)
+
+    adopted = update_snapshot(store, made.id, adopted=True)
+    assert (adopted.adopted, adopted.result) == (True, None)
+
+    noted = update_snapshot(store, made.id, result="a regression failed")
+    assert (noted.adopted, noted.result, noted.sha256) == (True, "a regression failed", SHA_A)
+    assert list_snapshots(store) == [noted]
+
+
+def test_snapshots_are_listed_in_the_order_they_were_taken(store: Store) -> None:
+    second = add_snapshot(store, taken_at=T1, sha256=SHA_B)
+    first = add_snapshot(store, taken_at=T0, sha256=SHA_A)
+
+    assert list_snapshots(store) == [first, second]
+
+
+def test_a_change_to_a_snapshot_the_store_doesnt_have_is_a_lookup_error(store: Store) -> None:
+    with pytest.raises(LookupError):
+        update_snapshot(store, 99, adopted=True)
+
+
+def test_a_snapshot_with_a_bad_value_is_refused(store: Store) -> None:
+    made = add_snapshot(store, taken_at=T0, sha256=SHA_A)
+
+    for call in (lambda: add_snapshot(store, taken_at=NAIVE, sha256=SHA_A),
+                 lambda: add_snapshot(store, taken_at=T0, sha256="x"),
+                 lambda: add_snapshot(store, taken_at=T0, sha256=SHA_A, adopted=1),
+                 lambda: update_snapshot(store, made.id, adopted="yes"),
+                 lambda: update_snapshot(store, made.id, result=1)):
+        with pytest.raises(ValueError):
+            call()
+
+    assert list_snapshots(store) == [made]

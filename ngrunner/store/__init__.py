@@ -34,6 +34,13 @@ Table groups, one module each:
     outbox         outbox: messages, from queued to receipted
     sequences      seqs, seen_ids: outgoing sequences and the replay guard for incoming ones
     state          state: NG Runner's own small facts (paused, installed_at...)
+Phase 1b's guards:
+    programs       programs: each CNC program seen in NG Jobs, by hash
+    nests          nests: each material's last verdict; a pass names the hashes it passed on
+    clearances     clearances: Jim's click on one program's sheet size, bound to its hash
+    owner_log      owner_log: every UNS and LCK user string seen
+    heads_ups      heads_ups: the takeoff each job's order heads-up last went out on
+    snapshots      snapshots: each copy of Jim's toolkit, and what became of it
 Store.backup_to(path) copies the whole database with SQLite's online backup API, for the
 supervisor's copy before an upgrade (backup.snapshot gives everything else its copy, as bytes).
 """
@@ -45,6 +52,9 @@ from ngrunner.store.cards import (
     CARD_STATES, CardRecord, add_card, allocate_card_id, answer_card, get_card, list_cards,
     record_reminder, withdraw_card,
 )
+from ngrunner.store.clearances import (
+    SHEET_SIZE, ClearanceRecord, add_clearance, cleared_programs, list_clearances,
+)
 from ngrunner.store.db import KEEP, Db, Keep, Store, StoreError, Transaction
 from ngrunner.store.events import (
     DEV_STATES, LANES, DevRecord, EventRecord, close_dev, get_dev, list_dev, list_events,
@@ -53,9 +63,15 @@ from ngrunner.store.events import (
 from ngrunner.store.fab_rows import (
     FAB_ROW_STATES, FabRowRecord, add_fab_row, get_fab_row, list_fab_rows, update_fab_row,
 )
+from ngrunner.store.heads_ups import (
+    HeadsUpRecord, get_heads_up, list_heads_ups, record_heads_up,
+)
 from ngrunner.store.jobs import (
     BRANCHES, MODES, AliasRecord, JobRecord, add_alias, ensure_job, freeze_name, get_job,
     list_aliases, list_jobs, update_job,
+)
+from ngrunner.store.nests import (
+    NEST_BASES, NEST_STATES, NestRecord, add_nest, get_nest, list_nests, update_nest,
 )
 from ngrunner.store.opportunities import (
     ListState, OpportunityLike, OpportunityRecord, get_job_list, get_list_state, get_opportunity,
@@ -65,9 +81,14 @@ from ngrunner.store.outbox import (
     CHANNELS, OUTBOX_STATES, OutboxRecord, add_outbox, get_outbox, list_outbox,
     mark_outbox_fallback, mark_outbox_written, outbox_without_receipt, record_receipt,
 )
+from ngrunner.store.owner_log import OwnerRecord, list_owner_log, log_owner
 from ngrunner.store.pending import (
     PENDING_STATES, PendingRecord, add_pending, due_pending, finish_pending, get_pending,
     list_pending, past_deadline_pending, retry_pending,
+)
+from ngrunner.store.programs import (
+    FAMILIES, PROGRAM_STATES, ProgramRecord, add_program, get_program, list_programs,
+    remove_program, update_program,
 )
 from ngrunner.store.pruning import PrunedRenders, prune_renders, prune_write_records
 from ngrunner.store.renders import (
@@ -79,6 +100,9 @@ from ngrunner.store.schema import LATEST, MIGRATIONS, check_readable, migrate
 from ngrunner.store.sequences import (
     accept_envelope, accept_seq, jump_after_restore, last_accepted_seq, last_sent_seq, next_seq,
     prune_seen_ids, seen_id,
+)
+from ngrunner.store.snapshots import (
+    SnapshotRecord, add_snapshot, get_snapshot, list_snapshots, update_snapshot,
 )
 from ngrunner.store.state import (
     clear_state, get_state, get_state_time, set_state, set_state_time, states_under,
@@ -147,4 +171,17 @@ __all__ = [
     "next_seq", "prune_seen_ids", "seen_id",
     # state
     "clear_state", "get_state", "get_state_time", "set_state", "set_state_time", "states_under",
+    # programs
+    "FAMILIES", "PROGRAM_STATES", "ProgramRecord", "add_program", "get_program", "list_programs",
+    "remove_program", "update_program",
+    # nests
+    "NEST_BASES", "NEST_STATES", "NestRecord", "add_nest", "get_nest", "list_nests", "update_nest",
+    # clearances
+    "SHEET_SIZE", "ClearanceRecord", "add_clearance", "cleared_programs", "list_clearances",
+    # owner_log
+    "OwnerRecord", "list_owner_log", "log_owner",
+    # heads_ups
+    "HeadsUpRecord", "get_heads_up", "list_heads_ups", "record_heads_up",
+    # snapshots
+    "SnapshotRecord", "add_snapshot", "get_snapshot", "list_snapshots", "update_snapshot",
 ]
