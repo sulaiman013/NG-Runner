@@ -344,6 +344,109 @@ Ruling R8, and what followed. The 10 real job folders (`.local-fixtures/toolkit/
 | Nest checked on real cases | With no design match, none reaches it. With one assumed, 6 of 20 do (Cases F, G, I's Egger Black, and three of Case J's), and none of the 9 known bad. Cases F and G are the nests from an unsaved state: only the design match can catch that | The property test stays exact. A pass still needs a design match, which has no reader yet, so Nest checked stays out of reach in the app |
 | Running them in the app | They import only `sys`, `re`, `os` and `units`, and write nothing | `watch.nest_checks` runs both from the adopted toolkit copy on staged copies of the nest and its programs, through `run_tool`, and refuses a copy not the bytes it read. Nothing adopts a copy yet (group 3), so today it is None |
 
+## Phase 2's rulings and Jim's approvals (2026-10-31)
+
+Adopted as Sulaiman asked for decisions and no questions, and he can overrule any of them. The reasons and measurements behind R1 to R8 are in `docs/p2/build-spec.md`, section 9.
+
+**Jim's approvals, as Sulaiman reported them:**
+- **His tools into his toolkit (RULES section 8).** NG Runner's shared tools may go into `_NG_Automation`, each through his regression and as a reviewed delivery. NG Runner never writes into his toolkit by itself.
+- **Drawings to a model (decision 10).** The reader evaluation may send elevation crops to a model: crops only, with no text on them, never a page, a name or an address. The provider and model are decisions 16 and 17, which the evaluation decides.
+
+| Question | Ruling |
+|---|---|
+| R1: run Jim's scripts on this PC | Yes: on a staged copy laid out as his tree, in the tools' Python, isolated, inside a Job Object, on a local disk, and never in `.local-fixtures`, in place or on G:. As built: "Adopting a copy of Jim's toolkit", below |
+| R2: where the converter lives | NG Runner's code (`ngrunner/convert/`), his rules mirrored in `rules.py` and tied to his `takeoff.py` by `ast`. It is offered to his toolkit through RULES section 8 only after 10 of his conversions agree |
+| R3: the PDF reader | pypdf, as pinned |
+| R4: what the converter can't place | Unplaced, reading "could not verify" and naming the line; never a guess. Garage and mixed jobs stay in chat until BUILD's garage rule is ported, and so does a job whose designs don't say closet or garage |
+| R5: the library against RULES on 3/4 Classic White | RULES' 49x97 until Jim answers. `material_lookup` is not used for sizes meanwhile |
+| R6: two sheet numbers | Both carried, named: `sheets_with_waste` (RULES 141) and area ÷ 32, the tracker's Calc Sheets |
+| R7: `run-tool` and crosscheck | `NGRunner.exe` takes a first argument ending `.py` as `run-tool <script>` (`ngrunner/__main__.py`) |
+| R8: a `.opt`'s version line | `opt.py` sets aside one leading line of digits and reads UTF-8 with no BOM. What real files showed: "Real nests", above |
+| The heads-up when NG Runner's takeoff isn't complete (Sulaiman's ruling) | The chat's IC Conversion JSON, sent whole and marked "From the chat's takeoff", as that is the list Barbara and Will order from today. Only when neither gives a whole list does it say "could not verify the takeoff". Never a partial list, and never a mix of the two |
+| The shadow run on Sulaiman's PC (Sulaiman's ruling) | It reads the real NG Jobs, in shadow mode, on his yes. It writes nothing there |
+
+## Built on those rulings (2026-10-31)
+
+Where the builders went beyond or differed from `docs/p1b/build-spec.md` and `docs/p2/build-spec.md`, read from the code and its tests. Each is a default, and Sulaiman can overrule any of them. They settle what three rows above left open: "No toolkit" (group 2), and "Nest checked on real cases" and "Running them in the app" (Real nests).
+
+### The nest-to-design match (`ngrunner/guards/design.py`)
+
+Measured on the 20 real nests of the 10 real jobs (`tests/test_real_designs.py`): 10 match, 9 are "Not verified", and 1, with parts and no sheets, is not compared. With Jim's two checks as he ran them, only Cases F and G reach Nest checked, where 6 of 20 did with a match assumed, and no known bad nest does.
+
+| Question | Ruling | Why |
+|---|---|---|
+| A nest that isn't the saved design | "Not verified": DO NOT CUT (row 5 of `decide`), red, to George and in the way of Finish lock. A match it couldn't make is could not verify: NOT CHECKED, with its note. Only "matches" is ever part of a pass | The design names this state. A nest from an unsaved state, or a design changed after nesting, is what Jim's two checks can't see (10-20) |
+| What it reads | Jim's `des_cutlist`, run from the adopted copy on staged copies of the rooms, and a stand-in that reads the rooms by bytes for what `des_cutlist` doesn't print: each part's place, operations and hand-set material. The two must count the same parts, or nothing is concluded. `des_cutlist`'s output is read whole: a line it doesn't print is could not verify | Rule 4: the cutlist is his. The stand-in goes once his toolkit prints these itself |
+| Material | Compared only where the design carries one Jim set on the part by hand (`MatORId`, `TextureORId`). Material from the room's templates isn't read | `des_cutlist`'s colour is no stand-in for it: on Case I it names 15 of 22 parts by a texture none of them is nested on |
+| Operations | Every operation the design gives a part must be on the nest's part, value for value, equations left out. The nest's part may hold more | Mozaik applies joint fastener templates at optimize, and doubled ones are `br_cam_check`'s to find |
+| Sizes | Within 0.05 mm is the same, for sizes and for numbers in operations | `des_cutlist` rounds to 0.1 mm, and `panel_xcheck` reports nothing of 0.05 or less |
+| Counts | Pooled across every nest of the job | One size can be split between two materials (Case B) |
+| A room missing from the nest | "Not verified", naming the room. So is a nest room the saved design lacks | The design changed after nesting (Case J's Room 4) |
+| Counter tops | Size and count only, from `des_cutlist`. One in no nest is "Not verified" | The design holds no parts or operations for them |
+| A nest with no sheets | It takes only what nested ones leave, and is never itself judged a match. Its verdict is SAVE_NEST | Its parts aren't placed |
+| What a pass rests on for a room | Its design identity (`design.room_identity`), in place of the file's hash: the room as it compares, less what a re-save of the same design changes (two counters, Room 0's product numbers, annotations). The stored `room_hashes` hold these | On the 30 real `.des` and `.bak` pairs, 20 differ in bytes, `des_cutlist` prints the same from all 30, and the identity is the same on 29. The 30th (Case G's Room 1) differs in groove Hide flags on 5 panels, a real change, and its nest sides with the `.des` |
+| Its words | Parts named by tag only (R1C3), 8 at most and then "N more" | The lint refuses Mozaik's part names |
+
+### Adopting a copy of Jim's toolkit (`ngrunner/toolkit.py`, the supervisor's night step)
+
+| Question | Ruling | Why |
+|---|---|---|
+| When a copy is adopted | Each night, on a worker of its own, `_NG_Automation` in Mozaik Shared is copied whole and hashed. A copy that isn't the adopted one's bytes runs his `regression.py` from its `scripts` folder with no argument, so never `--accept`, for up to 15 minutes. It is adopted only on exactly his clean line, exit 0 and nothing on stderr, and only if the copy's hash still holds after. A copy with no baseline is never run | His RULES section 8 adopts a change this way. With no baseline, his regression writes one and says nothing moved |
+| What a try comes to | Adopted: an event, and the DEV items below close. Unchanged (the adopted copy's bytes): they close too. Refused: DEV `toolkit_refused`, saying how many things moved and never which. Failed, when no copy could be made: DEV `toolkit_failed`. A try over an hour is given up: DEV `toolkit_stuck`. One open item per code, replaced when its words change, saying which copy the checks go on with | Sulaiman hears, and the last adopted copy goes on. His regression's items name his frozen jobs |
+| Copies kept | The two newest adopted copies, each at `<toolkit folder>\<its sha256>`. A refused copy is deleted, and so is any other folder NG Runner named that way, and a try a stop cut short | One to fall back on. Only names NG Runner gives are ever removed |
+| No `_NG_Automation` in Mozaik Shared | The night step does nothing, and says nothing | Every PC is in this state until Jim's toolkit is in its Mozaik Shared. Open: neither Health nor DEV says so, so a toolkit that goes missing later shows only as no Nest checked |
+| Which Python runs his scripts | In this order: `NGR_TOOLS_PYTHON`, where a path that isn't there runs nothing; `toolspython\python.exe` beside a build's `NGRunner.exe`; in a build, `NGRunner.exe run-tool`; from the repo, `python -X utf8 -m ngrunner run-tool`. The tools' Python runs `-I -B -X utf8`, the script's folder first on its path, and a script it starts inherits only `PYTHONUTF8`, `PYTHONDONTWRITEBYTECODE` and `PYTHONNOUSERSITE` of the `PYTHON*` variables. Nothing in the build makes `toolspython` yet | His scripts import openpyxl, pdfplumber, numpy, Pillow, scipy and PyMuPDF, pinned in `tools/tools-venv.txt` and never in NG Runner's build. The checks and regression import only the standard library and each other (read by `ast`), so NG Runner itself can run those |
+| Where | The copy, each run's folder and everything staged on a fixed NTFS or ReFS drive of this PC: never a network path, and never a cloud drive, which is how Drive for desktop's G: shows itself (FAT32) | A run must be of what was hashed, and a check never runs in place |
+| The copy's hash | Checked before and after every run. A copy that changed runs nothing, or what it said is not used | A verdict must say which scripts stood behind it |
+
+### The check runner's readers (`ngrunner/checks/`)
+
+Measured on Cases A to J (`tests/test_checks_real.py`): no case passes whole on this PC, as `wm_variant_check` and `parm_check` read could not verify on every case.
+
+| Question | Ruling | Why |
+|---|---|---|
+| What runs | crosscheck's own `CHECKS` list, read from its source by `ast` and never imported: 14 checkers on the copy of 2026-10-31, `ic_code_check` advisory and never deciding. Every result names what crosscheck leaves out: `hinge_check`, `sheet_size_check` and `br_cam_check --nest` (Q17a). The two nest checks run in the guards; `hinge_check` runs nowhere yet | INDEX says crosscheck runs every checker. Its source runs 14 |
+| On what | A staged copy of the job's rooms, its `-JobParms.dat` files and its IC Conversion, with the template job's parameter files beside it when there is one. crosscheck writes its `_crosscheck.txt` into the staged copy, never into NG Jobs | Run on the real folders, it would write on G: and read rooms Mozaik may be saving |
+| crosscheck's own output | Read only when all of it fits: its exit code with its verdict line, its rooms line with the rooms staged, its sections with its list, its flags with its sections, and nothing on stderr but Python 3.14's warning about `datetime.utcnow()`. Anything else is could not verify for every checker | Fail closed |
+| A finding crosscheck doesn't flag | Could not verify, and a question for Jim: `outset_check`'s products not at Outset 0, and `eb_tops --check`'s and `top_line --check`'s "would change", each with exit 0 | crosscheck flags only a non-zero exit or a line with `!!`, MISSING, EXTRA, "drifted" or "differ", so these read as clean there. Only Jim can say whether it should flag them |
+| `parm_check` with no reference job | Could not verify | It prints "no counterpart" for every file and still says clean. The template job isn't in the zip |
+| `wm_variant_check`'s library | A fault it finds in the geometry fails; a clean read is could not verify | Its library is a Linux path, so on Windows the library check is skipped while it still prints that the equation matches |
+| A checker that crashes | Could not verify | crosscheck flags a traceback as a fault, but it found nothing either way (`panel_xcheck` on three real conversions) |
+| `??`, a NOTE asking for the job to be opened, a deferred check, a line not seen before | Could not verify | A person must look |
+| What a person sees | NG Runner's fixed words only. What a checker printed is kept for a repair item, never shown | The checkers print room and client names |
+
+### The tracker inbox (`ngrunner/tracker_inbox.py`)
+
+| Question | Ruling | Why |
+|---|---|---|
+| Its shape (departs from contract 5.6) | `inbox_rows(job, takeoff, *, verb, names, status, optimizer=None)`. `names(colour, thickness)` gives each bucket's tracker names; `status` is required to add rows and optional to set them; `optimizer` holds nest numbers by tracker name, and without it that column stays blank. `landed()` also takes `dropped`, when the batch was dropped | What a bucket is called on the tracker is Jim's rule (RULES: Tafisa names, and every material matching the Pricing block character for character), so the caller passes it. Rows are added at Lock design with the job's status, and set at Finish lock with the nest's numbers |
+| What it refuses, whole, in plain words | A takeoff with any line it could not place; a bucket with no tracker name, or tape with no tape name; two tape colours under one tape name; a nest number for a material the takeoff lacks; a number that isn't a size; a cell that isn't one line; new rows with no status; a batch with no header first, no rows, or a row the ingest doesn't read; and a file inside `NG Conversion program Claude`, one already there, or a path that isn't full | Never a batch that is partly right. Jim's ingest reads from line 2, so a batch with no header loses its first row and is still archived as ingested |
+| Two buckets under one tracker name | One row, with their sums | The ingest's `_SET` finds a row by job and material |
+| Calc Sheets | Area ÷ 32 (R6), never the sheets with waste | What the tracker's Calc Sheets holds |
+| Customer, and the Job Summary note | Left blank on every row | No client data. Whether the tracker takes a blank customer well is UNVERIFIED |
+| Did it land | Each row as the snapshot shows it: landed, missing or differs, numbers equal within half their last shown place. A snapshot taken before the drop judges nothing | Calling its rows missing would invite a second drop |
+
+### The takeoff on intake (P3)
+
+| Question | Ruling | Why |
+|---|---|---|
+| When | Each summary filed is queued for its takeoff in the transaction that files it, and made off the tick's thread, one at a time; a newer filing takes the place of one not made yet. A job found at install, or in `NG Jobs\Old`, gets none. A summary it can't read, 6 tries with no filed bytes to read, or a run over 15 minutes is a failed takeoff: DEV `takeoff_failed`, and the chat's takeoff is used | A crash can't lose it, and a takeoff never holds up a filing |
+| Which jobs | Closets only. Garage, mixed and unclear jobs stay in chat (R4) | |
+| The store (migration 5, `takeoffs`) | One row per summary and rules version, with `state` (`made`, `in_chat` or `failed`), `branch`, `complete`, and `could_not_verify` as a count, where contract 4 had a JSON list. `result` holds codes and numbers only: an unplaced line is its page and quantity, never its text or reason | A line's text can quote anything, a client's details included |
+| Complete | Every row placed, every bucket with a sheet size, and the job a closet | Anything less is a partial list |
+| Which rules made it | `rules_sha256` holds `rules.fingerprint()`, a hash of `rules.py`'s tables, where contract 4 had the hash of Jim's `takeoff.py` | The app never reads his file: it runs from those tables, and `tests/test_convert_ties.py` holds them to it |
+| The order heads-up | From NG Runner's own complete takeoff. Otherwise the chat's whole JSON, marked "From the chat's takeoff, since NG Runner's own takeoff could not verify N lines". Otherwise "could not verify the takeoff", with how many lines. A heads-up from the chat's JSON always says so on its first line. With no takeoff of NG Runner's (a garage or mixed job, a summary it couldn't read, one replaced by hand, a job filed before this), the chat's JSON, as in P1b | Sulaiman's fallback ruling, above |
+| Where it is sent from | The guards' pass (`guards/takeoffs.py`), for either source, through one `heads_ups` row per folder: one message per content, and "revised" whichever source sent the one before | One place picks the source, so the two never both go. So a heads-up from NG Runner's takeoff waits for the guards' next pass |
+| Colour names | RULES' brand for the IC colour code, as `material_lookup` maps it: "Egger Classic White"; a brand of many colours with its code, "Tafisa (IC AP)"; a code with no brand, "IC colour ZZ". On a job with a white part built 1in or thicker, white reads "AMWH or Egger Classic White (IC WH)", and its 1/4 white backs have no sheet size, so that takeoff isn't complete | NG Runner has no name of its own for a Tafisa colour. RULES makes such a room AMWH, and the takeoff can't tell rooms apart, so it names both, never one |
+| Decision 12b on NG Runner's takeoff | No colour-swap line | It names colours by IC code, so there is no IC colour text to read a swap from |
+| Jim's chat (notes schema 3) | `<folder>_NGRunner.json` carries a `takeoff` block, null until made: its state, branch, whether complete, the could-not-verify count, the rules fingerprint and the summary's hash, and once made its buckets, tape, board parts, estimate total and unplaced lines by page. `docs/p1a/rules-lines.md` gives the chat its line | It is what the chat reads first |
+
+### Others
+
+| Question | Ruling | Why |
+|---|---|---|
+| The `.bak` reader (`guards/bak.py`) | Findings only: whether a room's `.bak` is newer or larger than its `.des`, and a symmetric diff, part by part. Never a verdict, and nothing gates on it, until Jim answers Q19 | The design's `.bak` rule waits for P3 and Q19. On the real rooms, size and contents are measured, never file times (`docs/p2/build-spec.md`, section 10) |
+
 ## Matching (settled)
 
 | Decision | Ruling | Why |

@@ -4,7 +4,7 @@ One Apps Script project, under the Google account that owns the NG Fab Schedule 
 
 - exports Sheet1 of the NG Fab Schedule to `fab/export.json` every 5 minutes, and logs Barbara's edits to Job Name, Designer and Install Date in `fab/edits.json`. It only reads the workbook; it never changes it (risk C3);
 - sends NG Runner's outbox (email, Slack or Pushover) every minute, writing a receipt for each message and never sending one twice;
-- watches NG Runner's heartbeat every 5 minutes: Sulaiman hears of a heartbeat over 45 minutes old, and Jim hears "no list today" when no digest went out by 7:00 AM Pacific (during the shadow run, Sulaiman hears that instead: `SHADOW` below);
+- watches NG Runner's heartbeat every 5 minutes: Sulaiman hears of a heartbeat over 45 minutes old, and Jim hears "no list today" when no digest went out by 7:00 AM Pacific (during the shadow run, Sulaiman hears that instead: `SHADOW` below). From Phase 1b, George also hears what was NOT CHECKED while NG Runner is silent, once `ROLE_GEORGE_EMAIL` is set (`NG_JOBS_FOLDER_ID` below);
 - prunes old files from the control folder every day.
 
 It talks to NG Runner only through signed files in the control folder (`ngrunner/signing.py`; `Signing.gs` is the same format). Addresses, tokens and the signing key live only in Script Properties, never in this code.
@@ -61,9 +61,10 @@ Roles are NG Runner's (`jim`, `barbara`, `will`, `george`, `sulaiman`, `backup_c
 | `PC_SLEEPS_AT_NIGHT` | `true` for the declared "PC sleeps at night" mode: no 7:00 AM message |
 | `ALERT_ROLE`, `ALERT_NAME` | Who the watchdog alerts, and the name Jim's message gives. Default `sulaiman` and `Sulaiman`; while he is away, set the backup contact |
 | `SHADOW` | `true` during the shadow run (`docs/testing/jims-pc.md`, window 3), when NG Runner sends everything to Sulaiman. While it is set, a digest to `ALERT_ROLE` is the morning list; no digest by 7:00 AM sends `ALERT_ROLE` "SHADOW No list today", and never tells Jim; and `checkSetup` does not ask for Jim's channel. NG Runner's copies go to the role `sulaiman`, so keep `ALERT_ROLE` at that for the run. Clear it as NG Runner goes live (window 4): a digest to Jim doesn't count while it is set, so a `SHADOW` left on shows itself the next morning |
-
 | `NG_JOBS_FOLDER_ID` | The NG Jobs folder's Drive ID (from its address). With `ROLE_GEORGE_EMAIL` set too, a gap in the heartbeat also tells George of any material folder updated since the last heartbeat. Unset: no walk. `checkSetup` says if this account can't open it |
 | `GUARDS_ON` | `true` once the guards should reach George and Will: `checkSetup` then asks for their addresses |
+
+**P1b's change is not deployed.** `Watchdog.gs` and `Config.gs` changed for Phase 1b (George's NOT CHECKED, and `checkSetup` asking for George, Will and NG Jobs), and the live project still runs the versions before it. Pasted in, they change nothing until `ROLE_GEORGE_EMAIL` is set. Only Sulaiman deploys them: `docs/testing/apps-script-setup.md`, "Later", has the steps.
 
 The script keeps its own state in Script Properties too: `state.*` (sequence numbers, the last heartbeat, the digest day, owed receipts, what Google refused to trash on the last prune), `done.<id>` and `refused.<id>` (one per outbox message, dropped after 31 days). Leave them alone, except as the runbook says.
 

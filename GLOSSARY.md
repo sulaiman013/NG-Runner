@@ -105,11 +105,15 @@ Running every checker over every room of a job; the result is a numbered fix lis
 Jim's lock clicks. Lock design records the job with calculated quantities before nesting; Finish lock completes a material once its nest passes; Lock does both when the nest already passed.
 
 **DO NOT CUT / NOT CHECKED / Nest checked**:
-The three states a nested material can show; never silence, never "OK to cut".
+The three states a nested material can show; never silence, never "OK to cut". Nest checked needs both of Jim's nest checks to pass and the nest to match the saved design, all run from an adopted toolkit copy on the files on disk now. A nest that isn't the saved design ("Not verified") is DO NOT CUT.
 
 **Stored pass**:
-A material's Nest checked as NG Runner keeps it: the nest's hash, the programs' hashes and the rooms' hashes. A change to any of them puts it back to NOT CHECKED.
+A material's Nest checked as NG Runner keeps it: the nest's hash, the programs' hashes and the rooms' design identities. A change to any of them puts it back to NOT CHECKED.
 _Avoid_: approval, cached result
+
+**Design identity**:
+A room's design as the nest-to-design match compares it, hashed, less what Mozaik changes when it saves the same design again. A stored pass rests on it in place of the room file's hash, so a re-save keeps the pass and a changed design loses it.
+_Avoid_: room hash, file hash
 
 **Clearance**:
 Jim's click saying a program past its sheet size is on a sheet he added on purpose. It is bound to that program's hash, so a re-post asks again, and it never touches doubled holes.
@@ -159,12 +163,27 @@ Every user string read from a `MozaikJob.UNS`, `MozaikJob.LCK` or `OptimizeJob.L
 _Avoid_: lock log, audit log
 
 **Toolkit copy**:
-A hash-pinned copy of Jim's `_NG_Automation` in NG Runner's data folder, which is what his scripts run from: never the folder he is changing. "Snapshot" in the build spec and the store. Adopted once it passes his regression (P1b's group 3).
+A hash-pinned copy of Jim's `_NG_Automation` in NG Runner's data folder, which is what his scripts run from: never the folder he is changing. "Snapshot" in the build spec and the store.
 _Avoid_: backup, install
+
+**Adoption**:
+Making a toolkit copy the one the checks run from, only once Jim's own regression prints its clean line on that very copy and the copy's hash still holds after. A copy is tried each night; a refused one is never used, and the last adopted copy goes on.
+_Avoid_: install, update
 
 **Could not verify / Could not check**:
 "Could not verify" is a value NG Runner could not confirm, reported as such and never guessed. "Could not check" is a Setup Check item that could not run, always shown with its reason.
 _Avoid_: unknown, N/A; NOT CHECKED (that is a nest state)
+
+**Unplaced**:
+A row of an IC summary that the converter's rules don't place, kept with its reason and read as "could not verify": never guessed. One Unplaced row makes a takeoff not complete, and every row of a garage or mixed job is Unplaced.
+_Avoid_: skipped, ignored
+
+**Takeoff**:
+What a job's board needs: sheets by colour and built thickness, and feet of tape. An estimate: the nest decides. NG Runner's own is made from each filed IC summary, and is complete only when every row is placed and every bucket has a sheet size.
+_Avoid_: BOM, order (the order heads-up is the message made from it)
+
+**The chat's takeoff**:
+The takeoff Jim's chat writes in `<Job>_IC_Conversion.json`. The order heads-up sends it whole, marked "From the chat's takeoff", when NG Runner's own isn't complete or there is none. The two are never mixed.
 
 **Q1–Q19**:
 The 19 places where Jim's docs disagree, each asked as a question only Jim settles. A letter (Q6a, Q6b) splits one Q into single-idea questions that together settle it.

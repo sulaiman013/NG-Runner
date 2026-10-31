@@ -4,7 +4,7 @@ For Sulaiman, once, before test window 3 ([jims-pc.md](jims-pc.md)). Allow about
 
 When you finish, one Apps Script project, under the Google account that owns the Fab Schedule, exports the Fab Schedule, sends NG Runner's messages, watches its heartbeat and prunes old files, all through one private Drive folder. [google/README.md](../../google/README.md) explains how. This guide is only the clicks.
 
-These steps have not been run on a live Google account yet, and Google moves its buttons now and then. If a screen differs, follow the words on it, then correct this guide.
+These steps were run on the live script account on 2026-10-30, and Google moves its buttons now and then. If a screen differs, follow the words on it, then correct this guide.
 
 **The placeholders:** `<Jim's address>`, `<Barbara's address>`, `<your address>`, `<control folder ID>`, `<spreadsheet ID>`, `<signing key>`. None of these real values ever goes in the repo.
 
@@ -143,6 +143,8 @@ Once the triggers run, the script adds properties of its own: `state.*`, `done.<
 | `... has no pushover set up ...` or `... has no slack set up ...` | That role's channel names a service with no keys | Set its `ROLE_<ROLE>_CHANNEL` back to `email` |
 | `...'s channel ... is not email, slack or pushover` | A typo in `ROLE_<ROLE>_CHANNEL` | Correct it |
 | `EXPECTED_ON_FROM is not a time like 06:00` (or `EXPECTED_ON_UNTIL`) | The time isn't `HH:MM` | Correct it |
+| `george has no email set up (Script Property ROLE_GEORGE_EMAIL)` (or `will`) | `GUARDS_ON` is set, so the guards need George's and Will's addresses | Add `ROLE_GEORGE_EMAIL` and `ROLE_WILL_EMAIL`, or clear `GUARDS_ON` |
+| `NG Jobs could not be opened with NG_JOBS_FOLDER_ID, ...` | The ID is wrong, or the script account can't see NG Jobs. Until it is fixed, `installTriggers` refuses | Copy the ID again from NG Jobs' address. If the account can't see NG Jobs, delete the property: the watchdog then sends only the heartbeat's "Not checked" lines |
 
 A clean answer doesn't prove everything. `checkSetup` can't tell whether an address is the right person's, whether the signing key matches Jim's PC, or whether `ROLE_BARBARA_EMAIL` is set. It only checks the sheet's headers, so it can't tell the right workbook from another with the same layout.
 
@@ -166,6 +168,7 @@ The full list is in [google/README.md](../../google/README.md), "Not verified". 
 ## Later
 
 - **Go live (window 4):** clear `SHADOW` and run `checkSetup` again, which now asks for Jim's channel ([jims-pc.md](jims-pc.md)).
+- **P1b's watchdog change.** The live project runs `Watchdog.gs` and `Config.gs` from before Phase 1b. When you deploy the change, paste those two from `google\` as in step 5, and run `checkSetup`. Pasted alone, they change nothing. To turn it on, set the step 6 properties it needs, `ROLE_GEORGE_EMAIL` first, then `NG_JOBS_FOLDER_ID`, then `GUARDS_ON` with `ROLE_WILL_EMAIL`, and run `checkSetup` again. With `ROLE_GEORGE_EMAIL` set, a silent heartbeat in the expected hours tells George what was not checked; while `SHADOW` is set it goes to `ALERT_ROLE` instead, marked SHADOW.
 - **A new signing key:** [the runbook](../p1a/runbook.md), "Key rotation".
 
 ## Checklist

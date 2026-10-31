@@ -6,7 +6,7 @@ That is Phase 1a, the first step of a staircase. Later phases add read-only guar
 
 Built and supported by Sulaiman Ahmed, for Jim Delany, owner of Inspired Closets LA.
 
-> **Status, 2026-10-31, 5:45 AM Pacific.** Phase 1a is about 97% built, and **Phase 1b's nest guard is finished**: it reads each new CNC program and Mozaik's real nest files, and runs Jim's own two nest checks on a safe copy. **Phase 2 has started**: Jim's toolkit arrived on Drive, and a shared converter now turns an IC summary into the takeoff that Jim's chat used to type in by hand. The shadow run on Sulaiman's PC reads the real NG Jobs and has written nothing there. **Nothing is installed on Jim's PC.**
+> **Status, 2026-10-31, 9:30 AM Pacific.** Phase 1a is about 97% built. **Phase 1b's nest guard is complete as far as files go, and "Nest checked" is now real:** NG Runner adopts Jim's toolkit only when his own regression passes on that copy, runs his two nest checks, and matches each nest against its saved design. **Phases 2 and 3 have started:** the shared converter turns an IC summary into the takeoff, every filed summary gets one, and Barbara and Will's order list comes from it. The shadow run on Sulaiman's PC reads the real NG Jobs and has written nothing there. **Nothing is installed on Jim's PC.**
 
 ## Contents
 
@@ -336,7 +336,12 @@ Kickoff call with Jim, Mary, Nicole and Sulaiman. Jim hands over his IC-to-Mozai
 | 5:39 AM | Pushed: [`be665d0`](https://github.com/sulaiman013/NG-Runner/commit/be665d0) | **Phase 2's shared converter**, IC summary to takeoff. It leaves what the rules don't decide as "could not verify", and matches Jim's frozen jobs exactly. **6,552 tests on a clean checkout** |
 | 1:30 AM | **The first real night's work, in shadow on real NG Jobs** | It ran on time, and its "ran" and DEV lines reached Sulaiman by email, with receipts read back |
 | 6:47 AM | **The morning check of the overnight shadow run** | Still running, still in shadow. NG Jobs is file for file as it was at 12:28 AM, and NG Runner wrote nothing there. No new rows or programs came in overnight, so no alarm, false or real. No errors or warnings in the log |
-| 6:47 AM | **Now:** adopting Jim's toolkit through his own regression, the nest-to-design match, and the takeoff on intake | Running |
+| 7:00 AM | **Jim's own regression, on Windows, on a safe copy of his toolkit** | It passes unchanged: his 3 frozen jobs reproduce. It also ran inside a private build of the `.exe` |
+| 7:10 AM | **Nests against their saved designs** | On the 10 real jobs, the design check finds what Jim's tools can't: grooves flipped, pull holes hidden, parts resized, and a whole room added after nesting. Two good jobs reach "Nest checked" |
+| 7:40 AM | **Jim's crosscheck, run by NG Runner on all 10 real jobs** | NG Runner understands every line his checkers print, and on 4 jobs they print exactly what his own runs did |
+| 8:10 AM | **The takeoff on intake** | Of 52 real summaries, 34 give a complete takeoff, 12 leave lines to Jim, and 6 garage or mixed jobs stay in chat. An incomplete one falls back to the chat's whole list |
+| 9:25 AM | Pushed: [`558ac5b`](https://github.com/sulaiman013/NG-Runner/commit/558ac5b) | Toolkit adoption, the design match, the check runner and the takeoff on intake. **6,931 tests on a clean checkout** |
+| 9:30 AM | **Now:** the shadow run upgraded to this build, and Phase 2's workbook | Running |
 
 ## Measured so far
 
@@ -377,6 +382,8 @@ Real files were read only, and nothing here required touching Jim's PC.
 | Doubled cam holes: NG Runner's program reader against Jim's own nest check | Equal on all 20 real materials | 10-31 |
 | Real Mozaik nest files read | 20 of 20, with the same sheet counts Jim's check printed | 10-31 |
 | Jim's frozen jobs through NG Runner's converter | 2 of 3 equal on parts, area, sheets and tape. The third differs by a door and a rail cover the rules leave to Jim | 10-31 |
+| Jim's regression on a copy of his toolkit, on Windows | Clean: his 3 frozen jobs reproduce | 10-31 |
+| Real nests that reach "Nest checked" with the toolkit adopted | 2 of 20, the two whose nest is the saved design and whose checks pass | 10-31 |
 | Real summaries the converter turns into a takeoff equal to the chat's | 17 of 23 outright. With the lines it marks "could not verify" added back, the count equals the chat's on all 23 | 10-31 |
 | Deliberate breaks of Phase 1b's safety lines that make a test fail | All of them, across 4 builders, each after closing what the first round missed | 10-30 |
 | Matching: deliberately broken copies of the code that the tests catch | 50 of 50 | 10-30 |
@@ -424,9 +431,9 @@ From the design. Phases P0 to P3 are the committed scope. Each phase stands by i
 |---|---|---|---|
 | **P0 Prepare** | 3 | Setup Check, baseline, default decisions | Done, apart from running the Setup Check on Jim's PC |
 | **P1a File it** | 10 | Summaries filed by themselves, the board, the digest, the heartbeat | **In progress** |
-| **P1b Guards** | 11 | Read-only guards: the nest guard with DO NOT CUT, a lock pre-flight, an order heads-up | **Built, about 85%.** Reads real programs and nests, runs Jim's two checks on a safe copy, and agrees with them on all 20 real materials for doubled holes. Left: the nest-to-design match (being built), and a 30-minute Mozaik session with Jim. Earlier note: What can run from Drive's programs and tracker is built, wired and pushed, and proven on the built app. The parts that read Mozaik's own files wait for Jim's toolkit zip |
-| **P2 One toolkit** | 18 | Shared tools go into Jim's chat, so it stops writing per-job scripts. A test on past jobs decides P5 | **Started, about 35%.** The shared converter (IC summary to takeoff), the tracker inbox writer and the script comparison are built. The drawing-reading test is built up to the model call, and waits for a provider key. Adopting Jim's toolkit through his own regression is being built |
-| **P3 Checks and takeoff** | 18 | Checks run on "sections done", and the takeoff is done on intake | **Started, about 10%.** The `.bak` reader is built, and the takeoff on intake is being wired in |
+| **P1b Guards** | 11 | Read-only guards: the nest guard with DO NOT CUT, a lock pre-flight, an order heads-up | **Built, about 95%.** "Nest checked" is reached for real on the jobs that earn it. Left: a 30-minute Mozaik session with Jim, and proving it on his PC. Earlier: built, about 85%. Reads real programs and nests, runs Jim's two checks on a safe copy, and agrees with them on all 20 real materials for doubled holes. Left: the nest-to-design match (being built), and a 30-minute Mozaik session with Jim. Earlier note: What can run from Drive's programs and tracker is built, wired and pushed, and proven on the built app. The parts that read Mozaik's own files wait for Jim's toolkit zip |
+| **P2 One toolkit** | 18 | Shared tools go into Jim's chat, so it stops writing per-job scripts. A test on past jobs decides P5 | **About 55%.** Adoption through Jim's regression, the check runner, the converter, the tracker inbox and the script comparison are built. Left: the workbook, delivering the shared tools into his toolkit, and the drawing test's model runs (they need a provider key). Earlier: started, about 35%. The shared converter (IC summary to takeoff), the tracker inbox writer and the script comparison are built. The drawing-reading test is built up to the model call, and waits for a provider key. Adopting Jim's toolkit through his own regression is being built |
+| **P3 Checks and takeoff** | 18 | Checks run on "sections done", and the takeoff is done on intake | **About 25%.** The takeoff on intake and its order heads-up are wired in, and the `.bak` reader is built. Left: checks on "sections done", the audit of chat-built jobs, repair items, and the Mozaik-side trials. Earlier: started, about 10%. The `.bak` reader is built, and the takeoff on intake is being wired in |
 | **P4 Lock and fixes** | 16 | Lock, tracker and fixes run from NG Runner | Not started |
 | **P5 Ready for sections** | 28, only on go | Walls and verticals built overnight, with an AI model only reading drawings and code confirming every value | Not started |
 

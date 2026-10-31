@@ -54,9 +54,15 @@ Why: NG Runner now does the archiving, so a session works from its copy instead 
   write or delete a `<Job>_NGRunner*` file.
 - Its `nests` say what NG Runner last read of each material, and its `preflight` what to look at
   before a lock. Neither says a job may be cut or locked: only you and Jim decide that.
+- Its `takeoff` is NG Runner's own takeoff of the filed summary (an estimate: the nest decides).
+  When its `complete` is false (lines it could not verify, or a job it leaves to chat), the order
+  heads-up Barbara and Will get is your IC Conversion JSON's list, sent whole and marked
+  "From the chat's takeoff". So keep writing that JSON as before.
 ```
 
 Why: a session can't see NG Runner, just as it can't see another session's chat (`INDEX.md:81-82`: "a session that wasn't told something in its own chat still needs to get it right"), so NG Runner tells it through this file. NG Runner only ever overwrites a file it wrote and nobody has changed since, so a session that edited one would stop NG Runner keeping it up to date.
+
+The `takeoff` block came with schema 3 of that file, and is null until NG Runner has made the takeoff. It covers closets only: a garage or mixed job's takeoff stays in your chat. A heads-up marked "From the chat's takeoff" carries your chat's list alone: NG Runner never mixes the two, and never sends part of a list.
 
 ## 3. The Rev line: INDEX
 

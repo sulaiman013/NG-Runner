@@ -1,6 +1,6 @@
 # P1b build spec — contracts for the builders
 
-Status: working spec for building Phase 1b ("Guards", design section 7: 11 dev-days). Everything marked measured was read on Sulaiman's PC on 2026-10-30, read-only. The design (`01-final-design.md`, local only) is the source of truth. Where this file departs from it, it says so, and section 9 lists each departure as a ruling for `docs/decisions.md`. Section 9's defaults are adopted (`docs/decisions.md`, 2026-10-30), as Sulaiman asked for decisions, and he can overrule any of them. Real jobs are called Case A, Case B and so on; the key is outside the repo. Made-up names (`Testerson_101426`, abbreviation `TES`) are the only job names here. Group 1 is wired into the running app, and the table "Wiring Phase 1b's guards into the app" in `docs/decisions.md` settles where that differs from what is written below. Group 2 is built and wired; the table "Phase 1b, group 2" there settles it the same way. Jim's toolkit and 10 real job folders arrived on 2026-10-31 (`.local-fixtures/toolkit/`): his scripts have been read and not run by NG Runner, and "Real nests, and the checks' real output" there says what real bytes confirmed and broke, where this file was written before them.
+Status: working spec for building Phase 1b ("Guards", design section 7: 11 dev-days). Everything marked measured was read on Sulaiman's PC on 2026-10-30, read-only. The design (`01-final-design.md`, local only) is the source of truth. Where this file departs from it, it says so, and section 9 lists each departure as a ruling for `docs/decisions.md`. Section 9's defaults are adopted (`docs/decisions.md`, 2026-10-30), as Sulaiman asked for decisions, and he can overrule any of them. Real jobs are called Case A, Case B and so on; the key is outside the repo. Made-up names (`Testerson_101426`, abbreviation `TES`) are the only job names here. Group 1 is wired into the running app, and the table "Wiring Phase 1b's guards into the app" in `docs/decisions.md` settles where that differs from what is written below. Group 2 is built and wired; the table "Phase 1b, group 2" there settles it the same way. Jim's toolkit and 10 real job folders arrived on 2026-10-31 (`.local-fixtures/toolkit/`): his scripts have been read and not run by NG Runner, and "Real nests, and the checks' real output" there says what real bytes confirmed and broke, where this file was written before them. Group 3's adoption of a toolkit copy and the nest-to-design match are built since, so Nest checked can be reached; "Built on those rulings" there settles them.
 
 ## 1. What changes the plan
 
@@ -18,26 +18,26 @@ Status: working spec for building Phase 1b ("Guards", design section 7: 11 dev-d
 | Program reader (`guards/tap.py`) | **1. Now, real data** | 1,663 of 1,663 parsed in 27 s, 0 errors. 1,661 say `G20` and end `M30` then `%`; the other 2 are old test files |
 | Doubled holes in programs | **1** | 1,464 non-merged programs. A positive control: one program of Case D has 8 pairs 0.001in apart, the job RULES 538 names. 0 of 67 after the fix |
 | Sheet size from programs (`guards/sheets.py`) | **1** | 1,607 programs in 186 folders have a rule; 7 folders flag (section 3.1). Case C's 1/4 on 61×109 passes; Case B's hand-added 5×9 flags; Case A does not flag |
-| Per-material state (`guards/nest_state.py`), board, digest, heartbeat | **1** | Pure logic over real program facts. `Nest checked` is reachable only with synthetic `.opt` facts until group 3 |
-| Watching for new programs (`guards/watch.py`) | **1** | Walk of all of NG Jobs (2,627 files): 2.2 s. Both `.TAP` (1,435) and `.tap` (228) occur |
+| Per-material state (`guards/nest_state.py`), board, digest, heartbeat | **1** | Pure logic over real program facts. `Nest checked` is reachable once a toolkit copy is adopted (5.3) |
+| Watching for new programs (`guards/watch.py`) | **1** | Walk of all of NG Jobs (2,627 files): 2.2 s. Both `.TAP` (1,435) and `.tap` (228) occur. Wired: a first scan of the real NG Jobs alarms nothing, and as if every program had just been posted, the guards read 60 materials in about 10 s and raise 20 DO NOT CUT (16 doubled holes, 4 sizes) and 4 sheet size cards |
 | Order heads-up (`guards/headsup.py`) | **1** | 58 of 58 conversion JSONs parsed. Since 09-20, 20 of 27 have the blocks in the usable shape; the newest job's doesn't. Tie to the tracker: 16 of 20 on tape, 16 of 20 on sheets (section 3.4) |
 | Lock pre-flight (`guards/tracker.py`, `guards/preflight.py`) | **1** for tracker, check and job-sheet items | 4 snapshots and the meta file parsed: 101 sheet rows, 88 tape rows, 60 job rows. 63 of 63 job sheets parsed. 5 of 5 newest-format crosscheck files parsed. Nest items come from the state above |
 | Labels-to-design match (`guards/labels.py`) | **1**, as a fallback only | Labels ⊂ catalog on 5 of 5 jobs examined, apart from a numbering difference (section 3.2). Not the design's match: it can't see a missing part |
 | Shared reader (`guards/reads.py`) | **1** | Error 362 is real here: open succeeds, read fails. The share flags test on NTFS |
 | Messages, cards, lint | **1** | 7 proposed lines run through the real `check_line`: pass. It rejects the JSON's tape text as written (`1mm`), so the line is rebuilt |
-| `.opt` reader (`guards/opt.py`) | **2. Built, proof needs Jim** | 0 real files read. 233 names and sizes only (488 B to 1.15 MB). Format from RULES and BUILD only. Fails closed on anything else |
-| TAP reconcile, both directions | **2. Built** | Needs `<OptimizeGCodeRun Filename>`. 65 of 74 `.opt` names match a program folder of the same name in the 49 jobs on both sides, by metadata. The other 9 have no folder of that name |
-| Observer and owner log (`guards/observer.py`) | **2. Built** | 50 `MozaikJob.UNS` and 1 `OptimizeJob.LCK`: all 7 bytes, none readable. Listing shows `Mozaik.exe` and `Optimize.exe`; the live process is unseen |
-| Stored pass (`.opt` hash + TAP manifest + room hashes) | **2. Built** | Proven with a stand-in for Jim's checks. A real one needs real `.opt` and `.des`, and the checks (group 3) |
+| `.opt` reader (`guards/opt.py`) | **2. Built, on real files** | 20 of 20 real `.opt` read, after ruling R8: UTF-8 with a version line `8` (`docs/decisions.md`, "Real nests"). Fails closed on anything else |
+| TAP reconcile, both directions | **2. Built** | Needs `<OptimizeGCodeRun Filename>`. On the 10 real jobs, 19 of 19 materials with programs on G: have a folder of the `.opt`'s name; 6 miss programs the nest names, and 35 programs are extras ("Real nests") |
+| Observer and owner log (`guards/observer.py`) | **2. Built** | The 7 real `MozaikJob.UNS` read `JDELA\r\n`. No real `.LCK` has been read. Listing shows `Mozaik.exe` and `Optimize.exe`; the live process is unseen |
+| Stored pass (`.opt` hash + TAP manifest + room hashes) | **2. Built** | `room_hashes` holds each room's design identity (5.3). Reached on real files from an adopted copy (Cases F and G) |
 | George's and Will's emails | **2** | `ROLES` already has both, and the outbox handles them. Real delivery needs their addresses, and goes to Sulaiman in shadow |
 | Cloud NOT CHECKED (`Watchdog.gs`) | **2. Built, not deployed** | Node tests. Whether the script's account can read NG Jobs is UNVERIFIED, and `checkSetup` says |
 | Push channel | **2** | `messages/pushover.py` is built and tested. Needs Jim's account and a wider consent (section 9) |
-| Snapshot harness mechanism (`ngrunner/toolkit.py`) | **2. Built** | Copy, hash, run and kill work on a synthetic toolkit, and in the built exe. A real run needs the toolkit. Nothing schedules it yet |
-| `sheet_size_check --taps` adapter | **Built (`guards/tool_checks.py`), on its real output of 10 jobs** | Its exit code is 1 on all 10, so it reads each material's lines. Run by `watch.nest_checks` from an adopted copy, on staged copies: none is adopted yet |
+| Snapshot harness mechanism (`ngrunner/toolkit.py`) | **2. Built** | Copy, hash, run and kill work on a synthetic toolkit, in the built exe, and on Jim's real toolkit in the tools' Python |
+| `sheet_size_check --taps` adapter | **Built (`guards/tool_checks.py`), on its real output of 10 jobs** | Its exit code is 1 on all 10, so it reads each material's lines. Run by `watch.nest_checks` from the adopted copy, on staged copies |
 | `br_cam_check --nest` adapter | **Built, the same way** | Its counts equal the program reader's on all 20 real materials |
-| Snapshot adoption (regression, baseline) | **3** | `regression.py` and `baseline.json` absent |
-| Nest-to-design match (`.opt` against `.des` cutlist) | **3** | `des_cutlist` absent; no `.des` read |
-| `material_lookup` in place of the size table | **3** | Script and `Materials.dat` absent |
+| Snapshot adoption (regression, baseline) | **3. Built (`toolkit.try_adoption`)** | Tried each night: adopted only when his `regression.py` is clean on that very copy. It reproduces his 3 frozen jobs on a staged copy of his real toolkit (`tests/test_toolkit_real.py`) |
+| Nest-to-design match (`.opt` against `.des` cutlist) | **3. Built (`guards/design.py`)** | His `des_cutlist` runs here on all 10 real jobs. On the 20 real nests: 10 match, 9 are "Not verified", 1 has no sheets to compare (`tests/test_real_designs.py`) |
+| `material_lookup` in place of the size table | **Not used (ruling R5)** | The script and `Materials.dat` are here, and the library gives `3-4 Egger` 61×109 where RULES says 49×97, so RULES' table stands until Jim answers |
 | Mozaik lab | **3** (needs Jim and Mozaik) | Mozaik is not installed here. Script in section 8 |
 | Team tab | **Not built** | `docs/decisions.md`: only if Ron, Will or Mary ask |
 
@@ -121,7 +121,7 @@ Other Egger colours: 2 shop projects and 1 hand-built job sit on 49×97, against
 
 **The job model.** `_TICKS` gains `("nest", "Nest")`: `done` only when every material is Nest checked, `blocked` on any DO NOT CUT, `todo` otherwise. `JobRow` gains `materials: tuple[MaterialRow, ...] = ()`, with `MaterialRow(material, state, note, at, file)`. Tray per design 4: red for DO NOT CUT or a posted NOT CHECKED. `digest_view.owner` gets open DO NOT CUTs and NOT CHECKED, so the heartbeat's `open_risks` and the watchdog's "no list today" carry them with no change.
 
-**`<folder>_NGRunner.json`, schema 2.** Adds `"nests": [{material, state, basis, programs, at}]` and `"preflight": {at, items: [{code, text}]}`. Still no address. Allowed by the existing P1a write rules, so `_PHASE_RULES` doesn't change. An OBSERVED job gets no writes, so its nest state and pre-flight are board-only: Jim's chat won't see them. `docs/p1a/rules-lines.md` says what chat reads and gets one more line.
+**`<folder>_NGRunner.json`, schema 2.** Adds `"nests": [{material, state, basis, programs, at}]` and `"preflight": {at, items: [{code, text}]}`. Still no address. Allowed by the existing P1a write rules, so `_PHASE_RULES` doesn't change. An OBSERVED job gets no writes, so its nest state and pre-flight are board-only: Jim's chat won't see them. `docs/p1a/rules-lines.md` says what chat reads and gets one more line. Schema 3, from P3's takeoff on intake, adds `takeoff` (`docs/decisions.md`, "The takeoff on intake").
 
 **The interlock.** Unchanged in P1b (departure from integration spec section 2, which said the Mozaik conditions might join here). P1b writes nothing a Mozaik job reads; it only reads. The conditions join when writes into Mozaik Shared do, in P3.
 
@@ -180,12 +180,12 @@ def decide(ev: MaterialEvidence) -> Verdict: ...      # pure; no store, no clock
 | No program and no `.opt` | NOT_POSTED | no line |
 | A new program has near pairs | DO_NOT_CUT | "N cam holes are doubled in programs ..." |
 | A new program is past its size, not cleared | DO_NOT_CUT | "A program is on 61x109 and this colour is 49x97" |
-| A tool says it failed | DO_NOT_CUT | the tool's fixed line |
+| A tool says it failed, or the nest is not the saved design (the design match's "Not verified", `guards/design.py`) | DO_NOT_CUT | the tool's fixed line, or "Not verified: the nest is not the saved design at R1C3 and R1C5" |
 | `.opt` has parts and no sheets | SAVE_NEST | "Save the nest in the Optimizer so I can check it" |
 | `.opt`, every program it names in the folder, both tools pass, design matches, all hashes current | NEST_CHECKED | "Nest checked 9:42 PM, programs TESS01-06" |
 | Anything else, a nest that won't read or names a program not there included | NOT_CHECKED | "Programs read 9:42 PM on 49x97, 0 doubled holes; the nest itself is not checked", then what stopped it |
 
-The design's "A change to any of them puts that material back to NOT CHECKED" holds: a pass is bound to `opt_sha256`, `manifest` and `room_hashes`. Unknown evidence is NOT_CHECKED, never a pass. The first scan after install marks every program `seen_at_install`: without that, 65 old jobs go red at once.
+The design's "A change to any of them puts that material back to NOT CHECKED" holds: a pass is bound to `opt_sha256`, `manifest` and `room_hashes`. `room_hashes` holds each room's design identity (`design.room_identity`), not its file's sha256, so Mozaik re-saving the same design keeps a pass and a changed design loses it (`docs/decisions.md`, "The nest-to-design match"). A match the design check couldn't make is could_not_verify, which is NOT_CHECKED with its note. Unknown evidence is NOT_CHECKED, never a pass. The first scan after install marks every program `seen_at_install`: without that, 65 old jobs go red at once.
 
 ### 5.4 Watching: `ngrunner/guards/watch.py`
 `tick(ctx) -> None`. Each minute, list the top level of NG Jobs (not `Old`: a job moved there has stopped being watched), each folder's subfolders, and their `.tap` files by name, size and mtime. Skip `desktop.ini`, `~$*`, `.part`, `.ngr-tmp`. A file acts once two polls agree and it is `complete`; an incomplete one is re-read and goes to DEV after 10 minutes. Then `decide`, store, and on a state change tell (5.6). NG Jobs unreachable uses the existing `ng_jobs_unreachable` alarm. Nothing here writes outside the store, except `_NGRunner.json` through `ctx.commit`.
@@ -269,9 +269,9 @@ def run_tool(snapshot: Snapshot, script: str, args: Sequence[str], *, timeout_s:
 def stage_files(files: Iterable[Path], into: Path) -> list[Path]: ...     # read with every share flag
 def tool_verdict(tool: str, run: ToolRun, checked: CheckedFiles, *, readers=READERS) -> ToolVerdict: ...
 ```
-`AppPaths.toolkit` is where copies go. `READERS` holds only the two readers below. `watch.nest_checks` is the seam that will call all this, and is None: with no toolkit, nothing reaches NEST_CHECKED. Nothing schedules a snapshot yet.
-- The build has no Python. `run_tool` calls `NGRunner.exe run-tool <script> <args>`, a new command using `runpy` in UTF-8 mode, inside a Job Object that kills on timeout. From the repo it uses `sys.executable -X utf8`. So any module a script imports must be in the build (UNVERIFIED which). Checks run on staged local copies, never in place, and `*.opt` is expanded first, since Windows doesn't expand it.
-- `guards/tool_checks.py`: `sheet_size(run)` and `br_cam_nest(run)`, each giving `(code, line)`, code `passed | failed | could_not_verify`, and `..._by_material(run)` for a run of several; `toolkit.tool_verdict` makes that a `ToolVerdict`. Written from source, then checked on their real output of the 10 real jobs. Fail closed on any line not seen there, and on an exit code that doesn't fit what was printed. A wrong size or doubled holes is `failed`; a program not on disk, `??`, or an ok with no physical sheet is `could_not_verify`; a program the nest doesn't name fails nothing, though the tool exits 1. `toolkit.nest_checks_from(snapshot, work)` runs both on staged copies, and `watch.nest_checks` uses it with the adopted copy, which nothing makes yet.
+`AppPaths.toolkit` is where copies go. `READERS` holds only the two readers below. `watch.nest_checks` calls all this, and the nest-to-design match beside it, from the adopted copy; it is None until a copy is adopted, and then nothing reaches NEST_CHECKED. The supervisor tries a copy each night (`toolkit.try_adoption`).
+- The build has no Python. `run_tool` calls `NGRunner.exe run-tool <script> <args>`, a new command using `runpy` in UTF-8 mode, inside a Job Object that kills on timeout. From the repo it uses `sys.executable -X utf8`. A tools' Python with Jim's packages runs them instead when there is one (rulings R1 and R7; the order is in `docs/decisions.md`, "Adopting a copy of Jim's toolkit"). Checks run on staged local copies, never in place, and `*.opt` is expanded first, since Windows doesn't expand it.
+- `guards/tool_checks.py`: `sheet_size(run)` and `br_cam_nest(run)`, each giving `(code, line)`, code `passed | failed | could_not_verify`, and `..._by_material(run)` for a run of several; `toolkit.tool_verdict` makes that a `ToolVerdict`. Written from source, then checked on their real output of the 10 real jobs. Fail closed on any line not seen there, and on an exit code that doesn't fit what was printed. A wrong size or doubled holes is `failed`; a program not on disk, `??`, or an ok with no physical sheet is `could_not_verify`; a program the nest doesn't name fails nothing, though the tool exits 1. `toolkit.nest_checks_from(snapshot, work)` runs both on staged copies, and `watch.nest_checks` uses it with the adopted copy.
 
 ## 6. Build order and test plan for group 1
 
@@ -386,12 +386,12 @@ In `docs/decisions.md`'s form, each with the default adopted, chosen by its test
 **Searched for toolkit, `.opt` and `.des`, by name, with nothing readable:** all of `G:` (CNC operations, My Drive, Other computers, every shortcut target), all three OneDrives, and on C: `Downloads`, `Documents`, `Desktop` and the two project folders. Not searched: the rest of C:.
 
 **Formats and tools:**
-- Everything in section 3.6: no `.opt`, `.des`, `.UNS`, `.LCK` or `Materials.dat` byte has been read.
-- What the toolkit's scripts really print and return: read from source, not run. Whether they run on Windows at all.
-- How a hand-added sheet shows in a `.opt`. `sheet_size_check` reads only the first `<OptimizeMaterial>`, so if it is a later one, that check doesn't see it.
+- A real `.LCK`: none has been read. The real `.opt`, `.des`, `.UNS` and `Materials.dat` of 10 jobs have, and `docs/decisions.md`, "Real nests", says what they settled.
+- What the toolkit's scripts really print and return, and whether they run on Windows: answered in `docs/p2/build-spec.md`, section 10.
+- How a hand-added sheet shows in a `.opt`: answered, as a block of its own size, which `sheet_size_check` doesn't see ("Real nests").
 
 **The named cases:**
-- Why Case A's readback says 61×109 when its programs read 49×97, and what its `.opt` holds.
+- Case A's readback: answered, it is fixed words in Jim's `opt_readback.py`, and its `.opt` is 49×97 ("Real nests").
 - Whether version history holds any pre-fix `.opt`.
 - Whether the 2 Tafisa folders were mistakes.
 

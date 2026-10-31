@@ -1,6 +1,6 @@
 # P2 to P5 build spec: what can start now, and on what evidence
 
-Status: working spec for Phases 2 to 5 (design section 7: P2 18, P3 18, P4 16, P5 28 dev-days). Measured on Sulaiman's PC on 2026-10-31, read-only. Jim's toolkit arrived while this was being written and is unpacked, gitignored, under `.local-fixtures/toolkit/20261031/`: 183 scripts, the templates, the docs, `reference\` (the three frozen jobs and `baseline.json`), `Materials.dat`, `NG Closets - parameters.dat`, and ten real Mozaik job folders, Jobs A to J. **None of Jim's scripts has been run.** Everything said about them comes from reading their source. Whether to run them here is Sulaiman's call (section 9). The design (`01-final-design.md`, local only) is the source of truth. Where this file departs from it, it says so, and section 9 lists each departure as a ruling for `docs/decisions.md`. Real jobs are named by code only: pairs `PAA` to `PBZ` (an IC summary with the chat's conversion), Jobs A to J (Mozaik folders), and frozen jobs X, Y and Z. The key is outside the repo. Made-up names (`Testerson_101426`, abbreviation `TES`) are the only job names here. No toolkit code may enter this repo, which is public.
+Status: working spec for Phases 2 to 5 (design section 7: P2 18, P3 18, P4 16, P5 28 dev-days). Measured on Sulaiman's PC on 2026-10-31, read-only. Jim's toolkit arrived while this was being written and is unpacked, gitignored, under `.local-fixtures/toolkit/20261031/`: 183 scripts, the templates, the docs, `reference\` (the three frozen jobs and `baseline.json`), `Materials.dat`, `NG Closets - parameters.dat`, and ten real Mozaik job folders, Jobs A to J. When this was written none of Jim's scripts had been run, and everything said about them came from reading their source. Section 9's rulings are adopted since (`docs/decisions.md`, "Phase 2's rulings and Jim's approvals"): under R1 his scripts have run here on staged copies, section 2 says what is built, and section 10 what that answered. The design (`01-final-design.md`, local only) is the source of truth. Where this file departs from it, it says so, and section 9 lists each departure as a ruling for `docs/decisions.md`. Real jobs are named by code only: pairs `PAA` to `PBZ` (an IC summary with the chat's conversion), Jobs A to J (Mozaik folders), and frozen jobs X, Y and Z. The key is outside the repo. Made-up names (`Testerson_101426`, abbreviation `TES`) are the only job names here. No toolkit code may enter this repo, which is public.
 
 ## 1. What changes the plan
 
@@ -22,34 +22,34 @@ Status: working spec for Phases 2 to 5 (design section 7: P2 18, P3 18, P4 16, P
 
 ## 2. Where each piece stands
 
-**Group 1** can start now and be proved here on real data. **Group 2** can start now, but its proof needs Jim, his PC or Mozaik. **Group 3** is blocked, and the row names what unblocks it. "Needs the run ruling" means proof needs Jim's scripts run here (section 9, decision R1), which is Sulaiman's call and not Jim's.
+**Group 1** can start now and be proved here on real data. **Group 2** can start now, but its proof needs Jim, his PC or Mozaik. **Group 3** is blocked, and the row names what unblocks it. "Needs the run ruling" means proof needs Jim's scripts run here (section 9, decision R1), which is Sulaiman's call and not Jim's; R1 is adopted, so those can be proved here now. "Built" names what exists as of 2026-10-31.
 
 | Phase | Piece | Group | Evidence |
 |---|---|---|---|
-| P2 | **Shared converter core**: summary to board parts to takeoff (`convert/`) | **1** | Sections 3.1 to 3.3. 52 real pairs, 3 frozen jobs with a baseline. Built as NG Runner's own code. It enters Jim's toolkit only through his RULES section 8 approval |
-| P2 | Takeoff tie to the tracker | **1** | 47 jobs with tracker rows. Tape equals the tracker's Calc Lin Ft on 21. Calc Sheets is area ÷ 32 on 25, and every one of the 37 list buckets' `calc_sheets_raw` is area ÷ 32 |
-| P2 | Diff of the per-job families | **1** | All 126 scripts are here, and 21 of 24 conversions name a job that has a pair on Drive. Read statically with `ast` (section 3.4) |
+| P2 | **Shared converter core**: summary to board parts to takeoff (`convert/`) | **1. Built** | Frozen jobs X and Z equal `baseline.json`'s takeoff; Y differs by its two named rows. On the 23 top-level closet pairs, board parts equal the chat's on 17, and each of the rest differs by exactly its Unplaced rows (`tests/test_convert_takeoff.py`). It enters Jim's toolkit only through his RULES section 8 approval |
+| P2 | Takeoff tie to the tracker | **1. Built** in the inbox writer: Calc Sheets is area ÷ 32 (R6) | 47 jobs with tracker rows. Tape equals the tracker's Calc Lin Ft on 21. Calc Sheets is area ÷ 32 on 25, and every one of the 37 list buckets' `calc_sheets_raw` is area ÷ 32 |
+| P2 | Diff of the per-job families | **1. Built** (`tools/diff_families.py`) | All 126 scripts are here, and 21 of 24 conversions name a job that has a pair on Drive. Read statically with `ast` (section 3.4). Which differences are unwritten rules is still a person's call |
 | P2 | Shared workbook (renders the JSON) | **1**, partly | 52 real `.xlsx` beside their JSONs, plus `wb_generic.py` and 17 `ic_workbook_*`. Needs openpyxl, which NG Runner doesn't carry. No `.xlsx` opened yet (UNVERIFIED) |
-| P2 | Shared tracker tool: inbox writer, "did it land" | **1** | BUILD 817-837 gives the format, 21 `ingested_tracker_inbox_*.csv` the real files, the snapshots the landing check. `guards/tracker.py` already reads the snapshots |
+| P2 | Shared tracker tool: inbox writer, "did it land" | **1. Built** (`ngrunner/tracker_inbox.py`) | BUILD 817-837 gives the format, 21 `ingested_tracker_inbox_*.csv` the real files, the snapshots the landing check. Nothing writes a batch to Drive before P4's Lock. Where it departs from 5.6: `docs/decisions.md`, "The tracker inbox" |
 | P2 | Idempotent ingest (Jim's `Tracker_Ingest.gs`) | **2** | A text copy is on Drive (`Tracker_Ingest.gs.txt`), and a change can be written and tested under node here. Deploying it changes Jim's tracker: decision 9, Jim |
-| P2 | Shared check runner: reading checker output | **1**, needs the run ruling | `crosscheck.py` source (14 checkers, `FLAG` regex, exit codes), `baseline.json`'s recorded output for 3 frozen jobs, and the real `_crosscheck.txt` files in NG Jobs |
-| P2 | Shared check runner: running the checkers | **1**, needs the run ruling | 30 real `Room#.des` in Jobs A to J, 9 frozen rooms. Every core checker is standard library plus `units.py`. `parm_check` also needs the `Lux Closet Template Claude` job folder, which is not in the zip: **3** for that one checker |
-| P2 | Regression reproduced (`regression.py`) | **1**, needs the run ruling | `reference\regression\` and `baseline.json` present. It looks for `..\reference` beside `scripts\`, so it runs on a staged copy laid out as Jim's tree |
+| P2 | Shared check runner: reading checker output | **1. Built** (`ngrunner/checks/readers.py`) | Written from the checkers' source, then checked against what they printed on Jobs A to J and Jim's own crosscheck files of Jobs C to G (`tests/test_checks_real.py`). How each is read: `docs/decisions.md`, "The check runner's readers" |
+| P2 | Shared check runner: running the checkers | **1. Built** (`ngrunner/checks/crosscheck.py`); nothing calls it until P3 | crosscheck ran from a copy of his toolkit on staged copies of Jobs A to J. `parm_check` still needs the `Lux Closet Template Claude` job folder, which is not in the zip: **3** for that one checker, could not verify meanwhile |
+| P2 | Regression reproduced (`regression.py`) | **Done** | Clean on a staged copy laid out as Jim's tree, in the tools' Python: his 3 frozen jobs reproduce (`tests/test_toolkit_real.py`) |
 | P2 | RULES line "never write a per-job script" | **2** | A line for Jim's approval, through RULES section 8 |
 | P2 | "Jim reviews the first 10 conversions" | **2** | Jim |
-| P2 | Reader evaluation: preparation (wall crops, parts-list text, truth from the as-cut `.des`) | **1** | The summaries' embedded rasters are readable here. The truth is now here: 30 real `.des` and 9 frozen rooms. Nothing is sent anywhere |
-| P2 | Reader evaluation: any read by a model | **2**: Jim consents (2026-10-31). It needs a provider key in Credential Manager, then decisions 16 and 17 come from the evaluation | Only crops with no text over them are sent |
-| P3 | Snapshot with nightly adoption | **1** on this PC's built exe, needs the run ruling; **2** for "3/3 byte-identical on the packaged build" on Jim's PC | `toolkit.py` exists. Adoption is `regression.py` clean against `baseline.json`. The `sys.executable` problem in item 8 must be fixed first. The third-party modules the toolkit uses are in section 3.4 |
-| P3 | Symmetric `.bak` guard | **1** for the reader and the diff; Q19 for the rule | 30 `.des` with `.bak` and `.sbk`, plus 18 `.bak2` to `.bak4`. All 30 `.des` start `15` then CRLF and are CRLF throughout. 11 of 30 `.bak` are newer or larger by mtime, but the zip's mtimes are not shown to be Mozaik's (UNVERIFIED) |
+| P2 | Reader evaluation: preparation (wall crops, parts-list text, truth from the as-cut `.des`) | **1. Built** (`tools/reader_eval/`, dev only) | 41 elevation pages give 41 crops, none with text over it, and at least 26 test walls pair with their as-cut truth (`tests/test_reader_real.py`). Nothing is sent anywhere |
+| P2 | Reader evaluation: any read by a model | **2**: Jim consents (2026-10-31). Built up to the call; it waits for a provider key in Credential Manager (`NGRunner/openai_key` or `NGRunner/anthropic_key`), then decisions 16 and 17 come from the evaluation | Only crops with no text over them are sent |
+| P3 | Snapshot with nightly adoption | **1. Built** (`toolkit.try_adoption`, the supervisor's night step); **2** for "3/3 byte-identical on the packaged build" on Jim's PC | Adoption is `regression.py` clean on that very copy, proven on a staged copy of his real toolkit. R7 fixed item 8. How it runs: `docs/decisions.md`, "Adopting a copy of Jim's toolkit". Nothing in the build makes a tools' Python yet, so in a build his scripts run in `NGRunner.exe` itself, which no real run has tried |
+| P3 | Symmetric `.bak` guard | **1. Built** for the reader and the diff (`guards/bak.py`, findings only); Q19 for the rule | 30 `.des` with `.bak` and `.sbk`, plus 18 `.bak2` to `.bak4`, all read and compared. All 30 `.des` start `15` then CRLF and are CRLF throughout. By size and contents, section 10 |
 | P3 | Close prompt and Check now | **2** | NG Runner UI, buildable on fakes. The trigger is Mozaik closing on Jim's PC |
 | P3 | Audit of chat-built jobs (panel set, top line, `op_schema`) | **1**, needs the run ruling | Jobs A to J and the frozen jobs. `parm_check` needs the template job (above). Q1 for the top |
 | P3 | Trial checks: 15 compared with chat | **2** | Live jobs. A replay of Jobs A to J against their crosscheck files in NG Jobs can start under the run ruling |
 | P3 | Repair items with a ready chat line | **1** | Text from findings. Needs the check runner |
-| P3 | Takeoff on intake, and the order email from it | **1** | The converter plus the existing `guards/headsup.py`. It ends "could not verify the takeoff" on the 7 of 27 recent JSONs P1b can't read (P1b 3.4) |
-| P3 | "Takeoff equals the chat's on 10 jobs" | **1** | Section 3.2: 20 of 24 by area today |
+| P3 | Takeoff on intake, and the order email from it | **1. Built** (store migration 5, notes schema 3) | On the 52 pairs: 34 complete closets, 12 closets with 1 to 7 lines it could not verify, and 6 garage or mixed jobs that stay in chat; none failed (`tests/test_takeoff_real.py`). An incomplete takeoff sends the chat's whole list instead. As built: `docs/decisions.md`, "The takeoff on intake" |
+| P3 | "Takeoff equals the chat's on 10 jobs" | **1** | Section 3.2: 20 of 24 by area. With the converter as built, 17 of 23 top-level closets by board parts (above). The exit itself is on 10 live jobs |
 | P3 | Settle, and "I already told chat" | **1** on fakes; **2** for the RULES line | Store and board work. Jim's chat reads the settled list through a RULES line he approves |
 | P4 | Leases | **1** on fakes; **2** for the chat side | The lease file's RULES line needs Jim's approval |
-| P4 | Lock design, Finish lock, Lock: nest side | **1** | 20 real `.opt`: sheets are the sum of `Quan` over `Flipped="False"` blocks, programs are `<OptimizeGCodeRun Filename>`. Needs P1b's `opt.py` fixed first (item 3) |
+| P4 | Lock design, Finish lock, Lock: nest side | **1** | 20 real `.opt`: sheets are the sum of `Quan` over `Flipped="False"` blocks, programs are `<OptimizeGCodeRun Filename>`. P1b's `opt.py` reads all 20 since R8 |
 | P4 | Lock: tracker side | **1** | Inbox writer and landing check, above |
 | P4 | Check-before-lock | **1**, needs the run ruling | Needs the check runner |
 | P4 | Job sheet (`cnc_job_sheet.py`) | **1**, needs the run ruling | Its template `.docx` is in the zip. Jobs A to J have `.opt` and `JobDat.dat`, and 63 real job sheets in NG Jobs to compare with |
@@ -300,7 +300,7 @@ Nothing for group 1. For the rest:
 2. **Drawings to a model (decision 10):** the P2 reader evaluation may send elevation crops to a model. Only crops with no text span over them go (design 3.6), never a page, a name or an address. Provider and model are decisions 16 and 17, chosen by the evaluation within its USD 20 a month.
 
 
-In `docs/decisions.md`'s form, each with the default adopted (2026-10-31, as Sulaiman asked for decisions and no questions), chosen by its test: does it ease Jim's work? Sulaiman can overrule any of them.
+In `docs/decisions.md`'s form, each with the default adopted (2026-10-31, as Sulaiman asked for decisions and no questions), chosen by its test: does it ease Jim's work? Sulaiman can overrule any of them. Recorded there in "Phase 2's rulings and Jim's approvals".
 
 | Decision | Default | Why |
 |---|---|---|
@@ -330,10 +330,14 @@ In `docs/decisions.md`'s form, each with the default adopted (2026-10-31, as Sul
   - How a two-colour job splits by colour beyond thickness (matched here by nearest area, which is weak).
 - **The workbook:** no `.xlsx` was opened.
 - **The tracker:** whether the tracker accepts a row with a blank customer; why 22 of 47 jobs' Calc Sheets aren't area ÷ 32 (later corrections, or another basis).
-- **Jim's scripts:** whether they run on Windows at all, and with what output. None was run.
+- **Jim's scripts inside the built `NGRunner.exe`:** run once, in a private build on Sulaiman's PC (2026-10-31): `NGRunner.exe run-tool regression.py` was clean in 2.7 s, and crosscheck on Cases C, D and F, each checker started as `NGRunner.exe <checker>.py`, gave the same verdicts as the tools' Python. Not yet run in the shipped kit or on Jim's PC. Scripts that need the tools' packages (the workbook, `parse_pulled`, the builders) can't run in the build until it carries `toolspython\`, which nothing ships yet.
 - **Jim's files:**
-  - Whether the zip kept Mozaik's mtimes, which the `.bak` count rests on.
   - Whether Job E's Tafisa on 61×109 was meant.
   - Which `Materials.dat` Optimize used for Jobs A to J.
 - **The family diff:** which differences between drifted helpers are unwritten rules.
 - **The reader:** whether the embedded rasters are at native pixels on every render; the design assumes it.
+
+**Answered since (2026-10-31):**
+- **Jim's scripts run on Windows,** in the tools' Python (R1), on staged copies. His regression is clean and reproduces his 3 frozen jobs (`tests/test_toolkit_real.py`); `des_cutlist` runs on all 10 jobs (`tests/test_real_designs.py`); crosscheck and its checkers run on Jobs A to J, and what each printed is pinned in `tests/test_checks_real.py`.
+- **The zip didn't keep Mozaik's file times:** every file carries the time it was unpacked. So "newer" can't be measured on Jobs A to J, and the `.bak` count goes by size and contents instead.
+- **The `.bak` finding, by size:** 7 of the 30 `.bak` are larger than their `.des`, and 0 of the 7 differ in a part or a product: only in annotations and numbering. The one room whose parts differ, Job G's Room 1 (groove Hide flags on 5 panels), has a smaller `.bak`, and its nest sides with the `.des` (`tests/test_guards_bak.py`). This is Q19's evidence: by size alone, RULES 81 would call 7 designs stale where no part differs, and miss the one that does.
