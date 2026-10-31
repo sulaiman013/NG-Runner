@@ -6,7 +6,7 @@ That is Phase 1a, the first step of a staircase. Later phases add read-only guar
 
 Built and supported by Sulaiman Ahmed, for Jim Delany, owner of Inspired Closets LA.
 
-> **Status, 2026-10-30, 9:50 PM Pacific.** Phase 1a is about 97% built, and **Phase 1b's guards now run in the built app**: it reads each new CNC program, and on doubled cam holes or a wrong sheet it raises DO NOT CUT. **The built `.exe` has also run the whole Phase 1a path for real** on Sulaiman's PC: a shadow run that wrote nothing to NG Jobs, then the real go-live switch, then 13 of 13 jobs filed for real into a stand-in NG Jobs folder, through real Studio, the real job list and real Drive. The three independent reviews' problems are fixed and pushed. **Nothing is installed on Jim's PC, and the real NG Jobs has not been touched.** What's left needs Jim's PC or a real night. Everything so far has been built and tested on Sulaiman's PC. See [Where it stands](#where-it-stands) and the [timeline](#timeline).
+> **Status, 2026-10-31, 5:45 AM Pacific.** Phase 1a is about 97% built, and **Phase 1b's nest guard is finished**: it reads each new CNC program and Mozaik's real nest files, and runs Jim's own two nest checks on a safe copy. **Phase 2 has started**: Jim's toolkit arrived on Drive, and a shared converter now turns an IC summary into the takeoff that Jim's chat used to type in by hand. The shadow run on Sulaiman's PC reads the real NG Jobs and has written nothing there. **Nothing is installed on Jim's PC.**
 
 ## Contents
 
@@ -326,7 +326,15 @@ Kickoff call with Jim, Mary, Nicole and Sulaiman. Jim hands over his IC-to-Mozai
 | 9:30 PM | **The guards on the built `.exe`,** with real faulty programs posted under made-up names to a stand-in folder | DO NOT CUT within 2.5 minutes on both, a real card, and the app's own emails sent through the real Apps Script with receipts read back |
 | 9:37 PM | **Clearing a fault, for real** | A click on the real board cleared only the sheet size. Doubled holes stayed red until a clean program was posted |
 | 9:45 PM | Pushed: [`b8f57e8`](https://github.com/sulaiman013/NG-Runner/commit/b8f57e8) | The guards wired into the app. **5,602 tests on a clean checkout** |
-| 9:50 PM | **Now:** the rest of Phase 1b that can be built without Jim's files, and the shadow run on this PC | Running |
+| 9:50 PM | Pushed: [`0821311`](https://github.com/sulaiman013/NG-Runner/commit/0821311) | The board's ticks wrap, and the README records Phase 1b's first real results |
+| 10-31, 12:28 AM | **The shadow run reads the real NG Jobs,** on Sulaiman's yes, still in shadow mode | 536 programs and 91 rows taken as the baseline, nothing alarmed, nothing written there |
+| 12:56 AM | **A real morning digest,** sent early on purpose | Sent through the Apps Script, receipt read back, reached Sulaiman |
+| 1:20 AM | **Jim's toolkit arrives on Drive:** his 183 scripts, docs, regression jobs, material libraries and 10 whole Mozaik job folders | Unpacked locally, kept out of git, never run in place |
+| 1:33 AM | **Jim's two nest checks, run on copies of the 10 real jobs** | On doubled cam holes they agree with NG Runner's program reader on every job. On sheet size each catches faults the other can't, so both run |
+| 3:45 AM | **The drawing-reading test (P2), built up to the model call** | 41 drawings prepared from real summaries, none with any text over it, and 26 walls paired with what was really cut. It waits for a provider key |
+| 4:39 AM | Pushed: [`784170b`](https://github.com/sulaiman013/NG-Runner/commit/784170b) | Phase 1b's nest guard finished: real nest files, Jim's two checks, who holds a job, plus the tracker inbox writer and the `.bak` check. 6,166 of 6,167 tests on a clean checkout; the one timing test was made to retry on a busy PC |
+| 5:39 AM | Pushed: [`be665d0`](https://github.com/sulaiman013/NG-Runner/commit/be665d0) | **Phase 2's shared converter**, IC summary to takeoff. It leaves what the rules don't decide as "could not verify", and matches Jim's frozen jobs exactly. **6,552 tests on a clean checkout** |
+| 5:45 AM | **Now:** adopting Jim's toolkit through his own regression, the nest-to-design match, and the takeoff on intake | Running |
 
 ## Measured so far
 
@@ -364,6 +372,10 @@ Real files were read only, and nothing here required touching Jim's PC.
 | Real CNC programs read by the guard's reader | 1,663 of 1,663 | 10-30 |
 | Programs with doubled cam holes, before and after Jim's 10-20 fix | 278 of 1,368 before, 0 of 67 after (a small sample) | 10-30 |
 | The guards on the built `.exe`: real faulty programs caught | 2 of 2, within 2.5 minutes, with a false alarm on neither clean re-post | 10-30 |
+| Doubled cam holes: NG Runner's program reader against Jim's own nest check | Equal on all 20 real materials | 10-31 |
+| Real Mozaik nest files read | 20 of 20, with the same sheet counts Jim's check printed | 10-31 |
+| Jim's frozen jobs through NG Runner's converter | 2 of 3 equal on parts, area, sheets and tape. The third differs by a door and a rail cover the rules leave to Jim | 10-31 |
+| Real summaries the converter turns into a takeoff equal to the chat's | 17 of 23 outright. With the lines it marks "could not verify" added back, the count equals the chat's on all 23 | 10-31 |
 | Deliberate breaks of Phase 1b's safety lines that make a test fail | All of them, across 4 builders, each after closing what the first round missed | 10-30 |
 | Matching: deliberately broken copies of the code that the tests catch | 50 of 50 | 10-30 |
 | Build size and time | 74 MB, 45 seconds | 10-30 |
@@ -410,9 +422,9 @@ From the design. Phases P0 to P3 are the committed scope. Each phase stands by i
 |---|---|---|---|
 | **P0 Prepare** | 3 | Setup Check, baseline, default decisions | Done, apart from running the Setup Check on Jim's PC |
 | **P1a File it** | 10 | Summaries filed by themselves, the board, the digest, the heartbeat | **In progress** |
-| **P1b Guards** | 11 | Read-only guards: the nest guard with DO NOT CUT, a lock pre-flight, an order heads-up | **In progress.** What can run from Drive's programs and tracker is built, wired and pushed, and proven on the built app. The parts that read Mozaik's own files wait for Jim's toolkit zip |
-| **P2 One toolkit** | 18 | Shared tools go into Jim's chat, so it stops writing per-job scripts. A test on past jobs decides P5 | Not started |
-| **P3 Checks and takeoff** | 18 | Checks run on "sections done", and the takeoff is done on intake | Not started |
+| **P1b Guards** | 11 | Read-only guards: the nest guard with DO NOT CUT, a lock pre-flight, an order heads-up | **Built, about 85%.** Reads real programs and nests, runs Jim's two checks on a safe copy, and agrees with them on all 20 real materials for doubled holes. Left: the nest-to-design match (being built), and a 30-minute Mozaik session with Jim. Earlier note: What can run from Drive's programs and tracker is built, wired and pushed, and proven on the built app. The parts that read Mozaik's own files wait for Jim's toolkit zip |
+| **P2 One toolkit** | 18 | Shared tools go into Jim's chat, so it stops writing per-job scripts. A test on past jobs decides P5 | **Started, about 35%.** The shared converter (IC summary to takeoff), the tracker inbox writer and the script comparison are built. The drawing-reading test is built up to the model call, and waits for a provider key. Adopting Jim's toolkit through his own regression is being built |
+| **P3 Checks and takeoff** | 18 | Checks run on "sections done", and the takeoff is done on intake | **Started, about 10%.** The `.bak` reader is built, and the takeoff on intake is being wired in |
 | **P4 Lock and fixes** | 16 | Lock, tracker and fixes run from NG Runner | Not started |
 | **P5 Ready for sections** | 28, only on go | Walls and verticals built overnight, with an AI model only reading drawings and code confirming every value | Not started |
 
