@@ -19,6 +19,7 @@ import threading
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, replace
 from datetime import date, datetime, time, timedelta
+from pathlib import Path
 from time import monotonic
 from typing import Any
 
@@ -47,6 +48,7 @@ from fakes import (
     with_studio_site,
 )
 from conftest import FIXTURES
+from helpers_opt import NOT_NESTED, nest_text, sheet, utf8, utf16
 from helpers_tap import BOTH, CLEAN, DOUBLED, ON_61, program
 from test_guards_headsup import takeoff_json
 from test_guards_labels import label_page, pdf
@@ -63,14 +65,18 @@ from ngrunner.messages.lint import lint
 from ngrunner.messages.outbox import outbox_file, read_receipt
 from ngrunner.signing import open_envelope
 from ngrunner.guards import headsup, watch
-from ngrunner.guards.kept import ask_for_redo
+from ngrunner.guards.facts import (
+    BR_CAM_NEST, COULD_NOT_VERIFY, DESIGN_MATCHES, FAILED, PASSED, SHEET_SIZE, DesignMatch, ToolVerdict,
+)
+from ngrunner.guards.kept import NEST_FILES, ask_for_redo
+from ngrunner.guards.reads import CloudOnly
 from ngrunner.guards import scan as guards_scan_module
 from ngrunner.guards.scan import Plan
 from ngrunner.guards.scan import scan as guard_scan
 from ngrunner.store import (
     LATEST, MIGRATIONS, ProgramRecord, Store, add_card, add_snapshot, answer_card, ensure_job,
     get_heads_up, get_list_state, get_nest, get_outbox, get_program, get_state, list_clearances,
-    list_nests, list_programs, migrate, set_state,
+    list_events, list_nests, list_owner_log, list_programs, migrate, set_state,
 )
 from ngrunner.tray import COLOURS, draw_icon
 
@@ -2451,6 +2457,787 @@ def _post_real(world: World, material: str, programs: list[tuple[dict[str, Any],
         merged = entry["name"].endswith(".tap")
         name = f"Tes{n}-{n + 1}.tap" if merged else f"TESS{n:02d}.TAP"
         post(world, GUARD_JOB, material, name, data)
+
+
+# ----- the nests (P1b build spec 5.3, 5.11, 5.12): made-up .opt files, from Jim's lines (helpers_opt)
+#
+# No real .opt, .UNS or .LCK has been read, so these show the flow is ready for them: it reads what is
+# documented, fails closed on anything else, and with no toolkit never says Nest checked. A stand-in for
+# Jim's checks (Checks) is the only way any test here reaches a pass.
+
+
+ROOM = b"<Room/>"
+SAVED_NEST = utf16(nest_text(sheets=(sheet(),), runs=("TESS01.TAP",)))
+NOT_SAVED = NOT_NESTED
+OPEN_MINUTES = 4                        # two polls and the two minutes a nest must stay unchanged
+
+
+def ready(world: World) -> World:
+    """NG Runner installed on a PC with Mozaik Shared\\Jobs there, as Jim's has."""
+    (world.mozaik / "Jobs").mkdir(exist_ok=True)
+    return installed(world)
+
+
+def job_folder(world: World, folder: str = GUARD_JOB) -> Path:
+    return world.mozaik / "Jobs" / folder
+
+
+def save_nest(world: World, data: bytes = SAVED_NEST, folder: str = GUARD_JOB,
+              material: str = CLASSIC_FOLDER) -> Path:
+    """What saving in the Optimizer leaves: Jobs/<Job>/<Material>.opt, with its job's rooms beside it
+    (BUILD 546, build spec section 7)."""
+    place = job_folder(world, folder)
+    place.mkdir(parents=True, exist_ok=True)
+    if not (place / "Room1.des").exists():
+        (place / "Room1.des").write_bytes(ROOM)
+    path = place / f"{material}.opt"
+    path.write_bytes(data)
+    return path
+
+
+class Checks:
+    """A stand-in for Jim's two checks and the design match, which can't run yet (group 3). It says
+    what it is told to about the very files it is handed, as they will. Nothing like this is wired in
+    outside a test: watch.nest_checks is None."""
+
+    def __init__(self, code: str = PASSED, line: str = "") -> None:
+        self.code, self.line = code, line
+        self.ran_on: list[Any] = []
+
+    def __call__(self, job: Any) -> tuple[tuple[ToolVerdict, ...], DesignMatch]:
+        self.ran_on.append(job.files)
+        tools = tuple(ToolVerdict(name, self.code, self.line, checked=job.files)
+                      for name in (SHEET_SIZE, BR_CAM_NEST))
+        return tools, DesignMatch(DESIGN_MATCHES, checked=job.files)
+
+
+@pytest.fixture
+def checks(monkeypatch) -> Checks:
+    stand_in = Checks()
+    monkeypatch.setattr(watch, "nest_checks", lambda ctx: stand_in)
+    return stand_in
+
+
+def passed(world: World, checks: Checks) -> None:
+    """A material posted and nested, with every check passing."""
+    ready(world)
+    world.run(minutes=1)
+    post(world, GUARD_JOB, CLASSIC_FOLDER, "TESS01.TAP", CLEAN)
+    save_nest(world)
+    world.run_until(nest_is(world, "nest_checked"), within=minutes(OPEN_MINUTES))
+
+
+def nests_read(world: World, monkeypatch) -> list[str]:
+    """Every .opt or .des read from here on."""
+    reads: list[str] = []
+    real = guards_scan_module.read_shared
+
+    def counted(path: Path) -> bytes:
+        if path.suffix.casefold() in (".opt", ".des"):
+            reads.append(path.name)
+        return real(path)
+
+    monkeypatch.setattr(guards_scan_module, "read_shared", counted)
+    return reads
+
+
+def test_scenario_60_nests_there_at_install_raise_nothing_and_are_not_read(make_world, monkeypatch):
+    world = make_world()
+    reads = nests_read(world, monkeypatch)
+    post(world, GUARD_JOB, CLASSIC_FOLDER, "TESS01.TAP", CLEAN)
+    save_nest(world, NOT_SAVED)                                    # Case H, Case I: parts and no sheets
+    save_nest(world, b"not a nest", material="1-4 Egger Classic White")
+    save_nest(world, SAVED_NEST, folder="Fakeley_102026")          # a job with no programs yet
+    (job_folder(world) / "MozaikJob.UNS").write_bytes(b"JDELA\r\n")
+
+    ready(world)
+    world.run(minutes=10)
+
+    assert nest_of(world).state == "not_checked" and nest_of(world).posted_at is None
+    assert nest_of(world, material="1-4 Egger Classic White") is None
+    assert reads == []
+    assert to_george(world) == [] and guards_dev(world) == set()
+    assert world.board().your_list == () and world.tray.colour != "red"
+
+
+def test_scenario_60b_an_upgrade_from_before_nests_were_read_alarms_nothing(make_world):
+    # The upgrade: NG Jobs' first scan is long done, and now Mozaik Shared is read for the first time.
+    world = make_world()
+    post(world, GUARD_JOB, CLASSIC_FOLDER, "TESS01.TAP", CLEAN)
+    installed(world)
+    world.run(minutes=2)
+    assert get_state(world.store, watch.FIRST_SCAN) is not None
+    assert get_state(world.store, NEST_FILES) is None              # there is no Jobs folder yet
+
+    save_nest(world, NOT_SAVED)
+    save_nest(world, b"not a nest", material="1-4 Egger Classic White")
+    world.run(minutes=10)
+
+    assert get_state(world.store, NEST_FILES) is not None
+    assert nest_of(world).state == "not_checked" and nest_of(world).posted_at is None
+    assert world.board().your_list == () and guards_dev(world) == set()
+    assert to_george(world) == []
+
+
+def test_scenario_60c_an_old_nest_that_changes_is_a_new_one(make_world):
+    world = make_world()
+    post(world, GUARD_JOB, CLASSIC_FOLDER, "TESS01.TAP", CLEAN)
+    save_nest(world, SAVED_NEST)
+    ready(world)
+    world.run(minutes=2)
+
+    save_nest(world, NOT_SAVED)                                    # the Optimizer opened, not run
+    world.run_until(nest_is(world, "save_nest"), within=minutes(OPEN_MINUTES))
+
+
+def test_scenario_61_parts_and_no_sheets_asks_to_save_the_nest_and_alarms_nobody(make_world):
+    # BUILD 776-787: a .opt with parts and no sheets means not nested. Build spec 5.3, row 6.
+    world = make_world()
+    ready(world)
+    world.run(minutes=2)
+
+    save_nest(world, NOT_SAVED)
+    world.run_until(nest_is(world, "save_nest"), within=minutes(OPEN_MINUTES))
+
+    assert nest_of(world).reasons == (templates.SAVE_THE_NEST,)
+    assert nest_of(world).basis == "nest"
+    assert to_george(world) == [] and world.tray.colour != "red"
+    assert [t.kind for t in world.toasts.shown] == []
+    row, = world.board().jobs
+    assert row.name == GUARD_JOB
+    assert [(m.material, m.state) for m in row.materials] == [(CLASSIC_FOLDER, "save_nest")]
+    assert row.materials[0].note == templates.SAVE_THE_NEST
+    item, = [i for i in world.board().your_list if "ave the nest" in i.text]
+    assert GUARD_JOB in item.text and "3/4 Egger Classic White" in item.text
+    assert world.tray.colour == "amber"
+
+    # Saved after all: the request goes, and it reads no better than NOT CHECKED with no toolkit.
+    save_nest(world, SAVED_NEST)
+    world.run_until(nest_is(world, "not_checked"), within=minutes(OPEN_MINUTES))
+    assert not any("ave the nest" in i.text for i in world.board().your_list)
+
+
+def test_scenario_61b_parts_and_no_sheets_beside_posted_programs_asks_too(make_world):
+    # BUILD 696: the programs were posted, and the nest was never saved to disk.
+    world = make_world()
+    ready(world)
+    world.run(minutes=1)
+    post(world, GUARD_JOB, CLASSIC_FOLDER, "TESS01.TAP", CLEAN)
+    world.run_until(nest_is(world, "not_checked"), within=minutes(2))
+
+    save_nest(world, NOT_SAVED)
+    world.run_until(nest_is(world, "save_nest"), within=minutes(OPEN_MINUTES))
+
+    assert to_george(world) == []
+
+
+def test_scenario_61c_a_fault_in_the_programs_stands_over_a_nest_not_saved(make_world):
+    world = make_world()
+    ready(world)
+    world.run(minutes=1)
+    save_nest(world, NOT_SAVED)
+    post(world, GUARD_JOB, CLASSIC_FOLDER, "TESS01.TAP", DOUBLED)
+    world.run_until(nest_is(world, "do_not_cut"), within=minutes(2))
+    world.run(minutes=OPEN_MINUTES)
+
+    assert nest_of(world).state == "do_not_cut"
+    assert len(to_george(world, "DO NOT CUT")) == 1
+
+
+def test_scenario_62_a_nest_is_read_only_once_unchanged_for_two_minutes_and_twice(make_world, monkeypatch):
+    # Design 5, Reads: unchanged for 120 s, hashes the same twice, and parses.
+    world = make_world()
+    ready(world)
+    world.run(minutes=1)
+    reads = nests_read(world, monkeypatch)
+    began = world.clock.now()
+
+    save_nest(world)
+    for n in range(5):                  # it keeps changing: never read, however long
+        world.run(minutes=1)
+        save_nest(world, utf16(nest_text(sheets=(sheet(),), runs=("TESS01.TAP",), holes=n + 3)))
+    assert [r for r in reads if r.endswith(".opt")] == []
+
+    began = world.clock.now()
+    world.run_until(lambda: any(r.endswith(".opt") for r in reads), within=minutes(5))
+    assert world.clock.now() - began >= timedelta(seconds=120)
+    assert [r for r in reads if r.endswith(".opt")] == [f"{CLASSIC_FOLDER}.opt"] * 2
+
+
+def test_scenario_62b_a_verdict_while_the_nest_is_settling_says_so_and_no_pass(make_world):
+    world = make_world()
+    ready(world)
+    world.run(minutes=1)
+    save_nest(world)
+    post(world, GUARD_JOB, CLASSIC_FOLDER, "TESS01.TAP", CLEAN)
+    world.run_until(nest_is(world, "not_checked"), within=minutes(2))
+    assert templates.NEST_SETTLING in nest_of(world).reasons
+
+    world.run(minutes=OPEN_MINUTES)
+    assert templates.NEST_SETTLING not in nest_of(world).reasons
+    assert nest_of(world).state == "not_checked"
+    assert nest_of(world).opt_sha256 == hashlib.sha256(SAVED_NEST).hexdigest()
+
+
+@pytest.mark.parametrize("data", [SAVED_NEST, utf8(nest_text(sheets=(sheet(),), runs=("TESS01.TAP",)))],
+                         ids=["utf-16", "utf-8"])
+def test_scenario_63_with_no_toolkit_a_good_nest_and_clean_programs_never_read_nest_checked(make_world, data):
+    # The point of the guard. Every file is right, and only Jim's own checks can say so.
+    world = make_world()
+    ready(world)
+    world.run(minutes=1)
+    post(world, GUARD_JOB, CLASSIC_FOLDER, "TESS01.TAP", CLEAN)
+    save_nest(world, data)
+
+    world.run(minutes=OPEN_MINUTES * 3)
+
+    assert watch.nest_checks(world.ctx) is None
+    assert nest_of(world).state == "not_checked"
+    assert nest_of(world).reasons == (templates.programs_read_note(
+        at=nest_of(world).updated_at, sheet="49x97"),)
+    assert nest_of(world).checked_at is None
+    assert to_george(world) == [] and guards_dev(world) == set()
+    assert {t.key: t.state for t in world.board().jobs[0].ticks}["nest"] == "todo"
+
+
+def test_scenario_64_a_program_the_nest_names_and_isnt_there_is_a_finding_and_an_extra_one_is_a_log_line(
+        make_world):
+    # RULES 722-726, build spec 5.11. 65 of 551 real programs are hand-named, so an extra says little.
+    world = make_world()
+    ready(world)
+    world.run(minutes=1)
+    post(world, GUARD_JOB, CLASSIC_FOLDER, "TESS01.TAP", CLEAN)
+    post(world, GUARD_JOB, CLASSIC_FOLDER, "TESfixRM.TAP", program(mark=3))
+    save_nest(world, utf16(nest_text(sheets=(sheet(),), runs=("TESS01.TAP", "TESS02.TAP"))))
+
+    world.run(minutes=OPEN_MINUTES)
+
+    nest = nest_of(world)
+    assert nest.state == "not_checked"
+    assert "The nest names program TESS02, and it is not in the folder" in nest.reasons
+    assert not any("TESfixRM" in reason for reason in nest.reasons)
+    assert to_george(world) == [] and world.tray.colour != "red"      # no doubt is ever a DO NOT CUT
+    logged = [e for e in list_events(world.store) if e.kind == "program_not_in_nest"]
+    assert len(logged) == 1 and "TESfixRM" in logged[0].text and logged[0].lane == "LOG"
+
+    # The post lands, and the finding goes.
+    post(world, GUARD_JOB, CLASSIC_FOLDER, "TESS02.TAP", program(mark=4))
+    world.run(minutes=3)
+    assert not any("not in the folder" in reason for reason in nest_of(world).reasons)
+
+
+@pytest.mark.parametrize("data", [
+    b"not a nest", SAVED_NEST[:200], nest_text(sheets=(sheet(),)).encode("utf-16-le"),
+    utf8(nest_text(sheets=(sheet(quan="many"),))), utf8("<OptimizeJob/>"),
+], ids=["not a nest", "cut off", "utf-16 with no bom", "a sheet not as documented", "nothing in it"])
+def test_scenario_65_a_nest_that_wont_read_is_not_checked_says_so_and_tells_sulaiman_once(make_world, data):
+    world = make_world()
+    ready(world)
+    world.run(minutes=1)
+    post(world, GUARD_JOB, CLASSIC_FOLDER, "TESS01.TAP", CLEAN)
+    world.run(minutes=2)
+
+    save_nest(world, data)
+    world.run(minutes=OPEN_MINUTES * 2)
+
+    assert nest_of(world).state == "not_checked"
+    assert templates.NEST_UNREADABLE in nest_of(world).reasons
+    assert to_george(world) == [] and world.tray.colour != "red"
+    item, = [d for d in world.dev() if d.code == "nest_unreadable"]
+    assert GUARD_JOB in item.text and "Traceback" not in item.text
+
+    save_nest(world, SAVED_NEST)
+    world.run(minutes=OPEN_MINUTES)
+    assert templates.NEST_UNREADABLE not in nest_of(world).reasons
+    assert "nest_unreadable" not in guards_dev(world)
+
+
+def test_scenario_65b_a_nest_only_in_the_cloud_tries_again_and_tells_sulaiman_after_ten_minutes(
+        make_world, monkeypatch):
+    world = make_world()
+    ready(world)
+    world.run(minutes=1)
+    post(world, GUARD_JOB, CLASSIC_FOLDER, "TESS01.TAP", CLEAN)
+    world.run(minutes=2)
+    real = guards_scan_module.read_shared
+    away = {"yes": True}
+
+    def cloud(path: Path) -> bytes:
+        if path.suffix == ".opt" and away["yes"]:
+            raise CloudOnly(f"{path.name} is only in the cloud.", 362)
+        return real(path)
+
+    monkeypatch.setattr(guards_scan_module, "read_shared", cloud)
+    save_nest(world)
+    world.run(minutes=OPEN_MINUTES)
+    assert templates.NEST_UNREADABLE in nest_of(world).reasons and guards_dev(world) == set()
+
+    world.run(minutes=10)
+    assert guards_dev(world) == {"nest_unreadable"}
+
+    away["yes"] = False
+    world.run(minutes=2)
+    assert nest_of(world).opt_sha256 == hashlib.sha256(SAVED_NEST).hexdigest()
+    assert guards_dev(world) == set()
+
+
+def test_scenario_65c_mozaik_shared_out_of_reach_costs_nothing_and_concludes_nothing(make_world):
+    world = make_world()
+    post(world, GUARD_JOB, CLASSIC_FOLDER, "TESS01.TAP", CLEAN)
+    save_nest(world)
+    ready(world)
+    world.run(minutes=2)
+    aside = world.tmp / "aside"
+    os.replace(world.mozaik / "Jobs", aside)
+    world.run(minutes=OPEN_MINUTES)
+
+    assert guards_dev(world) == set() and nest_of(world).state == "not_checked"
+
+    os.replace(aside, world.mozaik / "Jobs")
+    world.run(minutes=OPEN_MINUTES)
+    assert guards_dev(world) == set()
+
+
+def test_scenario_65d_a_listing_that_empties_for_a_while_raises_nothing_when_it_comes_back(make_world):
+    # A cloud drive starting up shows an empty folder (docs/decisions.md). What comes back unchanged is
+    # what it was: if not, every old nest with no sheets would ask to be saved, all at once.
+    world = make_world()
+    save_nest(world, NOT_SAVED)
+    save_nest(world, b"not a nest", material="1-4 Egger Classic White")
+    (job_folder(world) / "MozaikJob.LCK").write_bytes(b"JDELA\r\n")
+    ready(world)
+    world.run(minutes=2)
+    jobs = world.mozaik / "Jobs"
+    aside = world.tmp / "aside"
+    os.replace(jobs, aside)
+    jobs.mkdir()
+
+    world.run(minutes=10)
+    assert world.board().your_list == () and guards_dev(world) == set()
+
+    jobs.rmdir()
+    os.replace(aside, jobs)
+    world.run(minutes=10)
+
+    assert nest_of(world) is None and nest_of(world, material="1-4 Egger Classic White") is None
+    assert world.board().your_list == () and guards_dev(world) == set()
+
+
+def test_scenario_65e_a_lock_gone_with_its_folder_is_no_longer_shown(make_world):
+    world = make_world()
+    ready(world)
+    world.run(minutes=1)
+    post(world, GUARD_JOB, CLASSIC_FOLDER, "TESS01.TAP", CLEAN)
+    lock = job_folder(world) / "MozaikJob.LCK"
+    lock.parent.mkdir(parents=True)
+    lock.write_bytes(b"JDELA\r\n")
+    world.run(minutes=3)
+    assert any("Open in Mozaik" in note for note in world.board().jobs[0].notes)
+
+    shutil.rmtree(job_folder(world))
+    world.run(minutes=3)
+
+    assert not any("Open in Mozaik" in note for note in world.board().jobs[0].notes)
+
+
+def test_scenario_66_every_check_passing_is_nest_checked_bound_to_its_files(make_world, checks):
+    world = make_world()
+    passed(world, checks)
+
+    nest = nest_of(world)
+    assert nest.state == "nest_checked" and nest.basis == "nest"
+    assert nest.opt_sha256 == hashlib.sha256(SAVED_NEST).hexdigest()
+    assert nest.manifest == {"TESS01.TAP": hashlib.sha256(CLEAN).hexdigest()}
+    assert nest.room_hashes == {"Room1.des": hashlib.sha256(ROOM).hexdigest()}
+    assert nest.checked_at is not None
+    assert nest.reasons[0].startswith("Nest checked") and "TESS01" in nest.reasons[0]
+    assert {t.key: t.state for t in world.board().jobs[0].ticks}["nest"] == "done"
+    told = to_george(world, "Nest checked")
+    assert len(told) == 1 and not told[0].urgent
+    assert len(checks.ran_on) == 1
+
+    world.run(minutes=30)                           # nothing new: no run of the checks, nothing more
+    assert len(checks.ran_on) == 1 and len(to_george(world, "Nest checked")) == 1
+    assert nest_of(world).state == "nest_checked"
+
+
+def _not_checked_at_once(world: World) -> None:
+    """A pass never stands while what it rests on is moving: within one poll."""
+    world.run(minutes=1)
+    assert nest_of(world).state == "not_checked"
+    assert nest_of(world).reasons == (templates.NEST_CHANGED,)
+
+
+@pytest.mark.parametrize("change", [
+    pytest.param(lambda w: save_nest(w, utf16(nest_text(sheets=(sheet(quan=2),), runs=("TESS01.TAP",)))),
+                 id="the nest"),
+    pytest.param(lambda w: post(w, GUARD_JOB, CLASSIC_FOLDER, "TESS01.TAP", program(mark=9)),
+                 id="a program"),
+    pytest.param(lambda w: (job_folder(w) / "Room1.des").write_bytes(ROOM + b"changed"), id="a room"),
+    pytest.param(lambda w: (job_folder(w) / "Room2.des").write_bytes(ROOM), id="a room added"),
+    pytest.param(lambda w: post(w, GUARD_JOB, CLASSIC_FOLDER, "TESS02.TAP", program(mark=8)),
+                 id="a program added"),
+])
+def test_scenario_67_any_change_to_what_a_pass_rests_on_puts_it_back_to_not_checked(make_world, checks,
+                                                                                    change):
+    # Design 5: a pass is stored as .opt hash + TAP manifest + room hashes.
+    world = make_world()
+    passed(world, checks)
+    checks.code = COULD_NOT_VERIFY                  # what a real check of the new files can't yet say
+
+    change(world)
+    _not_checked_at_once(world)
+    world.run(minutes=OPEN_MINUTES)
+
+    assert nest_of(world).state == "not_checked" and nest_of(world).checked_at is None
+    assert len(checks.ran_on) == 2
+    told = to_george(world, "NOT CHECKED")
+    assert len(told) == 1 and "changed since it was checked" in told[0].lines[0]
+    assert len(to_george(world, "Nest checked")) == 1
+    assert {t.key: t.state for t in world.board().jobs[0].ticks}["nest"] == "todo"
+
+
+def test_scenario_67c_a_nest_gone_puts_it_back_and_nothing_alarms(make_world, checks):
+    world = make_world()
+    passed(world, checks)
+    (job_folder(world) / f"{CLASSIC_FOLDER}.opt").unlink()
+
+    _not_checked_at_once(world)
+    world.run(minutes=OPEN_MINUTES)
+
+    assert nest_of(world).state == "not_checked" and nest_of(world).checked_at is None
+    assert to_george(world, "DO NOT CUT") == [] and len(to_george(world, "NOT CHECKED")) == 1
+
+
+def test_scenario_67g_a_nest_gone_and_back_unchanged_is_checked_again_and_passes(make_world, checks):
+    world = make_world()
+    passed(world, checks)
+    path = job_folder(world) / f"{CLASSIC_FOLDER}.opt"
+    aside = world.tmp / "aside.opt"
+    os.replace(path, aside)
+    world.run(minutes=OPEN_MINUTES)
+    assert nest_of(world).state == "not_checked" and nest_of(world).checked_at is None
+
+    os.replace(aside, path)
+    world.run_until(nest_is(world, "nest_checked"), within=minutes(OPEN_MINUTES))
+    assert len(checks.ran_on) == 2
+
+
+def test_scenario_67h_a_nest_that_cant_be_read_for_now_concludes_nothing_for_ten_minutes(
+        make_world, checks, monkeypatch):
+    # Nothing is concluded from what can't be seen. It reads NOT CHECKED, as it must, and George hears
+    # only once it has stayed so for as long as a program may take to arrive.
+    world = make_world()
+    passed(world, checks)
+    told = len(world.outbox(to="george"))
+    real = guards_scan_module.read_shared
+    away = {"yes": True}
+
+    def cloud(path: Path) -> bytes:
+        if path.suffix == ".opt" and away["yes"]:
+            raise CloudOnly(f"{path.name} is only in the cloud.", 362)
+        return real(path)
+
+    monkeypatch.setattr(guards_scan_module, "read_shared", cloud)
+    path = job_folder(world) / f"{CLASSIC_FOLDER}.opt"
+    stat = path.stat()
+    os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns + 5_000_000_000))
+
+    world.run(minutes=OPEN_MINUTES)
+    assert nest_of(world).state == "not_checked" and nest_of(world).checked_at is not None
+    assert len(world.outbox(to="george")) == told
+
+    away["yes"] = False
+    world.run_until(nest_is(world, "nest_checked"), within=minutes(2))
+    assert len(world.outbox(to="george")) == told and len(checks.ran_on) == 1
+
+
+def test_scenario_67i_a_nest_that_stays_unreadable_loses_its_pass_and_george_hears(
+        make_world, checks, monkeypatch):
+    world = make_world()
+    passed(world, checks)
+    real = guards_scan_module.read_shared
+
+    def cloud(path: Path) -> bytes:
+        if path.suffix == ".opt":
+            raise CloudOnly(f"{path.name} is only in the cloud.", 362)
+        return real(path)
+
+    monkeypatch.setattr(guards_scan_module, "read_shared", cloud)
+    path = job_folder(world) / f"{CLASSIC_FOLDER}.opt"
+    stat = path.stat()
+    os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns + 5_000_000_000))
+
+    world.run(minutes=20)
+
+    assert nest_of(world).state == "not_checked" and nest_of(world).checked_at is None
+    assert len(to_george(world, "NOT CHECKED")) == 1
+    assert guards_dev(world) == {"nest_unreadable"}
+
+
+def test_scenario_67d_the_same_bytes_saved_again_stand_as_they_were_and_tell_nobody(make_world, checks):
+    # How We Work 94: Mozaik re-saves the .opt on close, so the time alone says nothing. By content.
+    world = make_world()
+    passed(world, checks)
+    told, at = len(world.outbox(to="george")), nest_of(world).checked_at
+    path = job_folder(world) / f"{CLASSIC_FOLDER}.opt"
+    stat = path.stat()
+    os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns + 5_000_000_000))
+
+    _not_checked_at_once(world)
+    world.run_until(nest_is(world, "nest_checked"), within=minutes(OPEN_MINUTES))
+
+    assert nest_of(world).checked_at == at
+    assert len(checks.ran_on) == 1              # no new run: the hashes are what the pass names
+    assert len(world.outbox(to="george")) == told
+
+
+def test_scenario_67e_a_pass_with_a_new_nest_that_passes_again_is_told_as_new(make_world, checks):
+    world = make_world()
+    passed(world, checks)
+    first = nest_of(world).checked_at
+
+    save_nest(world, utf16(nest_text(sheets=(sheet(quan=2),), runs=("TESS01.TAP",))))
+    _not_checked_at_once(world)
+    world.run_until(nest_is(world, "nest_checked"), within=minutes(OPEN_MINUTES))
+
+    assert nest_of(world).checked_at > first
+    assert len(to_george(world, "Nest checked")) == 2
+
+
+def test_scenario_67f_a_pass_outlasts_a_restart_and_still_falls_to_a_change_after_it(make_world, checks):
+    world = make_world()
+    passed(world, checks)
+    world.restart()
+    world.run(minutes=5)
+    assert nest_of(world).state == "nest_checked" and len(checks.ran_on) == 1
+
+    save_nest(world, NOT_SAVED)
+    world.run(minutes=1)
+    assert nest_of(world).state == "not_checked"
+    world.run_until(nest_is(world, "save_nest"), within=minutes(OPEN_MINUTES))
+
+
+def test_scenario_68_a_failed_check_is_do_not_cut_in_its_own_fixed_line(make_world, checks):
+    # Build spec 5.3, row 5. Never from a doubt: only from a check that says it failed.
+    world = make_world()
+    checks.code, checks.line = FAILED, "A made-up fixed line of a failed check"
+    ready(world)
+    world.run(minutes=1)
+    post(world, GUARD_JOB, CLASSIC_FOLDER, "TESS01.TAP", CLEAN)
+    save_nest(world)
+    world.run_until(nest_is(world, "do_not_cut"), within=minutes(OPEN_MINUTES))
+
+    assert nest_of(world).basis == "nest"
+    told = to_george(world, "DO NOT CUT")
+    assert len(told) == 1 and told[0].urgent and "made-up fixed line" in told[0].lines[0]
+
+
+def test_scenario_68d_a_fault_gone_by_a_pass_says_checked_and_never_that_it_reads_not_checked(
+        make_world, checks):
+    world = make_world()
+    checks.code, checks.line = FAILED, "A made-up fixed line of a failed check"
+    ready(world)
+    world.run(minutes=1)
+    post(world, GUARD_JOB, CLASSIC_FOLDER, "TESS01.TAP", CLEAN)
+    save_nest(world)
+    world.run_until(nest_is(world, "do_not_cut"), within=minutes(OPEN_MINUTES))
+
+    checks.code, checks.line = PASSED, ""
+    save_nest(world, utf16(nest_text(sheets=(sheet(quan=2),), runs=("TESS01.TAP",))))
+    world.run_until(nest_is(world, "nest_checked"), within=minutes(OPEN_MINUTES))
+
+    assert nest_of(world).george_told_at is None
+    assert len(to_george(world, "Nest checked")) == 1
+    assert to_george(world, "No longer DO NOT CUT") == []
+
+
+def test_scenario_68e_our_check_finding_what_jims_passes_is_do_not_cut_and_tells_sulaiman(make_world, checks):
+    # Case B, measured: Jim's sheet size check reads the header's size only, so a hand-added sheet
+    # passes it, and only the programs show it. Either's fault is DO NOT CUT; the disagreement is DEV's.
+    world = make_world()
+    ready(world)
+    world.run(minutes=1)
+    post(world, GUARD_JOB, CLASSIC_FOLDER, "TESS01.TAP", ON_61)
+    save_nest(world)
+    world.run_until(nest_is(world, "do_not_cut"), within=minutes(OPEN_MINUTES))
+    world.run(minutes=OPEN_MINUTES)
+
+    item, = [d for d in world.dev() if d.code == "checks_disagree"]
+    assert item.text == (f"{GUARD_JOB} 3/4 Egger Classic White: the sheet size checks disagree."
+                         " NG Runner's check finds a fault and Jim's doesn't.")
+    assert nest_of(world).state == "do_not_cut"
+
+
+def test_scenario_68f_jims_check_finding_what_ours_passes_is_do_not_cut_and_tells_sulaiman(make_world, checks):
+    # Case E and H, measured: a header on the wrong sheet whose parts fit, which the programs can't show.
+    world = make_world()
+    checks.code, checks.line = FAILED, "A made-up fixed line of a failed check"
+    ready(world)
+    world.run(minutes=1)
+    post(world, GUARD_JOB, CLASSIC_FOLDER, "TESS01.TAP", CLEAN)
+    save_nest(world)
+    world.run_until(nest_is(world, "do_not_cut"), within=minutes(OPEN_MINUTES))
+
+    said = sorted(d.text for d in world.dev() if d.code == "checks_disagree")
+    assert said == [f"{GUARD_JOB} 3/4 Egger Classic White: the doubled holes checks disagree. Jim's check"
+                    " finds a fault and NG Runner's doesn't.",
+                    f"{GUARD_JOB} 3/4 Egger Classic White: the sheet size checks disagree. Jim's check"
+                    " finds a fault and NG Runner's doesn't."]
+
+
+def test_scenario_68g_checks_that_agree_or_couldnt_say_tell_sulaiman_nothing(make_world, checks):
+    world = make_world()
+    passed(world, checks)
+    assert "checks_disagree" not in guards_dev(world)
+
+    checks.code = COULD_NOT_VERIFY
+    post(world, GUARD_JOB, CLASSIC_FOLDER, "TESS01.TAP", ON_61)
+    world.run(minutes=OPEN_MINUTES + 2)
+    assert "checks_disagree" not in guards_dev(world)
+
+
+def test_scenario_68b_a_check_that_breaks_is_no_pass_and_goes_to_sulaiman(make_world, monkeypatch):
+    def broken(_job: Any) -> Any:
+        raise RuntimeError("a check fell over")
+
+    monkeypatch.setattr(watch, "nest_checks", lambda ctx: broken)
+    world = make_world()
+    ready(world)
+    world.run(minutes=1)
+    post(world, GUARD_JOB, CLASSIC_FOLDER, "TESS01.TAP", CLEAN)
+    save_nest(world)
+    world.run(minutes=OPEN_MINUTES)
+
+    assert nest_of(world).state == "not_checked"
+    world.run(minutes=5)                            # it stands until a check runs clean
+    assert guards_dev(world) == {"nest_check_failed"}
+    assert "a check fell over" not in " ".join(d.text for d in world.dev())
+
+    monkeypatch.setattr(watch, "nest_checks", lambda ctx: Checks(COULD_NOT_VERIFY))
+    save_nest(world, utf16(nest_text(sheets=(sheet(quan=2),), runs=("TESS01.TAP",))))
+    world.run(minutes=OPEN_MINUTES)
+    assert guards_dev(world) == set() and nest_of(world).state == "not_checked"
+
+
+def test_scenario_68c_in_shadow_mode_a_pass_and_its_loss_go_only_to_sulaiman_marked(make_world, checks):
+    world = make_world(mode="shadow")
+    passed(world, checks)
+    checks.code = COULD_NOT_VERIFY
+    save_nest(world, utf16(nest_text(sheets=(sheet(quan=2),), runs=("TESS01.TAP",))))
+    world.run(minutes=OPEN_MINUTES + 1)
+
+    assert to_george(world) == []
+    subjects = [m.subject for m in world.outbox(to="sulaiman")]
+    assert any(s.startswith("SHADOW Nest checked") for s in subjects)
+    assert any(s.startswith("SHADOW NOT CHECKED") for s in subjects)
+
+
+def test_scenario_69_the_owner_log_keeps_what_locks_name_and_another_owner_goes_to_dev(make_world):
+    # FAILURES 12, 49: UNS on a closed job, swapped for LCK on open. Decision 4.
+    world = make_world()
+    save_nest(world)
+    (job_folder(world) / "MozaikJob.UNS").write_bytes(b"JDELA\r\n")
+    ready(world)
+    world.run(minutes=3)
+    log = list_owner_log(world.store)
+    assert [(r.folder, r.file, r.owner) for r in log] == [(GUARD_JOB, "MozaikJob.UNS", "JDELA")]
+    assert guards_dev(world) == set()
+
+    world.run(minutes=5)                            # nothing changed: nothing more
+    assert len(list_owner_log(world.store)) == 1
+
+    # Mozaik opens it: UNS gives way to LCK.
+    (job_folder(world) / "MozaikJob.UNS").unlink()
+    (job_folder(world) / "MozaikJob.LCK").write_bytes(b"JDELA\r\n")
+    world.run(minutes=2)
+    assert [r.file for r in list_owner_log(world.store)] == ["MozaikJob.UNS", "MozaikJob.LCK"]
+    assert guards_dev(world) == set()
+
+    # Somebody else: at once, and once.
+    (job_folder(world) / "OptimizeJob.LCK").write_bytes(b"GEORGE\r\n")
+    world.run(minutes=2)
+    item, = [d for d in world.dev() if d.code == "lock_owner_other"]
+    assert "GEORGE" in item.text and "JDELA" in item.text
+    world.run(minutes=5)
+    assert len([d for d in world.dev() if d.code == "lock_owner_other"]) == 1
+
+    # Every lock is exactly where it was left.
+    assert (job_folder(world) / "MozaikJob.LCK").read_bytes() == b"JDELA\r\n"
+    assert (job_folder(world) / "OptimizeJob.LCK").read_bytes() == b"GEORGE\r\n"
+
+
+def test_scenario_69b_the_board_shows_a_locks_owner_and_age_and_when_it_goes(make_world):
+    world = make_world()
+    ready(world)
+    world.run(minutes=1)
+    post(world, GUARD_JOB, CLASSIC_FOLDER, "TESS01.TAP", CLEAN)
+    lock = job_folder(world) / "MozaikJob.LCK"
+    lock.parent.mkdir(parents=True)
+    lock.write_bytes(b"JDELA\r\n")
+    when = (world.clock.now() - timedelta(days=2)).timestamp()
+    os.utime(lock, (when, when))
+    world.run(minutes=3)
+
+    row, = world.board().jobs
+    assert any("Open in Mozaik by JDELA" in note and "2 days" in note for note in row.notes)
+
+    world.run(minutes=60 * 24)
+    row, = world.board().jobs
+    assert any("3 days" in note for note in row.notes)     # its age goes on with no new read
+
+    lock.unlink()
+    world.run(minutes=2)
+    assert not any("Mozaik" in note for note in world.board().jobs[0].notes)
+
+
+def test_scenario_69c_nothing_gates_on_a_lock_or_on_mozaik_running(make_world, monkeypatch):
+    # Build spec 5.12: nothing gates on it in P1b. A DO NOT CUT must get out while a job is open.
+    monkeypatch.setattr(guards_scan_module, "mozaik_running", lambda: True)
+    world = make_world()
+    save_nest(world)
+    (job_folder(world) / "MozaikJob.LCK").write_bytes(b"JDELA\r\n")
+    ready(world)
+    world.run(minutes=2)
+
+    post(world, GUARD_JOB, CLASSIC_FOLDER, "TESS01.TAP", DOUBLED)
+    world.run_until(nest_is(world, "do_not_cut"), within=minutes(2))
+
+    assert len(to_george(world, "DO NOT CUT")) == 1
+    assert (job_folder(world) / "MozaikJob.LCK").exists()
+
+
+def test_scenario_69d_health_says_what_the_observer_found(make_world, monkeypatch):
+    answers = {"now": True}
+    monkeypatch.setattr(guards_scan_module, "mozaik_running", lambda: answers["now"])
+    world = make_world()
+    ready(world)
+    world.run(minutes=2)
+    assert world.sup._health().mozaik == "Running"
+
+    for said, words in ((False, "Not running"), (None, "Could not tell")):
+        answers["now"] = said
+        world.run(minutes=2)
+        assert world.sup._health().mozaik == words
+
+
+def test_scenario_69e_a_lock_that_cant_be_read_logs_nothing_and_breaks_nothing(make_world, monkeypatch):
+    world = make_world()
+    real = guards_scan_module.read_shared
+
+    def cloud(path: Path) -> bytes:
+        if path.suffix.casefold() in (".uns", ".lck"):
+            raise CloudOnly(f"{path.name} is only in the cloud.", 362)
+        return real(path)
+
+    monkeypatch.setattr(guards_scan_module, "read_shared", cloud)
+    save_nest(world)
+    (job_folder(world) / "MozaikJob.LCK").write_bytes(b"JDELA\r\n")
+    post(world, GUARD_JOB, CLASSIC_FOLDER, "TESS01.TAP", CLEAN)
+    ready(world)
+    world.run(minutes=3)
+
+    assert list_owner_log(world.store) == [] and guards_dev(world) == set()
 
 
 @pytest.mark.fixtures

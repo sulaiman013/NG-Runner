@@ -229,7 +229,7 @@ function setupProblems_() {
   } catch (err) {
     problems.push('the control folder could not be opened: ' + err.message);
   }
-  return problems.concat(sheetProblems_(), channelProblems_(), hoursProblems_());
+  return problems.concat(sheetProblems_(), channelProblems_(), hoursProblems_(), ngJobsProblems_());
 }
 
 function sheetProblems_() {
@@ -243,10 +243,24 @@ function sheetProblems_() {
   }
 }
 
-/** The alert role's channel must be able to send, and Jim's, except during the shadow run. */
+/** NG Jobs is only read, and only for the watchdog's NOT CHECKED (Watchdog.gs): this says if it can't. */
+function ngJobsProblems_() {
+  var id = setting_('NG_JOBS_FOLDER_ID');
+  if (id === null) return [];
+  try {
+    DriveApp.getFolderById(id).getName();
+    return [];
+  } catch (err) {
+    return ["NG Jobs could not be opened with NG_JOBS_FOLDER_ID, so a post while NG Runner is offline can't be found"];
+  }
+}
+
+/** The alert role's channel must be able to send, and Jim's, except during the shadow run. George and
+ * Will are asked for once the guards are on (GUARDS_ON, P1b build spec 5.6). */
 function channelProblems_() {
   var wanted = [[alertRole_(), 'email']];
   if (!shadowRun_()) wanted.unshift(['jim', 'email']);
+  if (flagSetting_('GUARDS_ON')) wanted.push(['george', 'email'], ['will', 'email']);
   var problems = [];
   wanted.forEach(function (pair) {
     var role = pair[0];

@@ -62,6 +62,9 @@ Roles are NG Runner's (`jim`, `barbara`, `will`, `george`, `sulaiman`, `backup_c
 | `ALERT_ROLE`, `ALERT_NAME` | Who the watchdog alerts, and the name Jim's message gives. Default `sulaiman` and `Sulaiman`; while he is away, set the backup contact |
 | `SHADOW` | `true` during the shadow run (`docs/testing/jims-pc.md`, window 3), when NG Runner sends everything to Sulaiman. While it is set, a digest to `ALERT_ROLE` is the morning list; no digest by 7:00 AM sends `ALERT_ROLE` "SHADOW No list today", and never tells Jim; and `checkSetup` does not ask for Jim's channel. NG Runner's copies go to the role `sulaiman`, so keep `ALERT_ROLE` at that for the run. Clear it as NG Runner goes live (window 4): a digest to Jim doesn't count while it is set, so a `SHADOW` left on shows itself the next morning |
 
+| `NG_JOBS_FOLDER_ID` | The NG Jobs folder's Drive ID (from its address). With `ROLE_GEORGE_EMAIL` set too, a gap in the heartbeat also tells George of any material folder updated since the last heartbeat. Unset: no walk. `checkSetup` says if this account can't open it |
+| `GUARDS_ON` | `true` once the guards should reach George and Will: `checkSetup` then asks for their addresses |
+
 The script keeps its own state in Script Properties too: `state.*` (sequence numbers, the last heartbeat, the digest day, owed receipts, what Google refused to trash on the last prune), `done.<id>` and `refused.<id>` (one per outbox message, dropped after 31 days). Leave them alone, except as the runbook says.
 
 ## What NG Runner must match

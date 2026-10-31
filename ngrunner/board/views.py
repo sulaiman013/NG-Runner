@@ -177,6 +177,7 @@ class HealthView:
     alarms: tuple[str, ...] = ()
     leftover_temps: tuple[Path, ...] = ()
     app_version: str = ""
+    mozaik: str = ""                     # what the observer last found, in words; "" not looked yet
 
     def __post_init__(self) -> None:
         for name in ("last_export", "list_synced_at", "heartbeat"):

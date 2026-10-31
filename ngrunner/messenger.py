@@ -65,9 +65,10 @@ ROLE_BARBARA = "barbara"
 ROLE_SULAIMAN = "sulaiman"
 OFFICE_HOURS_ONLY = (ROLE_BARBARA, "will", "george")   # their email waits out quiet hours
 DO_NOT_CUT = "DO NOT CUT"             # the one exception to quiet hours (P1b on)
-# What closes that alarm: George heard of it at any hour, so he hears this at any hour too. Only a
-# DO NOT CUT itself reaches a phone at night.
-_CLOSES_THE_ALARM = ("Cleared by Jim", "No longer DO NOT CUT")
+# What closes that alarm: George heard of it at any hour, so he hears this at any hour too. So does
+# a NOT CHECKED: he may be cutting from a pass that no longer stands (design 4). Only a DO NOT CUT
+# itself reaches a phone at night.
+_CLOSES_THE_ALARM = ("Cleared by Jim", "No longer DO NOT CUT", "NOT CHECKED")
 _HELD = "messenger.held"              # state key: messages waiting out quiet hours
 # A stream counts a few a day, so only a restore's jump of 1,000,000 puts a queued row this far
 # behind it, and the Apps Script would refuse its number with no receipt.

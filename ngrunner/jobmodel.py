@@ -57,12 +57,13 @@ from ngrunner.board.views import (
     tray_tooltip,
 )
 from ngrunner.cards import Card, age_days, card_from_record, reminder_due
-from ngrunner.clock import Clock, fmt_clock, fmt_date, fmt_day, pacific_day
+from ngrunner.clock import Clock, fmt_clock, fmt_date, fmt_day, from_iso, pacific_day
 from ngrunner.config import Settings
 from ngrunner.digest import DigestView, JobLine
 from ngrunner.fab import install_date
 from ngrunner.guards.headsup import UNREADABLE_NOTE
-from ngrunner.guards.kept import folder_of_card, saved_preflights, takeoffs_said
+from ngrunner.guards.kept import folder_of_card, nest_files_said, saved_preflights, takeoffs_said
+from ngrunner.guards.observer import OPTIMIZER_LOCK
 from ngrunner.interlock import GARAGE_SUFFIX
 from ngrunner.intake.pipeline import (
     CLOSED_BY_FILING, FETCH_STUCK, TRIAL_ONLY_EVENT, all_filed_facts, filed_facts, filed_note_of,
@@ -108,6 +109,7 @@ _TICKS = (
     ("nest", "Nest"),
 )
 _NOT_CHECKED_SHOWN = 10                # every post reads so until the toolkit is here
+_ASKS_SOMETHING = ("do_not_cut", "save_nest")    # a material that keeps its row whatever else
 _NOT_ON_THE_BOARD = ("seen_at_install", "gone")  # a row with no job in these: nothing will happen
 _ROW_WAITS = ("new", "waiting_list", "matched")  # a row in these moves on by itself
 
@@ -170,6 +172,7 @@ class _Facts:
     nests: tuple[NestRecord, ...] = ()      # every material with something posted or from before
     toolkit_adopted: bool = False           # a posted NOT CHECKED means something only then
     lock: dict[str, dict[str, Any]] = field(default_factory=dict)      # the last pre-flights
+    held: dict[str, list[Any]] = field(default_factory=dict)           # lock files, by folder
     takeoffs: dict[str, dict[str, Any]] = field(default_factory=dict)  # by folder
     card_folders: dict[str, str] = field(default_factory=dict)         # cards with no job or row
     ng_jobs: Path | None = None
@@ -203,6 +206,8 @@ def _read(store: Store, now: datetime, settings: Settings | None = None) -> _Fac
         nests=nests,
         toolkit_adopted=any(snapshot.adopted for snapshot in list_snapshots(store)),
         lock=saved_preflights(store),
+        held={folder.casefold(): said["held"]
+              for folder, said in (nest_files_said(store) or {}).items() if said.get("held")},
         takeoffs=takeoffs_said(store),
         card_folders=card_folders,
         ng_jobs=None if settings is None else settings.ng_jobs,
@@ -351,7 +356,7 @@ def _folder_rows(facts: _Facts) -> list[JobRow]:
     rows = []
     for folder in sorted({*nests_of, *cards_of, *unread}):
         nests = nests_of.get(folder, [])
-        if (any(nest.posted_at or nest.state == "do_not_cut" for nest in nests)
+        if (any(nest.posted_at or nest.state in _ASKS_SOMETHING for nest in nests)
                 or folder in cards_of or folder in unread):
             cards = cards_of.get(folder, ())
             rows.append(JobRow(
@@ -359,7 +364,7 @@ def _folder_rows(facts: _Facts) -> list[JobRow]:
                 ticks=_ticks(nest=_nest_tick(nests)),
                 next_step=_card_step(cards[0]) if cards else templates.FOLDER_STEP,
                 materials=_material_rows(nests, facts),
-                notes=_takeoff_notes((folder,), facts),
+                notes=_notes((folder,), facts),
                 lock=_lock_lines((folder,), facts)))
     return rows
 
@@ -372,9 +377,15 @@ def _material_rows(nests: Iterable[NestRecord], facts: _Facts) -> tuple[Material
         trial=nest.trial and nest.posted_at is not None) for nest in nests)
 
 
-def _takeoff_notes(folders: Iterable[str], facts: _Facts) -> tuple[str, ...]:
+def _notes(folders: Iterable[str], facts: _Facts) -> tuple[str, ...]:
+    """A takeoff that won't read, and who the job's lock files name and for how long (build spec
+    5.12). The lock's age is worked out here, so it goes on with nothing new read."""
+    folders = tuple(folders)
     bad = any(facts.takeoffs.get(folder, {}).get("bad") for folder in folders)
-    return (UNREADABLE_NOTE,) if bad else ()
+    held = [templates.lock_held(file == OPTIMIZER_LOCK, owner,
+                                max(facts.now - from_iso(since), timedelta(0)))
+            for folder in folders for file, owner, since in facts.held.get(folder.casefold(), ())]
+    return (*((UNREADABLE_NOTE,) if bad else ()), *held)
 
 
 def _lock_lines(folders: Iterable[str], facts: _Facts) -> tuple[str, ...]:
@@ -388,7 +399,7 @@ def _still_on_the_board(j: _JobFacts, now: datetime) -> bool:
     folder, its events in History and "add job" still know it."""
     if j.cards or j.dev or any(r.state != "gone" for r in j.rows):
         return True
-    if any(nest.state == "do_not_cut" for nest in j.nests):
+    if any(nest.state in _ASKS_SOMETHING for nest in j.nests):
         return True
     if any(not p.kind.startswith("refetch") for p in j.pending):
         return True
@@ -412,7 +423,7 @@ def _job_row(store: Store, j: _JobFacts, facts: _Facts, *, paused: bool) -> JobR
         next_step=_next_step(store, j, overlay, facts.now),
         overlay=overlay,
         materials=_material_rows(j.nests, facts),
-        notes=_takeoff_notes(j.folders, facts),
+        notes=_notes(j.folders, facts),
         lock=_lock_lines(j.folders, facts),
     )
 
@@ -721,11 +732,19 @@ def _your_list(facts: _Facts, *, paused: bool) -> list[tuple[datetime, ListItem]
         if blocked is not None:
             items.append(blocked)
     items += [_do_not_cut_item(nest, facts) for nest in _do_not_cuts(facts)]
+    items += [_save_nest_item(nest, facts) for nest in facts.nests if nest.state == "save_nest"]
     return sorted(items, key=lambda item: item[0])
 
 
 def _do_not_cuts(facts: _Facts) -> list[NestRecord]:
     return [nest for nest in facts.nests if nest.state == "do_not_cut"]
+
+
+def _save_nest_item(nest: NestRecord, facts: _Facts) -> tuple[datetime, ListItem]:
+    return nest.updated_at, ListItem(
+        _ended(_fit(templates.open_save_nest(nest.folder, nest.material),
+                    "A nest needs saving in the Optimizer; see the board")),
+        job=nest.folder, age_days=(facts.now - nest.updated_at) // timedelta(days=1))
 
 
 def _do_not_cut_item(nest: NestRecord, facts: _Facts) -> tuple[datetime, ListItem]:

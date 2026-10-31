@@ -515,3 +515,68 @@ def test_the_self_test_runs_the_guards_readers(tmp_path, monkeypatch):
 def test_what_really_goes_to_barbara_and_will_has_an_example_in_the_self_test():
     assert any(getattr(message, "kind", "") == "heads_up" and "order heads-up" in message.title
                for message in selftest.message_samples())
+
+
+# ----- the nest files and the toolkit, in this build (P1b build spec 5.11-5.13)
+
+
+def test_the_reader_of_a_nest_a_lock_and_the_process_list_each_work_in_this_build(tmp_path):
+    assert selftest.guard_reader_problems(tmp_path / "guards") == []
+
+
+def test_the_new_modules_are_named_so_the_build_carries_them():
+    # ngrunner.spec takes every name here that isn't ngrunner's as a hidden import. runpy brings pkgutil
+    # in by name inside a function, and win32job is a .pyd of its own.
+    for name in ("ngrunner.guards.opt", "ngrunner.guards.observer", "ngrunner.guards.nestfiles",
+                 "ngrunner.guards.tool_checks", "ngrunner.toolkit", "win32job", "runpy", "pkgutil",
+                 "psutil"):
+        assert name in selftest.P1A_MODULES, name
+
+
+def test_a_made_up_toolkit_really_runs_and_really_stops_here(tmp_path):
+    assert selftest.tool_run_problems(tmp_path / "tools") == []
+
+
+def test_a_build_that_cant_run_a_tool_fails_its_self_test(tmp_path, monkeypatch):
+    from ngrunner import toolkit
+
+    def refuse(*_args, **_kwargs):
+        raise toolkit.ToolkitError("The check could not be put in its job, so it was not run.")
+
+    monkeypatch.setattr(toolkit, "run_tool", refuse)
+
+    assert selftest.tool_run_problems(tmp_path / "tools") == [
+        "A toolkit script can't be run in this build (The check could not be put in its job, so it"
+        " was not run)."]
+
+
+def test_a_tool_that_runs_wrongly_or_wont_stop_fails_the_self_test(tmp_path, monkeypatch):
+    from ngrunner import toolkit
+
+    answers = iter((toolkit.ToolRun(0, "", "", False), toolkit.ToolRun(0, "", "", False)))
+    monkeypatch.setattr(toolkit, "run_tool", lambda *a, **k: next(answers))
+
+    problems = selftest.tool_run_problems(tmp_path / "tools")
+
+    assert len(problems) == 2 and "ran wrongly" in problems[0] and "not stopped" in problems[1]
+
+
+def test_the_whole_self_test_runs_the_tool_check(tmp_path):
+    seen = []
+    paths = selftest.AppPaths(tmp_path)
+
+    selftest.run_self_test(paths, modules=(), migrate=lambda _: None, samples=list, lint=lambda _: [],
+                           credentials=_NoSecrets,
+                           tools=lambda work: seen.append(work) or [])
+
+    assert len(seen) == 1
+
+
+class _NoSecrets:
+    """A PC with no Credential Manager, which is no broken build."""
+
+    def put(self, *_):
+        raise selftest.SecretsUnavailable("no Credential Manager here")
+
+    def remove(self, *_):
+        pass

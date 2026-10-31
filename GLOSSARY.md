@@ -107,6 +107,10 @@ Jim's lock clicks. Lock design records the job with calculated quantities before
 **DO NOT CUT / NOT CHECKED / Nest checked**:
 The three states a nested material can show; never silence, never "OK to cut".
 
+**Stored pass**:
+A material's Nest checked as NG Runner keeps it: the nest's hash, the programs' hashes and the rooms' hashes. A change to any of them puts it back to NOT CHECKED.
+_Avoid_: approval, cached result
+
 **Clearance**:
 Jim's click saying a program past its sheet size is on a sheet he added on purpose. It is bound to that program's hash, so a re-post asks again, and it never touches doubled holes.
 
@@ -149,6 +153,14 @@ _Avoid_: existing job, old job (`NG Jobs\Old` is a folder)
 **DEV item**:
 A problem for Sulaiman, in a lane Jim doesn't see. One that holds up a job reaches Jim after 48 hours, with the way back to chat; an urgent one turns the tray red.
 _Avoid_: ticket, bug
+
+**Owner log**:
+Every user string read from a `MozaikJob.UNS`, `MozaikJob.LCK` or `OptimizeJob.LCK`, with its time: how NG Runner finds out whether anyone but Jim opens shared jobs. It never touches a lock.
+_Avoid_: lock log, audit log
+
+**Toolkit copy**:
+A hash-pinned copy of Jim's `_NG_Automation` in NG Runner's data folder, which is what his scripts run from: never the folder he is changing. "Snapshot" in the build spec and the store. Adopted once it passes his regression (P1b's group 3).
+_Avoid_: backup, install
 
 **Could not verify / Could not check**:
 "Could not verify" is a value NG Runner could not confirm, reported as such and never guessed. "Could not check" is a Setup Check item that could not run, always shown with its reason.

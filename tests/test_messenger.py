@@ -543,6 +543,8 @@ def test_who_waits_for_morning(tmp_path: Path) -> None:
     assert not waits("SHADOW DO NOT CUT Testerson_101426", "george", "email")
     assert not waits("Cleared by Jim · Testerson_101426", "george", "email")
     assert not waits("No longer DO NOT CUT · Testerson_101426", "george", "email")
+    assert not waits("NOT CHECKED · Testerson_101426", "george", "email")   # design 4: he may be cutting
+    assert waits("Nest checked · Testerson_101426", "george", "email")
     assert waits("Cleared by Jim · Testerson_101426", "jim", "pushover")
 
 

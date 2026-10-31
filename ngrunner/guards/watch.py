@@ -23,6 +23,17 @@ What it must never do:
 Who hears what: George's email says DO NOT CUT at once, at any hour, and says when it has gone. Jim
 sees the red tray, a toast, Your list and the digest, and one card per material about a size. In
 shadow mode the messenger sends all of it to Sulaiman, marked, and shows no toast.
+
+The stored pass (design 5): a nest's NEST_CHECKED is kept as the .opt's hash, the programs' manifest
+and the rooms' hashes, and decide compares those with what is on disk whenever it is judged, so a
+stored pass goes through the same table as a new one and has no way around it. It falls back to NOT
+CHECKED the moment a listing shows any of them moved, before they can be read, since a pass must never
+stand on files that are changing. Once they settle they are read: the same bytes stand as they were
+and tell nobody, as Mozaik re-saves a .opt on close. Anything else loses the pass, and George, who was
+told it was checked, is told it no longer is.
+
+With no toolkit there is no pass: nest_checks is None until Jim's checks can run and their output be
+read (group 3), and only they can say a nest is checked, however good it looks.
 """
 from __future__ import annotations
 
@@ -35,17 +46,29 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from ngrunner.clock import from_iso
+from ngrunner.guards.facts import (
+    BR_CAM_NEST, DESIGN_MATCHES, FAILED, PASSED, SHEET_SIZE, CheckedFiles, DesignMatch, ToolVerdict,
+)
 from ngrunner.guards.kept import (
-    LOCK_AT, TAKEOFFS, AskedProgram, SizeQuestion, declined_hashes, done_redo,
-    forget_question, keep_question, labels_of, labels_seen, place_key, question_of, redo_places,
+    LOCK_AT, MOZAIK_RUNNING, NEST_FILES, TAKEOFFS, AskedProgram, SizeQuestion, declined_hashes,
+    done_redo, forget_question, keep_question, labels_of, labels_seen, nest_files_said, place_key,
+    question_of, redo_places,
 )
 from ngrunner.guards.lockcheck import take_lock_facts
 from ngrunner.guards.nest_state import (
-    MaterialEvidence, NestState, Verdict, decide, expected_sheet, past_size_programs, sheet_of,
+    MaterialEvidence, NestState, Verdict, decide, doubled_programs, expected_sheet,
+    past_size_programs, sheet_of,
 )
+from ngrunner.guards.nestfiles import (
+    JOBS_FOLDER, NestChecks, NestRead, nest_moved_since_read, next_said,
+)
+from ngrunner.guards.observer import note_owners
+from ngrunner.guards.opt import OPT_SETTLES_AFTER, reconcile
 from ngrunner.guards.scan import Key, Listed, Place, Plan, Scan, rows_by_place, scan, stat_words
 from ngrunner.guards.takeoffs import take_takeoffs
 from ngrunner.guards.tap import Tap
+from ngrunner.toolkit import adopted_snapshot, nest_checks_from
 from ngrunner.intake.pipeline import (
     add_guard_card, no_ng_jobs, queue_tell, send_tells, stopping,
 )
@@ -53,9 +76,9 @@ from ngrunner.interlock import GARAGE_SUFFIX
 from ngrunner.messages import templates
 from ngrunner.store import (
     JobRecord, NestRecord, ProgramRecord, Store, Transaction, add_nest, add_program, clear_state,
-    cleared_programs, close_dev, get_card, get_nest, get_state, get_state_time, list_dev, list_jobs,
-    list_nests, list_programs, log_event, open_dev, set_state, set_state_time, update_nest,
-    update_program, withdraw_card,
+    cleared_programs, close_dev, get_card, get_nest, get_state, get_state_time, list_cards, list_dev,
+    list_jobs, list_nests, list_programs, log_event, open_dev, set_state, set_state_time,
+    update_nest, update_program, withdraw_card,
 )
 
 _log = logging.getLogger("ngrunner.guards")
@@ -79,6 +102,9 @@ GUARD_FAILED = "guard_failed"
 GUARD_STUCK = "guard_stuck"
 UNFINISHED = "program_unfinished"
 HOLD_CODE = "ng_jobs_looks_empty"
+NEST_UNREADABLE = "nest_unreadable"
+CHECK_FAILED = "nest_check_failed"
+CHECKS_DISAGREE = "checks_disagree"
 
 _FEATURES: tuple[tuple[str, Callable[[str, str], bool]], ...] = (
     # What a folder's name can say of design 5's "trust per feature". REA, bridges and stacked towers
@@ -126,9 +152,19 @@ def _pass(plan: Plan) -> tuple[Plan, Scan]:
         return plan, Scan(failed=type(exc).__name__)
 
 
+def nest_checks(ctx: Any) -> NestChecks | None:
+    """What runs Jim's two checks: from the adopted toolkit copy, on staged copies, through
+    toolkit.run_tool and guards/tool_checks.py, which fail closed. None with no copy adopted, which is
+    today: adopting one needs his regression (group 3). No design match comes of it, as des_cutlist has
+    no reader, so no material can reach NEST_CHECKED yet: that is the guard doing its job."""
+    snapshot = adopted_snapshot(ctx.store, ctx.paths.toolkit)
+    return None if snapshot is None else nest_checks_from(snapshot, ctx.paths.staging)
+
+
 def _plan(ctx: Any) -> Plan:
     store, now = ctx.store, ctx.clock.now()
     programs = list_programs(store)
+    nests = list_nests(store)
     return Plan(
         ng_jobs=Path(ctx.settings.ng_jobs),
         first_scan=get_state(store, FIRST_SCAN) is None,
@@ -140,8 +176,23 @@ def _plan(ctx: Any) -> Plan:
         tracker_folder=ctx.settings.tracker_folder,
         lock_folders=_lock_folders(ctx, now),
         labels_seen=labels_seen(store),
+        mozaik_jobs=Path(ctx.settings.mozaik_shared) / JOBS_FOLDER,
+        nest_files=nest_files_said(store),
+        passes={(nest.folder, nest.material): _files_of(nest) for nest in nests
+                if nest.checked_at is not None and nest.opt_sha256 is not None},
+        posted=frozenset((nest.folder, nest.material) for nest in nests
+                         if nest.posted_at is not None or nest.checked_at is not None
+                         or nest.state == NestState.SAVE_NEST.value),
+        checks=nest_checks(ctx),
+        now=now,
         stop=lambda: _stopped(ctx),
     )
+
+
+def _files_of(nest: NestRecord) -> CheckedFiles:
+    """What a stored pass rests on."""
+    return CheckedFiles(nest.opt_sha256 or "", tuple(nest.manifest.items()),
+                        tuple(nest.room_hashes.items()))
 
 
 def _keys(store: Store, state_key: str) -> frozenset[Key]:
@@ -165,11 +216,13 @@ def _apply(ctx: Any, plan: Plan, found: Scan) -> None:
     _close_dev(ctx.store, GUARD_STUCK)
     if plan.first_scan:
         _first_scan(ctx, found, now)
-        _close_dev(ctx.store, GUARD_FAILED)
+        if _on_its_own(ctx, "nest files", lambda: _take_nest_files(ctx, plan, found, now)):
+            _close_dev(ctx.store, GUARD_FAILED)
         return
     for what in found.other_failures:
         open_dev(ctx.store, at=now, code=GUARD_FAILED, text=f"The guards' read of {what} failed.")
     clean = [not found.other_failures, _take_programs(ctx, plan, found, now),
+             _on_its_own(ctx, "nest files", lambda: _take_nest_files(ctx, plan, found, now)),
              _on_its_own(ctx, "takeoffs", lambda: take_takeoffs(ctx, plan, found, now)),
              _on_its_own(ctx, "lock pre-flight", lambda: take_lock_facts(ctx, plan, found, now))]
     if all(clean):      # only a clean pass closes it, or it would be raised anew every minute
@@ -258,6 +311,7 @@ def _take_programs(ctx: Any, plan: Plan, found: Scan, now: datetime) -> bool:
     places = {(key[0], key[1]) for key in plan.known}
     places |= {(folder, material) for folder, materials in found.folders.items()
                for material in materials}
+    places |= found.nests_due
     jobs = _jobs_by_folder(store)
     rows_of = rows_by_place(plan.known)
     clean = True
@@ -330,6 +384,8 @@ def _one_material(ctx: Any, plan: Plan, found: Scan, place: Place,
     toasts: list[Any] = []
     with store.transaction() as tx:
         _note_listing(tx, place, found.listed(place), rows, now)
+        if place in plan.passes and _programs_moved(found.listed(place), rows, plan.passes[place]):
+            _fall_back(tx, place, now)
         _note_reads(tx, found, place, rows, now)
         if place in found.to_judge:
             _judge(tx, plan, found, place, rows, jobs, now, toasts)
@@ -350,6 +406,23 @@ def _note_listing(tx: Transaction, place: Place, listed: Mapping[str, Listed],
             update_program(tx, folder, material, name, state="new", size=stat.size,
                            mtime=stat.mtime, seen_at=now, sha256=None, family=None, reach=None,
                            holes=None, near_pairs=None)
+
+
+def _programs_moved(listed: Mapping[str, Listed], rows: Mapping[str, ProgramRecord],
+                    files: CheckedFiles) -> bool:
+    """Whether the programs a stored pass names look changed, by the listing alone."""
+    return {name for name, _ in files.manifest} != set(listed) or any(
+        name not in rows or (rows[name].size, rows[name].mtime) != (stat.size, stat.mtime)
+        for name, stat in listed.items())
+
+
+def _fall_back(tx: Transaction, place: Place, now: datetime) -> None:
+    """A pass never stands on files that are moving. It stays on record, as what it passed on may
+    turn out the same bytes; the verdict once they settle decides, and tells whoever needs to know."""
+    nest = get_nest(tx, *place)
+    if nest is not None and nest.state == NestState.NEST_CHECKED.value:
+        update_nest(tx, *place, now=now, state=NestState.NOT_CHECKED.value,
+                    reasons=(templates.NEST_CHANGED,))
 
 
 def _note_reads(tx: Transaction, found: Scan, place: Place, rows: Mapping[str, ProgramRecord],
@@ -411,31 +484,85 @@ def _judge(tx: Transaction, plan: Plan, found: Scan, place: Place,
                  if (folder, material, name) in found.taps)
     if listed and not taps:
         return                  # nothing read yet, and something is there: never read as nothing
-    ev = _evidence(tx, place, listed, taps, rows, now)
+    previous = get_nest(tx, folder, material)
+    read = found.nests.get(place)
+    ev = _evidence(tx, plan, found, place, listed, taps, rows, read, previous, now)
     verdict = decide(ev)
     verdict = replace(verdict, trial=_on_trial(tx, folder, material))
     posted = _posted_at(taps, ev, listed, now)
     sid = _studio_id(jobs, folder)
-    previous = get_nest(tx, folder, material)
-    told = _tell(tx, plan, place, previous, verdict, sid, now, toasts)
-    _keep_verdict(tx, place, previous, verdict, taps, posted, sid, told, now)
+    _note_what_the_nest_says(tx, plan, place, read, ev, sid, now)
+    if read is not None and read.checks_ran:
+        _note_disagreement(tx, place, ev, sid, now)
+    if _a_pass_may_yet_stand(plan, place, previous, read, verdict, now):
+        _fall_back(tx, place, now)      # nothing is concluded from what can't be seen just yet
+    else:
+        told = _tell(tx, plan, place, previous, verdict, sid, now, toasts)
+        _tell_of_the_pass(tx, place, previous, verdict, ev, sid, now)
+        _keep_verdict(tx, place, previous, verdict, ev, posted, sid, told, now)
     _ask_on_sizes(tx, place, past_size_programs(ev), sid, now)
     if place in plan.redo:
         done_redo(tx, folder, material)
 
 
-def _evidence(tx: Transaction, place: Place, listed: Mapping[str, Listed], taps: tuple[Tap, ...],
-              rows: Mapping[str, ProgramRecord], now: datetime) -> MaterialEvidence:
+def _a_pass_may_yet_stand(plan: Plan, place: Place, previous: NestRecord | None,
+                          read: NestRead | None, verdict: Verdict, now: datetime) -> bool:
+    """A stored pass whose nest can't be read for now, and nothing wrong otherwise: it stays on record
+    and reads NOT CHECKED until it can be, or for 10 minutes. A file that is only still settling, or
+    away in the cloud, says nothing about what it holds, and George was told it was checked."""
+    if (previous is None or previous.checked_at is None or read is None or not read.retry
+            or verdict.state is not NestState.NOT_CHECKED):
+        return False
+    return now - _listed_since(plan, place, now) < UNFINISHED_AFTER + OPT_SETTLES_AFTER
+
+
+def _listed_since(plan: Plan, place: Place, now: datetime) -> datetime:
+    said = (plan.nest_files or {}).get(place[0], {}).get("opts", {}).get(place[1], {})
+    return from_iso(said["since"]) if said.get("since") else now
+
+
+def _evidence(tx: Transaction, plan: Plan, found: Scan, place: Place, listed: Mapping[str, Listed],
+              taps: tuple[Tap, ...], rows: Mapping[str, ProgramRecord], read: NestRead | None,
+              previous: NestRecord | None, now: datetime) -> MaterialEvidence:
     folder, material = place
     before = frozenset((tap.name, tap.sha256) for tap in taps
                        if _is_from_install(rows[tap.name], tap))
     all_old = bool(listed) and len(before) == len(taps) and all(
         name in rows and rows[name].state == "seen_at_install"
         and (rows[name].size, rows[name].mtime) == (stat.size, stat.mtime)
-        for name, stat in listed.items())
+        for name, stat in listed.items()) and not _nest_is_new(plan, found, place)
+    tools, design, read_at = _what_the_checks_say(read, previous, now)
     return MaterialEvidence(material=material, taps=taps, seen_at_install=all_old,
                             cleared=cleared_programs(tx, folder, material), before_install=before,
-                            read_at=now, labels=labels_of(tx, folder))
+                            read_at=read_at, labels=labels_of(tx, folder),
+                            opt=None if read is None else read.opt,
+                            opt_problem=None if read is None else read.problem,
+                            room_hashes=() if read is None else read.rooms,
+                            tools=tools, design=design)
+
+
+def _nest_is_new(plan: Plan, found: Scan, place: Place) -> bool:
+    """A nest not as it was at the first listing is news, even with every program old."""
+    job = None if found.mozaik is None else found.mozaik.get(place[0])
+    if job is None or place[1] not in job.opts or plan.nest_files is None:
+        return False
+    said = plan.nest_files.get(place[0], {}).get("opts", {}).get(place[1])
+    return said is None or not said.get("install")
+
+
+def _what_the_checks_say(read: NestRead | None, previous: NestRecord | None, now: datetime
+                         ) -> tuple[tuple[ToolVerdict, ...], DesignMatch | None, datetime]:
+    """A run just now says for itself. Otherwise a stored pass says what passed and on which files,
+    and decide compares those with the files on disk, so a pass can't outlive a change: this adds no
+    way to reach NEST_CHECKED that a run of the checks hasn't already earned. Its time stays its own."""
+    if read is not None and read.checks_ran:
+        return read.tools, read.design, now
+    if previous is None or previous.checked_at is None or previous.opt_sha256 is None:
+        return (), None, now
+    files = _files_of(previous)
+    return ((ToolVerdict(SHEET_SIZE, PASSED, checked=files),
+             ToolVerdict(BR_CAM_NEST, PASSED, checked=files)),
+            DesignMatch(DESIGN_MATCHES, checked=files), previous.checked_at)
 
 
 def _on_trial(db: Any, folder: str, material: str) -> bool:
@@ -485,12 +612,85 @@ def _tell(tx: Transaction, plan: Plan, place: Place, previous: NestRecord | None
         return told
     if told is None or verdict.state is NestState.NOT_POSTED:
         return told
-    if place not in plan.redo:
+    if place not in plan.redo and verdict.state is not NestState.NEST_CHECKED:   # that says so itself
         queue_tell(tx, templates.fault_gone(folder, material, at=now), to="george", now=now,
                    ref=f"fault_gone:{_ref_of(place, now)}")
         log_event(tx, at=now, kind="fault_gone", studio_id=sid,
                   text=f"No longer DO NOT CUT {templates.material_words(material)}.")
     return None
+
+
+def _tell_of_the_pass(tx: Transaction, place: Place, previous: NestRecord | None, verdict: Verdict,
+                      ev: MaterialEvidence, sid: str | None, now: datetime) -> None:
+    """George hears a material is checked, in business hours, with what Jim still has open on the job.
+    He hears at any hour when one he was told of no longer is, unless the alarm says so already. The
+    same files saved again, which Mozaik does on close, tell nobody."""
+    folder, material = place
+    was_checked = previous is not None and previous.checked_at is not None
+    if verdict.state is NestState.NEST_CHECKED:
+        if was_checked and _files_of(previous) == _files_now(ev):
+            return
+        open_items = 0 if sid is None else len(list_cards(tx, studio_id=sid))
+        queue_tell(tx, templates.nest_checked(
+            folder, material, at=now, programs=[tap.name for tap in ev.taps], trial=verdict.trial,
+            open_items=open_items), to="george", now=now, ref=f"nest_checked:{_ref_of(place, now)}")
+        log_event(tx, at=now, kind="nest_checked", studio_id=sid, lane="ACT",
+                  text=f"{templates.nest_checked_note(now, [tap.name for tap in ev.taps])},"
+                       f" {templates.material_words(material)}.")
+    elif was_checked and verdict.state is not NestState.DO_NOT_CUT:
+        queue_tell(tx, templates.pass_gone(folder, material, at=now), to="george", now=now,
+                   ref=f"pass_gone:{_ref_of(place, now)}")
+        log_event(tx, at=now, kind="pass_gone", studio_id=sid,
+                  text=f"No longer checked: {templates.material_words(material)}.")
+
+
+def _files_now(ev: MaterialEvidence) -> CheckedFiles:
+    return CheckedFiles(ev.opt.sha256 if ev.opt else "",
+                        tuple((tap.name, tap.sha256) for tap in ev.taps), ev.room_hashes)
+
+
+def _note_what_the_nest_says(tx: Transaction, plan: Plan, place: Place, read: NestRead | None,
+                             ev: MaterialEvidence, sid: str | None, now: datetime) -> None:
+    """A program on disk the nest doesn't name is only a log line (65 of 551 real ones are hand-named).
+    A nest that won't read goes to Sulaiman at once, as a real file meeting this reader for the first
+    time is what he needs to hear of; one that may read by itself, after 10 minutes."""
+    folder, material = place
+    if ev.opt is not None and not ev.seen_at_install:
+        extra = reconcile(ev.opt, ev.taps).extra
+        if extra and ev.opt.runs:
+            log_event(tx, at=now, kind="program_not_in_nest", studio_id=sid,
+                      text=f"{folder} {templates.material_words(material)}: its nest doesn't name"
+                           f" {', '.join(extra)}.")
+    if read is not None and read.checks_ran:
+        said = f"{folder}: a check of the nest for {material} could not run"
+        for item in list_dev(tx):
+            if item.code == CHECK_FAILED and item.text.startswith(said):
+                close_dev(tx, item.id)
+        if read.check_failed:
+            open_dev(tx, at=now, code=CHECK_FAILED, text=f"{said} ({read.check_failed}).")
+    text = f"{folder}: the nest file for {material} could not be read."
+    if read is not None and read.opt is not None:
+        _close_dev_of(tx, NEST_UNREADABLE, text)
+    elif read is not None and read.problem == templates.NEST_UNREADABLE and (
+            not read.retry or now - _listed_since(plan, place, now) >= UNFINISHED_AFTER + OPT_SETTLES_AFTER):
+        open_dev(tx, at=now, code=NEST_UNREADABLE, text=text)
+
+
+def _note_disagreement(tx: Transaction, place: Place, ev: MaterialEvidence, sid: str | None,
+                       now: datetime) -> None:
+    """NG Runner's program check and Jim's checks both run, and either's fault is DO NOT CUT. Where one
+    finds a fault and the other passes, Sulaiman hears, as they read different things: Jim's sheet size
+    check reads one size per nest, its header's, and the program check reads what the programs cut
+    (measured on the 10 real jobs, 2026-10-31). A check that couldn't say is no disagreement."""
+    ours = {SHEET_SIZE: bool(past_size_programs(ev)), BR_CAM_NEST: bool(doubled_programs(ev))}
+    for tool in ev.tools:
+        if tool.tool in ours and tool.code in (PASSED, FAILED) and ours[tool.tool] != (tool.code == FAILED):
+            which = "sheet size" if tool.tool == SHEET_SIZE else "doubled holes"
+            finds = "Jim's check finds a fault and NG Runner's doesn't" if tool.code == FAILED else (
+                "NG Runner's check finds a fault and Jim's doesn't")
+            open_dev(tx, at=now, code=CHECKS_DISAGREE, studio_id=sid,
+                     text=f"{place[0]} {templates.material_words(place[1])}: the {which} checks"
+                          f" disagree. {finds}.")
 
 
 def _ref_of(place: Place, now: datetime) -> str:
@@ -499,17 +699,51 @@ def _ref_of(place: Place, now: datetime) -> str:
 
 
 def _keep_verdict(tx: Transaction, place: Place, previous: NestRecord | None, verdict: Verdict,
-                  taps: Iterable[Tap], posted: datetime | None, sid: str | None,
+                  ev: MaterialEvidence, posted: datetime | None, sid: str | None,
                   told: datetime | None, now: datetime) -> None:
+    """A pass is kept as what it rests on (design 5). Anything else holds no pass, and what it holds
+    of the files says only what was read, for the board and a support bundle."""
     folder, material = place
     fields = {"state": verdict.state.value, "basis": verdict.basis, "reasons": verdict.reasons,
-              "studio_id": sid, "manifest": {tap.name: tap.sha256 for tap in taps},
-              "posted_at": posted, "trial": verdict.trial, "george_told_at": told}
+              "studio_id": sid, "manifest": {tap.name: tap.sha256 for tap in ev.taps},
+              "posted_at": posted, "trial": verdict.trial, "george_told_at": told,
+              "opt_sha256": None if ev.opt is None else ev.opt.sha256,
+              "room_hashes": dict(ev.room_hashes),
+              "checked_at": ev.read_at if verdict.state is NestState.NEST_CHECKED else None}
     if previous is None:
         if verdict.state is not NestState.NOT_POSTED:
             add_nest(tx, folder=folder, material=material, updated_at=now, **fields)
     else:
         update_nest(tx, folder, material, now=now, **fields)
+
+
+# ----- the nests, rooms and lock files in Mozaik Shared
+
+
+def _take_nest_files(ctx: Any, plan: Plan, found: Scan, now: datetime) -> None:
+    """What this pass's listing of Mozaik Shared showed, kept for the next. The first whole one marks
+    all of it as from before install, on an upgrade too. Who the locks name goes in the owner log,
+    and nothing gates on any of it (build spec 5.12)."""
+    store = ctx.store
+    _note_mozaik_running(store, found)
+    if found.mozaik is None or (plan.nest_files is None and found.mozaik_unlisted):
+        return
+    said = next_said(plan.nest_files, found.mozaik, found.mozaik_unlisted, found.nests, found.locks, now)
+    with store.transaction() as tx:
+        for place in plan.passes:
+            if place[0] not in found.mozaik_unlisted and nest_moved_since_read(
+                    said.get(place[0], {}), found.mozaik.get(place[0]), place[1]):
+                _fall_back(tx, place, now)
+        for folder, locks in found.locks.items():
+            note_owners(tx, folder=folder, locks=locks, at=now)
+        if said != plan.nest_files:
+            set_state(tx, NEST_FILES, json.dumps(said, ensure_ascii=False))
+
+
+def _note_mozaik_running(store: Store, found: Scan) -> None:
+    """For Health, so Sulaiman can see whether the process names in observer.py are the real ones."""
+    if found.mozaik_looked and json.dumps(found.mozaik_running) != get_state(store, MOZAIK_RUNNING):
+        set_state(store, MOZAIK_RUNNING, json.dumps(found.mozaik_running))
 
 
 # ----- the one sheet size card of a material

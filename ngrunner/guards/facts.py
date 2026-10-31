@@ -52,11 +52,35 @@ class OptSheet:
 
 @dataclass(frozen=True)
 class OptFacts:
-    """What a nest's .opt says. sha256 is the file's own. Parts with no sheets means not nested."""
+    """What a nest's .opt says (guards/opt.py). sha256 is the file's own. Parts with no sheets means
+    not nested. placed: parts with a location on a sheet. runs: the programs it names, each once.
+    holes: how many <OperationHole>, which nothing judges yet. encoding: as sniffed. version: Mozaik's,
+    from the line before the XML, "" with none."""
 
     sha256: str
     parts: int
     sheets: tuple[OptSheet, ...] = ()
+    encoding: str = ""
+    placed: int = 0
+    runs: tuple[str, ...] = ()
+    holes: int = 0
+    version: str = ""
+
+    @property
+    def physical_sheets(self) -> int:
+        """RULES 716-721: the sum of Quan over the blocks not flipped. A flip is the same board."""
+        return sum(sheet.quan for sheet in self.sheets if not sheet.flipped)
+
+
+@dataclass(frozen=True)
+class ToolRun:
+    """How one run of a script went (toolkit.run_tool). exit_code is None when it never finished, so it
+    can't read as a clean 0."""
+
+    exit_code: int | None
+    stdout: str
+    stderr: str
+    timed_out: bool
 
 
 @dataclass(frozen=True)

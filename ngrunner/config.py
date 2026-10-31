@@ -75,6 +75,11 @@ class AppPaths:
         return self.app_data / "staging"
 
     @property
+    def toolkit(self) -> Path:
+        """Copies of Jim's toolkit (toolkit.take_snapshot). A check runs from one, never in place."""
+        return self.app_data / "toolkit"
+
+    @property
     def launcher_state(self) -> Path:
         return self.app_data / "launcher.json"
 

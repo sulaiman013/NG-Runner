@@ -81,7 +81,7 @@ from ngrunner.store.outbox import (
     CHANNELS, OUTBOX_STATES, OutboxRecord, add_outbox, get_outbox, list_outbox,
     mark_outbox_fallback, mark_outbox_written, outbox_without_receipt, record_receipt,
 )
-from ngrunner.store.owner_log import OwnerRecord, list_owner_log, log_owner
+from ngrunner.store.owner_log import OwnerRecord, first_owner, list_owner_log, log_owner
 from ngrunner.store.pending import (
     PENDING_STATES, PendingRecord, add_pending, due_pending, finish_pending, get_pending,
     list_pending, past_deadline_pending, retry_pending,
@@ -179,7 +179,7 @@ __all__ = [
     # clearances
     "SHEET_SIZE", "ClearanceRecord", "add_clearance", "cleared_programs", "list_clearances",
     # owner_log
-    "OwnerRecord", "list_owner_log", "log_owner",
+    "OwnerRecord", "first_owner", "list_owner_log", "log_owner",
     # heads_ups
     "HeadsUpRecord", "get_heads_up", "list_heads_ups", "record_heads_up",
     # snapshots

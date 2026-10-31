@@ -31,6 +31,8 @@ TAKEOFFS = "guards.takeoffs"            # JSON: per folder, its takeoff as last 
 LOCK_AT = "guards.lock_at"              # when the pre-flight last read the tracker
 LOCK_PREFIX = "guards.lock."            # the pre-flight per folder, for the board and the notes
 LABELS_PREFIX = "guards.labels."        # what its labels showed, and which files showed it
+NEST_FILES = "guards.nest_files"        # JSON: per job, what its nests, rooms and locks last showed
+MOZAIK_RUNNING = "guards.mozaik_running"  # JSON: true, false or null, as the observer last found it
 
 
 @dataclass(frozen=True)
@@ -158,3 +160,19 @@ def saved_preflights(db: Db) -> dict[str, dict[str, Any]]:
 
 def takeoffs_said(db: Db) -> dict[str, dict[str, Any]]:
     return json.loads(get_state(db, TAKEOFFS) or "{}")
+
+
+# ----- the nests, rooms and lock files in Mozaik Shared (guards/nestfiles.py)
+
+
+def nest_files_said(db: Db) -> dict[str, dict[str, Any]] | None:
+    """Each job's files as listings last showed them; None until the first listing, which is what
+    marks all of them as from before install."""
+    text = get_state(db, NEST_FILES)
+    return None if text is None else json.loads(text)
+
+
+def mozaik_said(db: Db) -> tuple[bool, bool | None]:
+    """Whether the observer has looked yet, and what it found: True, False or None for can't tell."""
+    text = get_state(db, MOZAIK_RUNNING)
+    return (False, None) if text is None else (True, json.loads(text))

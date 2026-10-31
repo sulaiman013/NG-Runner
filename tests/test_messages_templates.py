@@ -614,6 +614,7 @@ def nest_templates() -> list[tuple[str, Message]]:
                                                     trial=False, open_items=2)),
         ("cleared", t.sheet_cleared(job, material, programs=((names[0], "61x109"),), at=NOW)),
         ("fault gone", t.fault_gone(job, material, at=NOW)),
+        ("pass gone", t.pass_gone(job, material, at=NOW)),
         ("heads-up", t.order_heads_up(job, sheets=((1, "3/4 Tafisa Apres Skis"),),
                                       tape=((1, '15/16"', "Tafisa Apres Skis"),),
                                       flags=("IC Arctic White, built as Egger Classic White",))),
@@ -1271,7 +1272,7 @@ def test_a_fixed_do_not_cut_is_urgent_of_itself():
 def test_every_new_kind_has_a_fixed_template_that_carries_no_outside_data():
     kinds = {message.kind for _, message in nest_templates()} - {"card"}
     assert kinds == {"do_not_cut", "not_checked", "nest_checked", "sheet_cleared", "fault_gone",
-                     "heads_up", "before_you_lock"}
+                     "pass_gone", "heads_up", "before_you_lock"}
     assert kinds <= set(t.FIXED)
     for kind in kinds:
         assert_clean(t.fixed(kind, day=date(2026, 10, 30)))
@@ -1345,3 +1346,40 @@ def test_no_message_ever_says_ok_to_cut():
     lines = said_about_nests()
     assert len(lines) > 100
     assert [line for line in lines if OK_TO_CUT.search(line)] == []
+
+
+# ----- the nest files (P1b build spec 5.11, 5.12)
+
+
+def test_a_pass_gone_says_what_changed_and_nothing_about_cutting():
+    message = t.pass_gone(JOB, CLASSIC, at=NOW)
+
+    assert message.title == "NOT CHECKED · Testerson_101426 · 3/4 Classic White"
+    assert message.lines[0].startswith("1. Testerson_101426: NOT CHECKED 3/4 Classic White at ")
+    assert message.lines[0].endswith("the nest, a program or a room changed since it was checked.")
+    assert lint(message) == []
+
+
+@pytest.mark.parametrize("programs, line", [
+    (["TESS03.TAP"], "The nest names program TESS03, and it is not in the folder"),
+    (["TESS03.TAP", "TESS04.TAP"], "The nest names programs TESS03 and TESS04, and they are not in the folder"),
+])
+def test_a_program_the_nest_names_and_isnt_there_is_said_plainly(programs, line):
+    assert t.nest_names_missing(programs) == line
+    assert check_line(line) == []
+
+
+@pytest.mark.parametrize("optimizer, owner, age, line", [
+    (False, "JDELA", timedelta(days=2, hours=1), "Open in Mozaik by JDELA, lock 2 days old"),
+    (True, "JDELA", timedelta(minutes=5), "In the Optimizer by JDELA, lock 5 minutes old"),
+    (False, None, timedelta(hours=3), "Open in Mozaik, lock 3 hours old"),
+    (False, "", timedelta(seconds=10), "Open in Mozaik, lock 1 minute old"),
+])
+def test_a_lock_says_who_and_how_long_in_words_the_lint_allows(optimizer, owner, age, line):
+    assert t.lock_held(optimizer, owner, age) == line
+    assert check_line(line) == []
+
+
+def test_a_nest_to_save_is_said_as_jim_reads_it():
+    assert t.open_save_nest(JOB, "3-4 Classic White") == (
+        "Testerson_101426 3/4 Classic White: save the nest in the Optimizer so I can check it")

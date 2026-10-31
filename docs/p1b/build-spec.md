@@ -1,6 +1,6 @@
 # P1b build spec — contracts for the builders
 
-Status: working spec for building Phase 1b ("Guards", design section 7: 11 dev-days). Everything marked measured was read on Sulaiman's PC on 2026-10-30, read-only. The design (`01-final-design.md`, local only) is the source of truth. Where this file departs from it, it says so, and section 9 lists each departure as a ruling for `docs/decisions.md`. Section 9's defaults are adopted (`docs/decisions.md`, 2026-10-30), as Sulaiman asked for decisions, and he can overrule any of them. Real jobs are called Case A, Case B and so on; the key is outside the repo. Made-up names (`Testerson_101426`, abbreviation `TES`) are the only job names here. Group 1 is wired into the running app, and the table "Wiring Phase 1b's guards into the app" in `docs/decisions.md` settles where that differs from what is written below.
+Status: working spec for building Phase 1b ("Guards", design section 7: 11 dev-days). Everything marked measured was read on Sulaiman's PC on 2026-10-30, read-only. The design (`01-final-design.md`, local only) is the source of truth. Where this file departs from it, it says so, and section 9 lists each departure as a ruling for `docs/decisions.md`. Section 9's defaults are adopted (`docs/decisions.md`, 2026-10-30), as Sulaiman asked for decisions, and he can overrule any of them. Real jobs are called Case A, Case B and so on; the key is outside the repo. Made-up names (`Testerson_101426`, abbreviation `TES`) are the only job names here. Group 1 is wired into the running app, and the table "Wiring Phase 1b's guards into the app" in `docs/decisions.md` settles where that differs from what is written below. Group 2 is built and wired; the table "Phase 1b, group 2" there settles it the same way. Jim's toolkit and 10 real job folders arrived on 2026-10-31 (`.local-fixtures/toolkit/`): his scripts have been read and not run by NG Runner, and "Real nests, and the checks' real output" there says what real bytes confirmed and broke, where this file was written before them.
 
 ## 1. What changes the plan
 
@@ -25,16 +25,16 @@ Status: working spec for building Phase 1b ("Guards", design section 7: 11 dev-d
 | Labels-to-design match (`guards/labels.py`) | **1**, as a fallback only | Labels ⊂ catalog on 5 of 5 jobs examined, apart from a numbering difference (section 3.2). Not the design's match: it can't see a missing part |
 | Shared reader (`guards/reads.py`) | **1** | Error 362 is real here: open succeeds, read fails. The share flags test on NTFS |
 | Messages, cards, lint | **1** | 7 proposed lines run through the real `check_line`: pass. It rejects the JSON's tape text as written (`1mm`), so the line is rebuilt |
-| `.opt` reader (`guards/opt.py`) | **2. Now, proof needs Jim** | 0 real files read. 233 names and sizes only (488 B to 1.15 MB). Format from RULES and BUILD only |
-| TAP reconcile, both directions | **2** | Needs `<OptimizeGCodeRun Filename>`. 65 of 74 `.opt` names match a program folder of the same name in the 49 jobs on both sides, by metadata. The other 9 have no folder of that name |
-| Observer and owner log (`guards/observer.py`) | **2** | 50 `MozaikJob.UNS` and 1 `OptimizeJob.LCK`: all 7 bytes, none readable. Listing shows `Mozaik.exe` and `Optimize.exe`; the live process is unseen |
-| Stored pass (`.opt` hash + TAP manifest + room hashes) | **2** | Needs real `.opt` and `.des` |
+| `.opt` reader (`guards/opt.py`) | **2. Built, proof needs Jim** | 0 real files read. 233 names and sizes only (488 B to 1.15 MB). Format from RULES and BUILD only. Fails closed on anything else |
+| TAP reconcile, both directions | **2. Built** | Needs `<OptimizeGCodeRun Filename>`. 65 of 74 `.opt` names match a program folder of the same name in the 49 jobs on both sides, by metadata. The other 9 have no folder of that name |
+| Observer and owner log (`guards/observer.py`) | **2. Built** | 50 `MozaikJob.UNS` and 1 `OptimizeJob.LCK`: all 7 bytes, none readable. Listing shows `Mozaik.exe` and `Optimize.exe`; the live process is unseen |
+| Stored pass (`.opt` hash + TAP manifest + room hashes) | **2. Built** | Proven with a stand-in for Jim's checks. A real one needs real `.opt` and `.des`, and the checks (group 3) |
 | George's and Will's emails | **2** | `ROLES` already has both, and the outbox handles them. Real delivery needs their addresses, and goes to Sulaiman in shadow |
-| Cloud NOT CHECKED (`Watchdog.gs`) | **2** | Node tests now. Whether the script's account can read NG Jobs is UNVERIFIED |
+| Cloud NOT CHECKED (`Watchdog.gs`) | **2. Built, not deployed** | Node tests. Whether the script's account can read NG Jobs is UNVERIFIED, and `checkSetup` says |
 | Push channel | **2** | `messages/pushover.py` is built and tested. Needs Jim's account and a wider consent (section 9) |
-| Snapshot harness mechanism (`ngrunner/toolkit.py`) | **2** | Copy, hash, run and kill work on a synthetic toolkit. A real run needs the toolkit |
-| `sheet_size_check --taps` adapter | **3. Blocked: toolkit** | Script absent. Only prose reports of its results exist, never its output or exit codes |
-| `br_cam_check --nest` adapter | **3** | Same. Inside a crosscheck its `.des` mode prints only room names when clean. No `--nest` output and no failure text seen |
+| Snapshot harness mechanism (`ngrunner/toolkit.py`) | **2. Built** | Copy, hash, run and kill work on a synthetic toolkit, and in the built exe. A real run needs the toolkit. Nothing schedules it yet |
+| `sheet_size_check --taps` adapter | **Built (`guards/tool_checks.py`), on its real output of 10 jobs** | Its exit code is 1 on all 10, so it reads each material's lines. Run by `watch.nest_checks` from an adopted copy, on staged copies: none is adopted yet |
+| `br_cam_check --nest` adapter | **Built, the same way** | Its counts equal the program reader's on all 20 real materials |
 | Snapshot adoption (regression, baseline) | **3** | `regression.py` and `baseline.json` absent |
 | Nest-to-design match (`.opt` against `.des` cutlist) | **3** | `des_cutlist` absent; no `.des` read |
 | `material_lookup` in place of the size table | **3** | Script and `Materials.dat` absent |
@@ -98,9 +98,9 @@ Other Egger colours: 2 shop projects and 1 hand-built job sit on 49×97, against
 - **Inbox archives:** 21 `ingested_tracker_inbox_<ts>.csv`, 0 `SKIPPED_`; header `TAB,JOB,FIELD1,...` when present.
 
 ### 3.6 From Jim's docs only — UNVERIFIED until real files are read
-- **`.opt`** (RULES 705-726, BUILD 565-568, 774-787): UTF-16LE with a BOM on some, UTF-8 on others; sniff it. `<OptimizeSheet>` with `Quan` and `Flipped`. Physical sheets are the sum of `Quan` over `Flipped="False"`. `<OptimizeGCodeRun Filename>`, `<OptimizePart>`, `<OptimizePartLocation>`, `<OperationHole>` X, Y and face, `Width` and `Length`. Parts with no `<OptimizeSheet>` means not nested. `RunId` means nothing.
+- **`.opt`**, measured on 20 real files (2026-10-31, `docs/decisions.md`, "Real nests"): UTF-8 with no BOM, and a first line `8`, Mozaik's version, before `<?xml`; RULES 705's UTF-16LE is in none. Every `<OptimizeSheet>` has its own `Width` and `Length`, and a flip pass's block sits inside its run. Before they came, from RULES 705-726, BUILD 565-568, 774-787, and how Jim's scripts read one: UTF-16LE with a BOM on some, UTF-8 on others; sniff it. `<OptimizeMaterial>` is the header, with `Width`, `Length`, `WidthTrim` and `DisplayName`. `<OptimizeSheet>` with `Quan` (1 if none) and `Flipped`, holding its `<OptimizeGCodeRun Filename>`, which may have a path. Physical sheets are the sum of `Quan` over the blocks not `Flipped="True"`. `<OptimizePart>` with `AssyNo`, `Name`, `Quan`, `Width`, `Length`, `EdgeBand`, holding its `<ShapePoint>` and `<OperationHole>` X, Y, `Diameter` and `FlipSideOp`. Parts with no `<OptimizeSheet>` means not nested. `RunId` means nothing. Read from his source, on no real file.
 - **`MozaikJob.UNS`** is `JDELA\r\n`, and the same 7 bytes on all 50 seen. **`MozaikJob.LCK`** replaces it on open; **`OptimizeJob.LCK`** while the Optimizer runs.
-- **Commands** (BUILD 551, INDEX, RULES 725): `sheet_size_check.py <job folder>\*.opt`, `--taps <NG Jobs job dir>`, `br_cam_check.py --nest <Mozaik job dir>`. Output and exit codes undocumented.
+- **Commands** (BUILD 551, INDEX, RULES 725, and the scripts): `sheet_size_check.py <job folder>\*.opt`, `--taps <NG Jobs job dir>`, `br_cam_check.py --nest <Mozaik job dir or one .opt>`. Each exits 1 for anything it counts as bad and 0 otherwise, which is not the same as a pass (`guards/tool_checks.py`). What they print is read from source, not seen running.
 
 ## 4. What the pieces share
 
@@ -182,8 +182,8 @@ def decide(ev: MaterialEvidence) -> Verdict: ...      # pure; no store, no clock
 | A new program is past its size, not cleared | DO_NOT_CUT | "A program is on 61x109 and this colour is 49x97" |
 | A tool says it failed | DO_NOT_CUT | the tool's fixed line |
 | `.opt` has parts and no sheets | SAVE_NEST | "Save the nest in the Optimizer so I can check it" |
-| `.opt`, both tools pass, design matches, all hashes current | NEST_CHECKED | "Nest checked 9:42 PM, programs TESS01-06" |
-| Anything else | NOT_CHECKED | "Programs read 9:42 PM on 49x97, 0 doubled holes; the nest itself is not checked" |
+| `.opt`, every program it names in the folder, both tools pass, design matches, all hashes current | NEST_CHECKED | "Nest checked 9:42 PM, programs TESS01-06" |
+| Anything else, a nest that won't read or names a program not there included | NOT_CHECKED | "Programs read 9:42 PM on 49x97, 0 doubled holes; the nest itself is not checked", then what stopped it |
 
 The design's "A change to any of them puts that material back to NOT CHECKED" holds: a pass is bound to `opt_sha256`, `manifest` and `room_hashes`. Unknown evidence is NOT_CHECKED, never a pass. The first scan after install marks every program `seen_at_install`: without that, 65 old jobs go red at once.
 
@@ -230,6 +230,8 @@ The lint refuses a bare `1mm`, which the JSON's tape text carries, so tape lines
 ### 5.7 NOT CHECKED from the cloud: `google/Watchdog.gs`
 When the heartbeat is stale, email the role `george` the last heartbeat's risks that start "Not checked", once per gap (`openRisks_` already holds them). The design's "posted 11:40 PM" while offline needs more: a new `postedSince_(lastBeat)` walks NG Jobs by `DriveApp`, using a Script Property `NG_JOBS_FOLDER_ID`, for material folders updated after the last beat. It reports "posted, not checked" with the folder's time. Skip this part and say so if that account can't read NG Jobs (UNVERIFIED). Node tests in `google/test/`, mocked. It's a change to the script running the live shadow, so it goes in only when Sulaiman deploys it.
 
+As built (`docs/decisions.md`, "Phase 1b, group 2"): it does nothing with no `ROLE_GEORGE_EMAIL`, and walks only with `NG_JOBS_FOLDER_ID` too; it counts a gap only in the hours the PC is expected on; it walks at most every 30 minutes for at most 3; and in the shadow run it goes to the alert role, marked. `checkSetup` says if `NG_JOBS_FOLDER_ID` can't be opened, and asks for George and Will once `GUARDS_ON` is set.
+
 ### 5.8 Heads-up: `ngrunner/guards/headsup.py`
 ```python
 def read_takeoff(data: bytes) -> Takeoff | None: ...   # None: blocks missing or not as measured
@@ -254,19 +256,22 @@ def labels_in_design(labels, pieces) -> DesignMatch: ...           # code: "all_
 `read_shared(path: Path) -> bytes`, with `CreateFile` share read, write and delete (design 5, Reads: Python's default blocks Mozaik's rename-on-save). Raises `CloudOnly` on Windows error 362 or 395 and `Unreadable` otherwise, both plain words. Every `.opt`, `.des`, `.UNS` and `.LCK` read goes through it. Tested live against this PC's placeholders, and on a local file renamed mid-read.
 
 ### 5.11 `.opt`: `ngrunner/guards/opt.py` (group 2)
-`read_opt(data: bytes) -> OptFacts(encoding, sheets: tuple[OptSheet(width_mm, length_mm, quan, flipped), ...], parts, placed, runs: tuple[str, ...], holes)`, or raises `OptUnreadable`. Sniff the BOM. An `.opt` may be read while Mozaik runs once unchanged for 120 s, hashing the same twice, and parsing (design 5). `reconcile(opt, taps) -> Reconcile(missing, extra)`: a program the nest names and isn't on disk is a real finding. An extra is only a LOG line, since 65 of 551 are hand-named. Built test-first on synthetic files written from the docs, so it is expected to change on first contact with a real one.
+`read_opt(data: bytes) -> OptFacts(sha256, encoding, sheets: tuple[OptSheet(width_mm, length_mm, quan, flipped), ...], parts, placed, runs: tuple[str, ...], holes)`, or raises `OptUnreadable`. `holes` is a count. Sniff the BOM. `read_opt_file(path)` reads a `.opt` that may be in use: `guards/nestfiles.py` calls it once listings show it unchanged for 120 s, whether Mozaik runs or not, and it hashes the same twice, and parses (design 5). `reconcile(opt, taps) -> Reconcile(missing, extra)`: a program the nest names and isn't on disk is a real finding, which is NOT CHECKED in P1b. An extra is only a LOG line, since 65 of 551 are hand-named. Built test-first on synthetic files written from the docs, so it is expected to change on first contact with a real one: each line a real file could break is marked `ASSUMPTION` in the code.
 
 ### 5.12 Observer: `ngrunner/guards/observer.py` (group 2)
-`mozaik_running(*, names=("Mozaik.exe", "Optimize.exe"), psutil=psutil) -> bool | None`, None when processes can't be read. `read_locks(job_dir) -> Locks(uns_owner, lck_owner, opt_lck_owner, lck_age)`. Each minute it logs new owner strings to `owner_log`. Any owner string other than the first seen goes to DEV at once (decision 4). The board shows lock age and owner. It never deletes a lock. Nothing gates on it in P1b.
+`mozaik_running(*, names=("Mozaik.exe", "Optimize.exe"), psutil=psutil) -> bool | None`, None when processes can't be read. `read_locks(job_dir, *, now, read=read_shared) -> Locks(uns_owner, lck_owner, opt_lck_owner, lck_age, opt_lck_age, unread)`: an owner is None for a file not there or not readable. Each minute it reads any lock file whose listing changed, and logs each string to `owner_log`. Any owner string other than the first seen goes to DEV at once (decision 4). The board shows lock age and owner as a row's note, and Health what `mozaik_running` found. It never deletes a lock. Nothing gates on it in P1b.
 
 ### 5.13 Toolkit: `ngrunner/toolkit.py` (group 2, adapters group 3)
 ```python
 def take_snapshot(source: Path, dest: Path, *, clock: Clock) -> Snapshot: ...   # copy, then sha256 of sorted (relpath, sha)
 def run_tool(snapshot: Snapshot, script: str, args: Sequence[str], *, timeout_s: int = 120) -> ToolRun: ...
-# ToolRun(exit_code, stdout, stderr, timed_out)
+# ToolRun(exit_code, stdout, stderr, timed_out): exit_code is None when it never finished
+def stage_files(files: Iterable[Path], into: Path) -> list[Path]: ...     # read with every share flag
+def tool_verdict(tool: str, run: ToolRun, checked: CheckedFiles, *, readers=READERS) -> ToolVerdict: ...
 ```
+`AppPaths.toolkit` is where copies go. `READERS` holds only the two readers below. `watch.nest_checks` is the seam that will call all this, and is None: with no toolkit, nothing reaches NEST_CHECKED. Nothing schedules a snapshot yet.
 - The build has no Python. `run_tool` calls `NGRunner.exe run-tool <script> <args>`, a new command using `runpy` in UTF-8 mode, inside a Job Object that kills on timeout. From the repo it uses `sys.executable -X utf8`. So any module a script imports must be in the build (UNVERIFIED which). Checks run on staged local copies, never in place, and `*.opt` is expanded first, since Windows doesn't expand it.
-- `guards/tool_checks.py`, blocked: `sheet_size(run) -> ToolVerdict` and `br_cam_nest(run) -> ToolVerdict`, code `passed | failed | could_not_verify`. Fail closed on any line not seen in real output. Written only once real output exists. These scripts ran on Linux in the chat's container until now (risk E4), so a first Windows run is itself a test.
+- `guards/tool_checks.py`: `sheet_size(run)` and `br_cam_nest(run)`, each giving `(code, line)`, code `passed | failed | could_not_verify`, and `..._by_material(run)` for a run of several; `toolkit.tool_verdict` makes that a `ToolVerdict`. Written from source, then checked on their real output of the 10 real jobs. Fail closed on any line not seen there, and on an exit code that doesn't fit what was printed. A wrong size or doubled holes is `failed`; a program not on disk, `??`, or an ok with no physical sheet is `could_not_verify`; a program the nest doesn't name fails nothing, though the tool exits 1. `toolkit.nest_checks_from(snapshot, work)` runs both on staged copies, and `watch.nest_checks` uses it with the adopted copy, which nothing makes yet.
 
 ## 6. Build order and test plan for group 1
 
@@ -301,7 +306,7 @@ Rules as in P1a: test-first, `-X warn_default_encoding`, synthetic names in git,
 7. **Labels match.** Real: the 5 examined jobs give `all_found` once Room 0 is compared by name; a label removed from a copy gives `some_missing`; a file with no `R#C#` gives `could_not_read`.
 8. **`reads.py`.** A live read of a placeholder raises `CloudOnly` (skips when the folder is absent); a rename while open succeeds.
 
-Then group 2, against synthetic files: `opt.py`, `observer.py`, the harness on a made-up toolkit folder holding two scripts that print and exit, `Watchdog.gs` under node. Group 1 is enough to run in shadow on this PC against real G: for a few days before anything reaches Jim's PC: real posts raise real verdicts, only to Sulaiman.
+Then group 2, against synthetic files: `opt.py`, `observer.py`, the harness on a made-up toolkit folder holding two scripts that print and exit, `Watchdog.gs` under node. All built (`tests/test_guards_opt.py`, `test_guards_observer.py`, `test_guards_nestfiles.py`, `test_toolkit.py`, `google/test/notchecked.test.js`, and the day simulation from scenario 60). Group 1 is enough to run in shadow on this PC against real G: for a few days before anything reaches Jim's PC: real posts raise real verdicts, only to Sulaiman.
 
 ## 7. What is needed from Jim
 
@@ -336,6 +341,8 @@ Over Chrome Remote Desktop, with Mozaik closed, into Sulaiman's private Drive fo
 - Does George open shared Mozaik jobs (decision 4)?
 
 **Sulaiman, not Jim:** George's and Will's addresses for Script Properties; Jim's Pushover account.
+
+**When the zip arrives:** run `read_opt` over every `.opt` in it first, and read each `ASSUMPTION` in `guards/opt.py`, `guards/observer.py` and `guards/nestfiles.py` against what the files really hold. A nest that won't read is NOT CHECKED and a DEV item, so nothing has been told wrongly meanwhile.
 
 ## 8. The Mozaik lab (30 minutes, with Jim, recorded as traces)
 
@@ -380,8 +387,8 @@ In `docs/decisions.md`'s form, each with the default adopted, chosen by its test
 
 **Formats and tools:**
 - Everything in section 3.6: no `.opt`, `.des`, `.UNS`, `.LCK` or `Materials.dat` byte has been read.
-- The output, exit codes and imports of every toolkit script. Whether they run on Windows at all.
-- Whether `sheet_size_check` passes a hand-added sheet.
+- What the toolkit's scripts really print and return: read from source, not run. Whether they run on Windows at all.
+- How a hand-added sheet shows in a `.opt`. `sheet_size_check` reads only the first `<OptimizeMaterial>`, so if it is a later one, that check doesn't see it.
 
 **The named cases:**
 - Why Case A's readback says 61×109 when its programs read 49×97, and what its `.opt` holds.
@@ -401,7 +408,7 @@ In `docs/decisions.md`'s form, each with the default adopted, chosen by its test
 **Other data:**
 - Why `parts_catalog.csv` refreshes when it does, and its `JobModified` time zone.
 - Whether the JSON always uses the Tafisa colour name.
-- Whether the Apps Script's account can read NG Jobs. Whether George's email reads on his phone.
+- Whether the Apps Script's account can read NG Jobs (`checkSetup` says, once `NG_JOBS_FOLDER_ID` is set). Whether a Drive folder's time moves when a program lands in it, or is overwritten: `postedSince_` rests on that. Whether George's email reads on his phone.
 - How REA, bridges and stacked towers can be told apart for trial labels without `.des`.
 - Whether Slack reaches Jim's phone.
 

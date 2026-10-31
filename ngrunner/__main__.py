@@ -27,6 +27,10 @@ Commands:
     dev-close [ID]                     the open DEV items, or close the one with this number, for
                                        Sulaiman: the runbook's way to close an item nothing else
                                        closes
+    run-tool SCRIPT [ARGS...]          run a toolkit script in this process, as python SCRIPT ARGS
+                                       would: the build has no Python (toolkit.py starts this, in
+                                       its Job Object). Its exit code is the script's own, and it
+                                       prints nothing of its own, so all of the output is the script's
 
 Modules are imported inside each command, so a module that fails to load breaks only the
 commands that need it, and --self-test can still name it.
@@ -107,6 +111,8 @@ def main(
         return _install_shortcut(Path(args.target), start_menu, say)
     if args.command == "canary":
         return _canary(Path(args.folder), environ, say)
+    if args.command == "run-tool":
+        return _run_tool(args.script, args.args)
     try:
         paths = app_paths(environ)
     except SettingsError as exc:
@@ -151,6 +157,9 @@ def _parser() -> _Parser:
     commands.add_parser("keygen", help="print a new backup key pair")
     dev_close = commands.add_parser("dev-close", help="list the open DEV items, or close one")
     dev_close.add_argument("id", nargs="?", type=int, help="the number of the item to close")
+    run_tool = commands.add_parser("run-tool", help="run a toolkit script (NG Runner starts this)")
+    run_tool.add_argument("script", help="the script, as a full path")
+    run_tool.add_argument("args", nargs=argparse.REMAINDER, help="what the script is given")
     return parser
 
 
@@ -246,6 +255,27 @@ def _canary(folder: Path, environ: Mapping[str, str], say: _Say) -> int:
     except SettingsError:  # it runs before settings exist, so it also goes by the folders' names
         refuse = ()
     return run_canary(folder, out=say, refuse=refuse)
+
+
+def _run_tool(script: str, args: list[str]) -> int:
+    """A toolkit script in this process, as Python itself would run it: it finds what lies beside it,
+    and its exit code and output are what comes back (build spec 5.13)."""
+    import runpy
+    import traceback
+
+    sys.argv = [script, *args]
+    sys.path.insert(0, str(Path(script).parent))
+    try:
+        runpy.run_path(script, run_name="__main__")
+    except SystemExit as exc:
+        if exc.code is None or isinstance(exc.code, int):
+            return exc.code or 0
+        print(exc.code, file=sys.stderr)
+        return 1
+    except Exception:  # noqa: BLE001 - a script that breaks fails its own run, as under Python
+        traceback.print_exc()
+        return 1
+    return 0
 
 
 def _self_test(paths: AppPaths, record: bool, self_test: Callable[[AppPaths], list[str]] | None,

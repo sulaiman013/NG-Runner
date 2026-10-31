@@ -94,8 +94,9 @@ def checked_files(taps=(), *, opt: str = OPT_SHA, rooms=ROOMS) -> CheckedFiles:
 NESTED = (OptSheet(width_mm=1244.6, length_mm=2463.8, quan=1, flipped=False),)
 
 
-def nested_opt(sha256: str = OPT_SHA, *, parts: int = 40, sheets=NESTED) -> OptFacts:
-    return OptFacts(sha256=sha256, parts=parts, sheets=sheets)
+def nested_opt(sha256: str = OPT_SHA, *, parts: int = 40, sheets=NESTED,
+               runs: tuple[str, ...] = ("TESS01.TAP",)) -> OptFacts:
+    return OptFacts(sha256=sha256, parts=parts, sheets=sheets, runs=runs)
 
 
 def tool(name: str = SHEET_SIZE, code: str = "passed", line: str = "",
@@ -551,6 +552,10 @@ NOT_A_PASS = {
     "a design match on another program": dict(design=DesignMatch(DESIGN_MATCHES,
                                                                  checked=OTHER_PROGRAM)),
     "a design match on another room": dict(design=DesignMatch(DESIGN_MATCHES, checked=OTHER_ROOM)),
+    "a nest naming no program": dict(opt=nested_opt(runs=())),
+    "a nest naming a program not in the folder": dict(opt=nested_opt(runs=("TESS01.TAP", "TESS02.TAP"))),
+    "only flip passes, with no board": dict(opt=nested_opt(sheets=(
+        OptSheet(width_mm=1244.6, length_mm=2463.8, quan=1, flipped=True),))),
     "the nest changed since it was checked": dict(opt=nested_opt(sha(2000))),
     "a room changed since it was checked": dict(room_hashes=(("Room1.des", sha(2001)),)),
     "a room added since it was checked": dict(room_hashes=(*ROOMS, ("Room2.des", sha(2002)))),
@@ -617,12 +622,73 @@ def test_a_program_that_cant_be_trusted_is_not_a_pass(bad: Tap) -> None:
     assert verdict.state == NestState.NOT_CHECKED
 
 
+def test_a_program_the_nest_names_and_isnt_there_stops_a_pass_and_says_so() -> None:
+    # RULES 724, build spec 5.11: a real finding. Not a DO NOT CUT: what Filename really holds is not
+    # yet seen, and a post can land after its nest is saved (docs/decisions.md).
+    verdict = decide(a_pass(ONE, opt=nested_opt(runs=("TESS01.TAP", "TESS02.TAP"))))
+
+    assert verdict.state == NestState.NOT_CHECKED
+    assert verdict.reasons[1:] == ("The nest names program TESS02, and it is not in the folder",)
+
+
+def test_a_program_on_disk_the_nest_doesnt_name_is_no_finding_and_stops_no_pass() -> None:
+    # 65 of 551 real programs are hand-named (build spec 3.1): only a log line, from guards/watch.py.
+    extra = tap("TESfixRM.TAP", mark=9)
+
+    verdict = decide(a_pass(ONE, extra))
+
+    assert verdict.state == NestState.NEST_CHECKED
+    assert "not in the folder" not in " ".join(verdict.reasons)
+
+
+def test_nothing_read_from_a_nest_can_raise_a_do_not_cut_by_itself() -> None:
+    for opt in (nested_opt(), nested_opt(sheets=()), nested_opt(runs=("TESS09.TAP",)), nested_opt(runs=())):
+        assert decide(evidence(ONE, opt=opt)).state != NestState.DO_NOT_CUT
+        assert decide(evidence(opt=opt)).state != NestState.DO_NOT_CUT
+
+
+# ----- a nest that could not be read: never a pass, never a crash, never DO NOT CUT
+
+
+def test_a_nest_that_cant_be_read_is_not_checked_and_says_so() -> None:
+    verdict = decide(evidence(ONE, opt_problem=t.NEST_UNREADABLE))
+
+    assert verdict.state == NestState.NOT_CHECKED
+    assert verdict.reasons == (nest_state._what_was_read(evidence(ONE)), t.NEST_UNREADABLE)
+
+
+def test_a_nest_that_cant_be_read_with_no_programs_is_never_read_as_nothing_posted() -> None:
+    verdict = decide(evidence(opt_problem=t.NEST_UNREADABLE))
+
+    assert verdict.state == NestState.NOT_CHECKED
+    assert t.NEST_UNREADABLE in verdict.reasons
+
+
+def test_a_nest_that_cant_be_read_is_no_pass_whatever_the_checks_said() -> None:
+    assert decide(a_pass(ONE, opt=None, opt_problem=t.NEST_UNREADABLE)).state == NestState.NOT_CHECKED
+
+
+def test_a_nest_that_cant_be_read_doesnt_hide_a_fault_in_the_programs() -> None:
+    verdict = decide(evidence(tap(pairs=8), opt_problem=t.NEST_UNREADABLE))
+
+    assert verdict.state == NestState.DO_NOT_CUT
+
+
+def test_a_nest_that_cant_be_read_from_before_install_alarms_nobody() -> None:
+    verdict = decide(MaterialEvidence(material=CLASSIC, taps=(ONE,), seen_at_install=True,
+                                      opt_problem=t.NEST_UNREADABLE))
+
+    assert verdict.reasons == (t.POSTED_BEFORE,)
+
+
 # ----- what can never happen, over every combination of evidence
 
 
 OPTS = {"no nest": None, "no parts": nested_opt(parts=0, sheets=()),
         "unsaved": nested_opt(sheets=()), "nested": nested_opt(),
-        "changed since": nested_opt(sha(3000))}
+        "changed since": nested_opt(sha(3000)),
+        "names one not there": nested_opt(runs=("TESS01.TAP", "TESS02.TAP")),
+        "names none": nested_opt(runs=())}
 TOOL_CODES = {
     "absent": None, "passed": ("passed", ON), "stale": ("passed", OTHER_OPT),
     "unbound": ("passed", None), "unsure": ("could_not_verify", ON), "failed": ("failed", ON),
@@ -660,7 +726,7 @@ def test_nest_checked_is_reached_by_exactly_one_combination_of_all_of_them() -> 
         if decide(ev).state == NestState.NEST_CHECKED:
             checked.append(labels)
 
-    assert total == 5 * 7 * 7 * 8 * 5 * 3
+    assert total == 7 * 7 * 7 * 8 * 5 * 3
     assert checked == [("nested", "passed", "passed", "matches", "clean", "current")]
 
 
@@ -675,6 +741,28 @@ def test_with_todays_data_nothing_can_reach_nest_checked() -> None:
     assert {decide(ev).state for ev in today} == {
         NestState.NOT_POSTED, NestState.NOT_CHECKED, NestState.DO_NOT_CUT}
     assert all(decide(ev).state != NestState.NEST_CHECKED for ev in (*today, *labels_only))
+
+
+def test_with_no_toolkit_nothing_can_reach_nest_checked_whatever_the_nest_says() -> None:
+    # The point of the guard: real .opt files are coming, and reading one must not be a pass. With no
+    # adopted toolkit, tools are absent or could_not_verify (toolkit.tool_verdict), so over every nest,
+    # every design and every set of programs and rooms, no verdict says Nest checked.
+    no_toolkit = [ev for labels, ev in every_evidence()
+                  if labels[1] in ("absent", "unsure") and labels[2] in ("absent", "unsure")]
+
+    assert len(no_toolkit) > 3_000
+    assert {decide(ev).state for ev in no_toolkit} >= {NestState.NOT_CHECKED, NestState.SAVE_NEST}
+    assert all(decide(ev).state != NestState.NEST_CHECKED for ev in no_toolkit)
+
+
+def test_a_real_reading_of_a_good_nest_is_not_a_pass_with_no_tools(tmp_path: Path) -> None:
+    from helpers_opt import nest_text, sheet, utf16
+    from ngrunner.guards.opt import read_opt
+
+    opt = read_opt(utf16(nest_text(sheets=(sheet(),), runs=("TESS01.TAP",))))
+    ev = evidence(ONE, opt=opt, room_hashes=ROOMS, design=DesignMatch(DESIGN_MATCHES, checked=ON))
+
+    assert decide(ev).state == NestState.NOT_CHECKED
 
 
 def test_a_pass_never_comes_with_a_fault_standing() -> None:

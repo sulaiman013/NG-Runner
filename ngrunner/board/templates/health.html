@@ -38,6 +38,7 @@
     <div class="fact"><dt>Fab Schedule export</dt><dd>{{ stamp(h.last_export, "Not read yet") }}</dd></div>
     <div class="fact"><dt>Job list</dt><dd>{{ stamp(h.list_synced_at, "Not fetched yet") }}</dd></div>
     <div class="fact"><dt>Heartbeat</dt><dd>{{ stamp(h.heartbeat, "None sent yet") }}</dd></div>
+    {% if h.mozaik %}<div class="fact"><dt>Mozaik at this PC</dt><dd>{{ h.mozaik }}</dd></div>{% endif %}
     <div class="fact"><dt>Pop-ups at this PC</dt><dd>{{ m.tag(toasts_style(h.toasts)) }}{% if h.toasts is sameas false %}<span class="fact-note">Turn them on in Windows Settings, under System, Notifications.</span>{% elif h.toasts is none %}<span class="fact-note">Windows did not say whether they are on.</span>{% endif %}</dd></div>
   </dl>
 </section>

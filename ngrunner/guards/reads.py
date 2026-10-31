@@ -15,13 +15,40 @@ The Windows error stays on .winerror, and the OSError behind it on __cause__, fo
 from __future__ import annotations
 
 import _winapi
+import os
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
+_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 _CLOUD_ERRORS = frozenset({362, 395})     # ERROR_CLOUD_FILE_PROVIDER_NOT_RUNNING, _ACCESS_DENIED
 _SHARE_READ, _SHARE_WRITE, _SHARE_DELETE = 0x1, 0x2, 0x4   # _winapi has none of these by name
 _OPEN_EXISTING = 3
 _ATTRIBUTE_NORMAL = 0x80
 _CHUNK = 1024 * 1024
+
+
+@dataclass(frozen=True)
+class Listed:
+    """A file as a listing gives it: enough to tell it changed, and two polls apart agreeing."""
+
+    size: int
+    mtime: datetime
+
+
+def listed_of(entry: os.DirEntry[str]) -> Listed:
+    stat = entry.stat(follow_symlinks=False)
+    # Whole microseconds: as a stored time keeps them, so two polls compare equal after a restart.
+    try:
+        return Listed(stat.st_size, _EPOCH + timedelta(microseconds=stat.st_mtime_ns // 1000))
+    except OverflowError:       # a time past what a date can hold: still the same file next poll
+        return Listed(stat.st_size, _EPOCH)
+
+
+def stat_words(listed: Listed) -> list[Any]:
+    """A listing as the state table keeps it."""
+    return [listed.size, listed.mtime.isoformat()]
 
 
 class Unreadable(Exception):

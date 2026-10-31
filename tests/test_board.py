@@ -809,6 +809,17 @@ def test_health_says_on_off_or_could_not_verify_for_pop_ups(browser, views, toas
     assert words in _page(browser, "/health")
 
 
+@pytest.mark.parametrize("words", ["Running", "Not running", "Could not tell"])
+def test_health_says_what_the_observer_found_of_mozaik(browser, views, words):
+    views.view = _view(health=_health(mozaik=words))
+
+    assert f"<dt>Mozaik at this PC</dt><dd>{words}</dd>" in _page(browser, "/health")
+
+
+def test_health_says_nothing_of_mozaik_before_the_observer_has_looked(browser):
+    assert "Mozaik at this PC" not in _page(browser, "/health")
+
+
 def test_health_lists_alarms_and_left_over_temp_files(browser, views):
     views.view = _view(health=_health(
         alarms=("Fab export is over 30 minutes old",),

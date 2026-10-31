@@ -17,7 +17,7 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, replace
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 from ngrunner.cards import Card, CardSpec, Command
 from ngrunner.clock import fmt_clock, fmt_day, pacific_day
@@ -360,6 +360,9 @@ def card_subject(card: Card) -> str:
 POSTED_BEFORE = "Posted before NG Runner; not checked"
 SAVE_THE_NEST = "Save the nest in the Optimizer so I can check it"
 NO_PROGRAMS_YET = "No programs read yet; the nest itself is not checked"
+NEST_UNREADABLE = "Could not read the nest file"
+NEST_SETTLING = "The nest file is still changing, so it is not read yet"
+NEST_CHANGED = "The nest, a program or a room changed since it was checked; checking it again"
 _NOT_CHECKED = "the nest itself is not checked"
 FOLDER_STEP = "No Fab row names this folder, so NG Runner only reads its programs"
 
@@ -375,6 +378,16 @@ def past_its_size(count: int, on: str | None, expected: str) -> str:
     Runner knows, which is said as that, never as a guess at a sheet."""
     who = "A program" if count == 1 else f"{count} programs"
     return f"{who} {_sheet_clause(on, expected, singular=count == 1)}"
+
+
+def nest_on_wrong_sheet(on: str, expected: str) -> str:
+    """What sheet_size_check found, in NG Runner's words: The nest is on 61x109 and this colour is 49x97."""
+    return f"The nest is on {on} and this colour is {expected}"
+
+
+def nest_holes_doubled(holes: int) -> str:
+    """What br_cam_check --nest found. Any two holes of one size: not only cams."""
+    return f"{holes} {'hole is' if holes == 1 else 'holes are'} doubled in the nest"
 
 
 def nest_checked_note(at: datetime | None, programs: Sequence[str]) -> str:
@@ -400,9 +413,32 @@ def programs_read_note(*, at: datetime | None, sheet: str | None, cleared: int =
     return f"Programs read{_at(at)}, {size}, {holes}; {_NOT_CHECKED}"
 
 
+def nest_names_missing(programs: Sequence[str]) -> str:
+    """The nest names program TESS03, and it is not in the folder (RULES 724)."""
+    are = "it is" if len(programs) == 1 else "they are"
+    return f"The nest names {_programs_said(programs)}, and {are} not in the folder"
+
+
 def programs_unread_note(programs: Sequence[str]) -> str:
     """Could not read program TESS02 yet; the nest itself is not checked"""
     return f"Could not read {_programs_said(programs)} yet; {_NOT_CHECKED}"
+
+
+def lock_held(file_is_optimizer: bool, owner: str | None, age: timedelta) -> str:
+    """Open in Mozaik by JDELA, lock 2 days old. For the board: it says who and how long, and leaves
+    what to make of that to a person (design F1, F2)."""
+    where = "In the Optimizer" if file_is_optimizer else "Open in Mozaik"
+    who = f" by {owner}" if owner else ""
+    return f"{where}{who}, lock {_how_old(age)} old"
+
+
+def _how_old(age: timedelta) -> str:
+    minutes = int(age.total_seconds() // 60)
+    if minutes < 120:
+        return _count(max(minutes, 1), "minute")
+    if minutes < 48 * 60:
+        return _count(minutes // 60, "hour")
+    return _count(minutes // (24 * 60), "day")
 
 
 def material_words(name: str) -> str:
@@ -424,6 +460,11 @@ def open_not_checked(job: str, material: str, *, posted: datetime, now: datetime
     """Not checked: Testerson_101426 3/4 Classic White, posted 11:40 PM"""
     when = _clock_on(posted, pacific_day(now))
     return f"Not checked: {job} {_material(material)}, posted {when}"
+
+
+def open_save_nest(job: str, material: str) -> str:
+    """Testerson_101426 3/4 Classic White: save the nest in the Optimizer so I can check it"""
+    return f"{job} {_material(material)}: {_first_lower(SAVE_THE_NEST)}"
 
 
 def more_not_checked(count: int) -> str:
@@ -487,6 +528,15 @@ def fault_gone(job: str, material: str, *, at: datetime) -> Message:
     return Message("fault_gone", f"No longer DO NOT CUT · {job} · {shown}", _numbered((
         f"{job}: No longer DO NOT CUT {shown} at {fmt_clock(at)}: the programs there now don't show"
         f" that fault. It reads NOT CHECKED; {_NOT_CHECKED}.",)))
+
+
+def pass_gone(job: str, material: str, *, at: datetime) -> Message:
+    """George was told a material is checked, and something it rests on has changed. He is told at any
+    hour: NOT CHECKED is one of the two kinds that don't wait (design 4), and he may be cutting."""
+    shown = _material(material)
+    return Message("pass_gone", f"NOT CHECKED · {job} · {shown}", _numbered((
+        f"{job}: NOT CHECKED {shown} at {fmt_clock(at)}: the nest, a program or a room changed since"
+        " it was checked.",)))
 
 
 _ESTIMATE = "(takeoff estimate; the nest decides)"
@@ -719,6 +769,8 @@ FIXED = {
                      " email. Jim can see which on his board."),
     "sheet_cleared": ("Cleared by Jim", "Jim cleared a sheet size, but NG Runner could not name it"
                       " in this email. He can see which on his board."),
+    "pass_gone": ("NOT CHECKED", "A material that was checked has changed since, so it is not"
+                  " checked now. NG Runner could not name it in this email; ask Jim which one."),
     "fault_gone": ("No longer DO NOT CUT", "A material that read DO NOT CUT no longer shows that"
                    " fault, but NG Runner could not name it in this email. Jim can see which on his"
                    " board."),

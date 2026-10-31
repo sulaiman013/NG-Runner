@@ -107,7 +107,9 @@ Roles are NG Runner's: `jim`, `barbara`, `will`, `george`, `sulaiman`, `backup_c
 | Property | When it is needed |
 |---|---|
 | `ROLE_<ROLE>_EMAIL` for `will`, `george` and `backup_contact` | When that role gets messages. Set `ROLE_BACKUP_CONTACT_EMAIL` before you are away, then point `ALERT_ROLE` and `ALERT_NAME` at the backup contact |
-| `ROLE_<ROLE>_CHANNEL` for the other roles | Only to use something other than email, the default: `email`, `slack` or `pushover` |
+| `ROLE_<ROLE>_CHANNEL` for the other roles | Only to use something other than email, the default: `email`, `slack` or `pushover`. `ROLE_GEORGE_CHANNEL` is the watchdog's NOT CHECKED |
+| `GUARDS_ON` | `true` once the guards should reach George and Will: `checkSetup` then asks for their addresses |
+| `NG_JOBS_FOLDER_ID` | The NG Jobs folder's Drive ID, from its address. With `ROLE_GEORGE_EMAIL` set too, a gap in the heartbeat also tells George of any material folder updated since the last heartbeat. `checkSetup` says if the script can't open it |
 | `ROLE_<ROLE>_PUSHOVER`, `PUSHOVER_TOKEN` | When Pushover is added (P1b): that role's Pushover user key, and the Pushover application token |
 | `ROLE_<ROLE>_SLACK`, `SLACK_TOKEN` | If Slack is used: the Slack user or channel ID the bot posts to for that role, and the bot token, which needs `chat:write` |
 

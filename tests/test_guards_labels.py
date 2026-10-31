@@ -389,7 +389,7 @@ def _passing_evidence(design):
     sheet = facts.OptSheet(width_mm=1244.6, length_mm=2463.8, quan=1, flipped=False)
     return nest_state, nest_state.MaterialEvidence(
         material="3-4 Egger Classic White", taps=(tap,), seen_at_install=False,
-        opt=facts.OptFacts("c" * 64, 3, (sheet,)), tools=tools,
+        opt=facts.OptFacts("c" * 64, 3, (sheet,), runs=(tap.name,)), tools=tools,
         design=design(facts, checked), room_hashes=rooms)
 
 

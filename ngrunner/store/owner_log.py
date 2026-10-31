@@ -52,3 +52,10 @@ def list_owner_log(db: Db, *, folder: str | None = None) -> list[OwnerRecord]:
 def _record(row: sqlite3.Row) -> OwnerRecord:
     return OwnerRecord(id=row["id"], at=time_of(row["at"]), folder=row["folder"], file=row["file"],
                        owner=row["owner"])
+
+
+def first_owner(db: Db) -> str | None:
+    """The first string ever seen that names anyone, which every later one is held against."""
+    with session(db, write=False) as conn:
+        row = conn.execute("SELECT owner FROM owner_log WHERE owner <> '' ORDER BY id LIMIT 1").fetchone()
+    return None if row is None else row["owner"]

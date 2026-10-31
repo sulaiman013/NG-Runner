@@ -69,7 +69,7 @@ from ngrunner.clock import (
     utc,
 )
 from ngrunner.config import AppPaths, Settings, SettingsError
-from ngrunner.guards.kept import folder_of_card
+from ngrunner.guards.kept import folder_of_card, mozaik_said
 from ngrunner.intake.studio_designs import StudioSite
 from ngrunner.interlock import PAUSED, is_paused
 from ngrunner.joblist import RenderClient
@@ -185,6 +185,13 @@ def _seams() -> SimpleNamespace:
     from ngrunner.intake import pipeline
 
     return SimpleNamespace(pipeline=pipeline, messenger=messenger, jobmodel=jobmodel, guards=watch)
+
+
+def _mozaik_words(looked: bool, running: bool | None) -> str:
+    """What the observer last found, for Health. Nothing gates on it in P1b (build spec 5.12)."""
+    if not looked:
+        return ""
+    return "Could not tell" if running is None else ("Running" if running else "Not running")
 
 
 def night_key(now: datetime) -> date:
@@ -1207,6 +1214,7 @@ class Supervisor:
         folder. The job model adds the alarms the store holds."""
         store = self._store
         last_export = list_synced_at = beat = None
+        mozaik = ""
         leftovers: tuple[Path, ...] = ()
         if store is not None and not self._store_problem:
             try:
@@ -1216,6 +1224,7 @@ class Supervisor:
                 beat = get_state_time(store, LAST_HEARTBEAT)
                 leftovers = tuple(
                     Path(p) for p in json.loads(get_state(store, LEFTOVER_TEMPS, "[]") or "[]"))
+                mozaik = _mozaik_words(*mozaik_said(store))
             except StoreError:
                 self._store_problem = NO_STORE
         off = (NO_TRACKER_FOLDER,) if (self._settings is not None
@@ -1223,7 +1232,8 @@ class Supervisor:
         return HealthView(paths=self._path_checks, last_export=last_export,
                           list_synced_at=list_synced_at, heartbeat=beat,
                           toasts=self._toast_setting, alarms=(*self._blockers, *self._notes, *off),
-                          leftover_temps=leftovers, app_version=launcher.app_version())
+                          leftover_temps=leftovers, app_version=launcher.app_version(),
+                          mozaik=mozaik)
 
     def _is_paused(self) -> bool:
         if self._store is None:

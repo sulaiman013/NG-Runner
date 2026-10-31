@@ -33,6 +33,11 @@ THIS_PHASE_FILES = (
     "tools/collect_p1b_fixtures.py", "ngrunner/guards/tap.py", "ngrunner/guards/sheets.py",
     "ngrunner/guards/reads.py", "tests/test_guards_tap.py", "tests/test_guards_sheets.py",
     "tests/test_guards_reads.py", "tests/test_docs_p1b.py",
+    "ngrunner/guards/opt.py", "ngrunner/guards/observer.py", "ngrunner/guards/nestfiles.py",
+    "ngrunner/toolkit.py", "tests/helpers_opt.py", "tests/test_guards_opt.py",
+    "tests/test_guards_observer.py", "tests/test_guards_nestfiles.py", "tests/test_toolkit.py",
+    "google/test/notchecked.test.js", "ngrunner/guards/tool_checks.py",
+    "tests/test_guards_tool_checks.py",
 )
 
 
@@ -236,5 +241,6 @@ def test_this_phases_files_are_not_ignored_and_the_fixtures_are():
     git = ["git", "-C", str(ROOT), "check-ignore", "--quiet"]
     for name in THIS_PHASE_FILES:
         assert subprocess.run([*git, name], check=False).returncode == 1, name
-    for local_only in (".local-fixtures/p1b/taps/index.json", ".local-fixtures/p1b/case_key.json"):
+    for local_only in (".local-fixtures/p1b/taps/index.json", ".local-fixtures/p1b/case_key.json",
+                       ".local-fixtures/toolkit/20261031/NG_Automation_scripts/scripts/br_cam_check.py"):
         assert subprocess.run([*git, local_only], check=False).returncode == 0

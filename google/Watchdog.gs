@@ -15,6 +15,17 @@
  * Ages are real elapsed time; "7:00 AM" and the expected hours are Pacific wall time, so both
  * hold across the clock changes. A heartbeat dated in the future counts from when it was first
  * seen, so a PC clock that runs fast can't look alive for hours.
+ *
+ * NOT CHECKED from the cloud (P1b build spec 5.7, design 4). With NG Runner silent, nothing on Jim's
+ * PC can tell George a nest went unchecked, so in a gap this does: once per gap, the last heartbeat's
+ * risks that start "Not checked", and, with NG_JOBS_FOLDER_ID set, any material folder in NG Jobs
+ * updated since that heartbeat. It does nothing until the role george has an address, so deploying
+ * this changes nothing for a run that hasn't set it. In the shadow run it goes to the alert role,
+ * marked, never to George. A gap only counts in the hours the PC is expected on, as for Sulaiman: a PC
+ * off overnight is no gap, or George would hear of it every night.
+ * UNVERIFIED on real Drive: whether this account can read NG Jobs (checkSetup says), and that a folder's
+ * time moves when a program lands in it or is overwritten. A folder walked and not moved says nothing,
+ * so a re-post over an old file may be missed here; the digest says so when the PC returns.
  */
 
 var SHADOW_TITLE = 'SHADOW ';           // as NG Runner marks what it sends Sulaiman in Jim's place
@@ -24,6 +35,10 @@ var WATCHDOG_NO_LIST_UNTIL = 12 * 60;   // the "no list" message is a morning me
 var WATCHDOG_DAYS = 3;                  // heartbeat day folders looked at, newest first
 var WATCHDOG_TRIES = 5;                 // newest heartbeat files tried before giving up
 var WATCHDOG_RISKS = 20;
+var WATCHDOG_WALK_EVERY_MS = 30 * 60 * 1000;   // a walk costs a Drive call per job, and quota is daily
+var WATCHDOG_WALK_BUDGET_MS = 3 * 60 * 1000;   // an Apps Script run has 6 minutes in all
+var WATCHDOG_NOT_CHECKED_LINES = 20;
+var NOT_CHECKED_SUBJECT = 'NOT CHECKED \u00b7 NG Runner is offline';
 var HEARTBEAT_NAME_RE = /^(\d{1,15})\.json$/;
 var DAY_FOLDER_RE = /^\d{8}$/;
 
@@ -36,9 +51,11 @@ function runWatchdog_() {
   var beat = latestBeat_(now);
   var stale = !beat || now.getTime() - beat.at > WATCHDOG_STALE_MS;
   if (!stale) clearState_('watchdog.alerted');
-  var alerted = stale && expectedOn_(now) ? alertGap_(beat, now) : null;
+  var inGap = stale && expectedOn_(now);
+  var alerted = inGap ? alertGap_(beat, now) : null;
+  var george = inGap ? notCheckedCheck_(beat, now) : null;
   var noList = noListCheck_(now, beat, stale, alerted);
-  return { stale: stale, alerted: alerted, noList: noList };
+  return { stale: stale, alerted: alerted, noList: noList, george: george };
 }
 
 // ----- the heartbeat
@@ -137,6 +154,103 @@ function alert_(subject, lines) {
   var result = sendTo_(role, channel, subject, lines, true);
   if (!result.ok) log_('warn', 'the watchdog could not alert ' + role + ': ' + result.error);
   return result;
+}
+
+// ----- telling George: NOT CHECKED, while NG Runner can't
+
+/** What this run has for him; {ok, error} when there was something to send, else null. */
+function notCheckedCheck_(beat, now) {
+  if (!beat || !roleAddress_('george', 'EMAIL')) return null;
+  var gap = 'beat ' + beat.seq;
+  var kept = state_('watchdog.george');
+  var told = kept && kept.gap === gap ? kept : { gap: gap, risks: false, through: beat.at, walked: 0 };
+  var risks = told.risks ? [] : notCheckedRisks_(beat);
+  var walk = walkIsDue_(told, now) ? postedSince_(told.through, now) : null;
+  if (walk) told.walked = now.getTime();
+  var posted = walk ? walk.posted : [];
+  var lines = notCheckedLines_(risks, posted, now);
+  var result = lines.length ? tellGeorge_(lines) : null;
+  if (!result || result.ok) {
+    told.risks = true;
+    if (walk && walk.whole) told.through = newestPost_(posted, told.through);
+  }
+  setState_('watchdog.george', told);
+  return result;
+}
+
+function notCheckedRisks_(beat) {
+  return (beat.risks || []).filter(function (risk) { return /^Not checked/.test(risk); });
+}
+
+function walkIsDue_(told, now) {
+  return setting_('NG_JOBS_FOLDER_ID') !== null
+    && now.getTime() - told.walked >= WATCHDOG_WALK_EVERY_MS;
+}
+
+/** One line each, numbered, as a person reads them; a long list is held to a few and a count. */
+function notCheckedLines_(risks, posted, now) {
+  var lines = risks.concat(posted.map(function (post) {
+    return post.job + ': NOT CHECKED ' + materialWords_(post.material) + ', posted ' + when_(post.at, now)
+      + '. NG Runner is offline.';
+  }));
+  var shown = lines.slice(0, WATCHDOG_NOT_CHECKED_LINES);
+  if (lines.length > shown.length) {
+    shown.push((lines.length - shown.length) + ' more were posted while NG Runner was offline.');
+  }
+  return shown.map(function (line, i) { return (i + 1) + '. ' + line; });
+}
+
+function tellGeorge_(lines) {
+  if (shadowRun_()) return alert_(SHADOW_TITLE + NOT_CHECKED_SUBJECT, lines);
+  var result = sendTo_('george', setting_('ROLE_GEORGE_CHANNEL', 'email'), NOT_CHECKED_SUBJECT, lines, true);
+  if (!result.ok) log_('warn', 'the watchdog could not tell george: ' + result.error);
+  return result;
+}
+
+/**
+ * The material folders in NG Jobs updated after a time, oldest first: {posted, whole}, or null when
+ * NG Jobs can't be read at all, which is logged and costs George only these lines. Old isn't watched,
+ * as on Jim's PC. whole: it got through all of them. One that didn't says what it found, and the next
+ * walk looks again from the same time, so a line may be said twice and is never lost.
+ */
+function postedSince_(afterMs, now) {
+  var root;
+  try {
+    root = DriveApp.getFolderById(setting_('NG_JOBS_FOLDER_ID'));
+  } catch (err) {
+    log_('warn', 'NG Jobs could not be read, so posts while NG Runner is offline are not looked for: ' + err.message);
+    return null;
+  }
+  var posted = [];
+  var whole = true;
+  var began = now_().getTime();
+  try {
+    listFolders_(root).forEach(function (job) {
+      if (job.getName().toLowerCase() === 'old') return;
+      if (now_().getTime() - began >= WATCHDOG_WALK_BUDGET_MS) throw new Error('the walk ran out of time');
+      listFolders_(job).forEach(function (material) {
+        var at = material.getLastUpdated().getTime();
+        if (at > afterMs) posted.push({ job: job.getName(), material: material.getName(), at: at });
+      });
+    });
+  } catch (err) {
+    whole = false;
+    log_('warn', 'a walk of NG Jobs stopped early: ' + err.message);
+  }
+  posted.sort(function (a, b) { return a.at - b.at; });
+  return { posted: posted, whole: whole };
+}
+
+function newestPost_(posted, through) {
+  return posted.reduce(function (newest, post) { return Math.max(newest, post.at); }, through);
+}
+
+/** A material folder as Jim reads it, as NG Runner's own messages say it: 3/4 Classic White. */
+function materialWords_(name) {
+  return String(name)
+    .replace(/([A-Za-z0-9])[-_](?=[A-Za-z])|_/g, function (match, before) { return before ? before + ' ' : ' '; })
+    .split(/\s+/).join(' ').trim()
+    .replace(/^([0-9])-([0-9])(?= )/, '$1/$2');
 }
 
 // ----- telling Jim

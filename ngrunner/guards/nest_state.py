@@ -16,13 +16,16 @@ what isn't known is never a pass:
    fault of the three, doubled holes first, so Jim re-nests once and not once per fault. Clearing a
    size only takes that fault off the list.
 6. A nest with parts and no sheets: SAVE_NEST.
-7. A nest, both checks passing, the design matching, and all of it on the files on disk right now:
-   NEST_CHECKED. On today's data nothing reaches this, since no .opt can be read yet.
-8. Anything else: NOT_CHECKED, saying what was read and that the nest was not.
+7. A nest, both checks passing, the design matching, every program it names in the folder, and all of
+   it on the files on disk right now: NEST_CHECKED. With no toolkit nothing reaches this, however
+   good the nest looks, since only Jim's own checks can pass one.
+8. Anything else: NOT_CHECKED, saying what was read and that the nest was not, and what stopped it:
+   a nest that can't be read, or a program it names that isn't in the folder.
 
 A clean read of the programs can never say more than row 8 does: a program check can raise DO NOT
 CUT, and only Jim's own checks can say "Nest checked". No verdict means it may be cut, and the lint
-refuses any line that says so.
+refuses any line that says so. Nothing read from a .opt raises DO NOT CUT by itself: no real one has
+been read yet, and a doubt about reading a file must cost a NOT CHECKED, never a false alarm.
 
 The words are in messages.templates, since a DO NOT CUT says the same on the board and in its
 message. Which programs a row found are in doubled_programs() and past_size_programs(), for the card
@@ -45,6 +48,7 @@ from ngrunner.guards.facts import (
     BR_CAM_NEST, COULD_NOT_VERIFY, DESIGN_MATCHES, FAILED, PASSED, SHEET_SIZE, CheckedFiles,
     DesignMatch, OptFacts, ToolVerdict,
 )
+from ngrunner.guards.opt import reconcile
 from ngrunner.guards.tap import Tap
 from ngrunner.messages import templates as words
 
@@ -78,6 +82,7 @@ class MaterialEvidence:
     seen_at_install: all of them were there at the first scan, unchanged.
     opt, tools, design: the nest, Jim's checks and the design match. None or empty: not known.
     labels: what the labels fallback found, which can only add a "could not verify" note.
+    opt_problem: why a .opt that is there couldn't be read, in plain words. opt is None then.
     cleared: the sha256 of each program whose size Jim cleared on this job and material
         (store.cleared_programs).
     before_install: (name, sha256) of each program in taps that was there at the first scan and
@@ -99,6 +104,7 @@ class MaterialEvidence:
     room_hashes: tuple[tuple[str, str], ...] = ()
     read_at: datetime | None = None
     labels: LabelsMatch | None = None
+    opt_problem: str | None = None
 
 
 @dataclass(frozen=True)
@@ -118,7 +124,7 @@ def decide(ev: MaterialEvidence) -> Verdict:
     """The verdict on one material: the first row of the table that matches (module docstring)."""
     if ev.seen_at_install:
         return _verdict(NestState.NOT_CHECKED, (words.POSTED_BEFORE,))
-    if not ev.taps and ev.opt is None:
+    if not ev.taps and ev.opt is None and ev.opt_problem is None:
         return _verdict(NestState.NOT_POSTED, ())
     faults = _faults(ev)
     if faults:
@@ -208,8 +214,10 @@ def _nest_is_checked(ev: MaterialEvidence) -> bool:
     """Row 7, all of it. Each pass must have run on the very files on disk now, so a change to the
     nest, a program or a room takes it back to NOT_CHECKED. A check that doesn't say what it ran on
     counts for nothing, and neither does anything short of both tools and a real design match: the
-    labels fallback is not the design's match."""
-    if ev.opt is None or ev.opt.parts <= 0 or not ev.opt.sheets:
+    labels fallback is not the design's match. A program the nest names must be in the folder."""
+    if ev.opt is None or ev.opt.parts <= 0 or ev.opt.physical_sheets <= 0 or not ev.opt.runs:
+        return False
+    if reconcile(ev.opt, ev.taps).missing:
         return False
     if not ev.taps or not ev.room_hashes or not all(_can_be_read(tap) for tap in ev.taps):
         return False
@@ -240,8 +248,13 @@ def _past_size_notes(material: str, past: tuple[Tap, ...]) -> tuple[str, ...]:
 
 
 def _not_checked_notes(ev: MaterialEvidence) -> tuple[str, ...]:
-    """Row 8: what was read, then anything a check or the labels could not verify."""
+    """Row 8: what was read, what stopped the nest being read or fitting its programs, then anything
+    a check or the labels could not verify."""
     notes = [_what_was_read(ev)]
+    if ev.opt_problem is not None:
+        notes.append(ev.opt_problem)
+    if ev.opt is not None and ev.taps and (missing := reconcile(ev.opt, ev.taps).missing):
+        notes.append(words.nest_names_missing(missing))     # none at all: not posted yet, row 8 says
     notes += [tool.line.strip() for tool in ev.tools
               if tool.code == COULD_NOT_VERIFY and tool.line.strip()]
     if ev.labels is not None and ev.labels.code in _LABELS_DID_NOT_FIT:

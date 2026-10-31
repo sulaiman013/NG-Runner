@@ -33,7 +33,7 @@ import sys
 import zipfile
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from io import BytesIO
 from pathlib import Path, PureWindowsPath
 from typing import Any
@@ -55,20 +55,33 @@ P1A_MODULES: tuple[str, ...] = (
     "ngrunner.selftest", "ngrunner.intake.pipeline", "ngrunner.interlock", "ngrunner.jobmodel",
     "ngrunner.messenger", "ngrunner.supervisor", "ngrunner.canary",
     "ngrunner.intake.studio_designs",
-    "ngrunner.guards.facts", "ngrunner.guards.headsup", "ngrunner.guards.kept",
-    "ngrunner.guards.labels", "ngrunner.guards.lockcheck", "ngrunner.guards.nest_state",
+    "ngrunner.guards.bak", "ngrunner.guards.facts", "ngrunner.guards.headsup",
+    "ngrunner.guards.kept", "ngrunner.guards.labels", "ngrunner.guards.lockcheck",
+    "ngrunner.guards.nest_state",
+    "ngrunner.guards.nestfiles", "ngrunner.guards.observer", "ngrunner.guards.opt",
     "ngrunner.guards.preflight", "ngrunner.guards.reads", "ngrunner.guards.scan",
     "ngrunner.guards.sheets", "ngrunner.guards.takeoffs", "ngrunner.guards.tap",
-    "ngrunner.guards.tracker", "ngrunner.guards.watch",
+    "ngrunner.guards.tool_checks", "ngrunner.guards.tracker", "ngrunner.guards.watch",
+    "ngrunner.toolkit",
     "flask", "waitress", "requests", "pystray", "PIL", "psutil", "win32api", "pywintypes",
     "pythoncom", "win32com", "win32com.shell", "win32com.propsys", "win32cred", "win32timezone",
-    "windows_toasts",
+    "win32job", "runpy", "pkgutil", "windows_toasts",
     "cryptography",
     "cryptography.hazmat.primitives.ciphers.aead", "pypdf", "tzdata", "sqlite3",
     "playwright.sync_api",
 )
 
 SANDBOX_CONTENT = b"NG Runner self-test: safe to delete\n"
+# As Jim's docs give one (RULES 705-724), and made up: no real one has been read yet.
+_SMALL_NEST = b"\xff\xfe" + (
+    '<OptimizeJob><OptimizeMaterial Width="1244.6" Length="2463.8"/><OptimizePart/>'
+    '<OptimizeSheet Quan="1" Flipped="False"><OptimizeGCodeRun Filename="TESS01.TAP"/></OptimizeSheet>'
+    '</OptimizeJob>').encode("utf-16-le")
+_SMALL_TOOL = (
+    "import sys\n"
+    "sys.stdout.buffer.write((sys.argv[1] + ' utf8=' + str(sys.flags.utf8_mode) + ' caf\\u00e9')"
+    ".encode(sys.stdout.encoding))\n"
+    "sys.exit(3)\n")
 _CREDENTIAL_PREFIX = "NGRunner-selftest"
 _CREDENTIAL_NAME = "signing_key"
 
@@ -87,10 +100,12 @@ def run_self_test(
     samples: Callable[[], Iterable[object]] | None = None,
     lint: Callable[[object], list[str]] | None = None,
     credentials: Callable[[], Secrets] | None = None,
+    tools: Callable[[Path], list[str]] | None = None,
 ) -> list[str]:
     """Every problem found, one plain sentence each; empty means this build may run. migrate
-    and lint default to the store's and the lint module's own, samples to message_samples, and
-    credentials to Credential Manager under the self-test's own name (tests fake them)."""
+    and lint default to the store's and the lint module's own, samples to message_samples,
+    credentials to Credential Manager under the self-test's own name, and tools to running a
+    made-up toolkit for real (tests fake them)."""
     problems = import_problems(modules)
     if getattr(sys, "frozen", False) and not sys.flags.utf8_mode:
         problems.append("This build does not run in UTF-8 mode (ngrunner.spec must pass X utf8).")
@@ -99,6 +114,7 @@ def run_self_test(
         problems += _migration(paths, work / "database", migrate)
         problems += forbidden_write_problems(work / "writes")
         problems += guard_reader_problems(work / "guards")
+        problems += (tools or tool_run_problems)(work / "tools")
     finally:
         left = remove_own_tree(work, inside=paths.staging)
         if left:
@@ -429,6 +445,10 @@ def _nest_samples(t: Any, job: str) -> list[object]:
     skis = "Tafisa Apres Skis"
     notes = (t.POSTED_BEFORE, t.SAVE_THE_NEST, t.NO_PROGRAMS_YET,
              t.nest_checked_note(checked, six),
+             t.NEST_UNREADABLE, t.NEST_SETTLING, t.NEST_CHANGED, t.nest_names_missing(doubled),
+             t.lock_held(False, "JDELA", timedelta(days=2)), t.lock_held(True, None, timedelta(minutes=5)),
+             t.open_save_nest(job, classic), t.nest_on_wrong_sheet("61x109", "49x97"),
+             t.nest_holes_doubled(8), t.nest_holes_doubled(1),
              t.programs_read_note(at=checked, sheet="49x97"),
              t.programs_read_note(at=checked, sheet=None, merged=1),
              t.programs_read_note(at=None, sheet="49x97", cleared=1),
@@ -444,6 +464,7 @@ def _nest_samples(t: Any, job: str) -> list[object]:
         t.sheet_cleared(job, classic, programs=(("TESS07.TAP", "61x109"), ("TESS08.TAP", None)),
                         at=checked),
         t.fault_gone(job, classic, at=checked),
+        t.pass_gone(job, classic, at=checked),
         *(Message("nest_risk", "NG Runner", (line,)) for line in (
             t.open_do_not_cut(job, classic, trial=True, reasons=(t.doubled_holes(8, doubled),
                                                                  t.past_its_size(1, "61x109",
@@ -523,6 +544,8 @@ _SMALL_SNAPSHOT = {
 def guard_reader_problems(work: Path) -> list[str]:
     """Each guard's reader once, on made-up files in work. Each must give what it should."""
     from ngrunner.guards.labels import read_catalog, read_labels
+    from ngrunner.guards.observer import mozaik_running, read_locks
+    from ngrunner.guards.opt import read_opt
     from ngrunner.guards.preflight import read_job_sheet
     from ngrunner.guards.reads import read_shared
     from ngrunner.guards.tap import read_tap
@@ -536,6 +559,9 @@ def guard_reader_problems(work: Path) -> list[str]:
         ("a labels file", lambda: read_labels(_small_pdf()) == ()),
         ("the parts catalog", lambda: read_catalog(b"Job,Part,Pieces,JobModified\n") == ()),
         ("a tracker snapshot", lambda: _snapshot_rows(work, read_tracker) == 0),
+        ("a nest file", lambda: read_opt(_SMALL_NEST).physical_sheets == 1),
+        ("a lock file", lambda: _lock_owner(work, read_locks) == "TESTER"),
+        ("the list of running programs", lambda: mozaik_running() is not None),
     ]
     problems = []
     for what, check in checks:
@@ -544,6 +570,32 @@ def guard_reader_problems(work: Path) -> list[str]:
                 problems.append(f"The guards read {what} wrongly in this build.")
         except Exception as exc:  # noqa: BLE001 - whatever stops a reader fails this build
             problems.append(f"The guards can't read {what} in this build ({_reason(exc)}).")
+    return problems
+
+
+def tool_run_problems(work: Path) -> list[str]:
+    """A made-up toolkit copied and run for real, by this build itself. Only this shows what a real
+    run depends on and importing can't: NGRunner.exe's run-tool, runpy, UTF-8 mode, and the Job Object
+    and its kill. Each ran first on a real .exe here, which is where a module imported by name shows
+    itself missing (the first real run, 2026-10-30)."""
+    from ngrunner.clock import SystemClock
+    from ngrunner.toolkit import run_tool, take_snapshot
+
+    try:
+        source = work / "source"
+        source.mkdir(parents=True)
+        (source / "say.py").write_text(_SMALL_TOOL, encoding="utf-8")
+        (source / "hang.py").write_text("import time\ntime.sleep(600)\n", encoding="utf-8")
+        copy = take_snapshot(source, work / "copy", clock=SystemClock())
+        said = run_tool(copy, "say.py", ["--a-flag"])
+        hung = run_tool(copy, "hang.py", [], timeout_s=1)
+    except Exception as exc:  # noqa: BLE001 - whatever stops a run fails this build
+        return [f"A toolkit script can't be run in this build ({_reason(exc)})."]
+    problems = []
+    if said.exit_code != 3 or said.stdout.strip() != "--a-flag utf8=1 caf\u00e9":
+        problems.append("A toolkit script ran wrongly in this build, so no check of it could be believed.")
+    if not hung.timed_out:
+        problems.append("A toolkit script that hung was not stopped in this build.")
     return problems
 
 
@@ -558,6 +610,13 @@ def _job_sheet_name(work: Path, read_job_sheet: Callable[[Path], Any]) -> str:
     with zipfile.ZipFile(path, "w") as sheet:
         sheet.writestr("word/document.xml", _SMALL_SHEET)
     return read_job_sheet(path).name
+
+
+def _lock_owner(work: Path, read_locks: Callable[..., Any]) -> str | None:
+    folder = work / "job"
+    folder.mkdir()
+    (folder / "MozaikJob.LCK").write_bytes(b"TESTER\r\n")
+    return read_locks(folder, now=datetime.now(timezone.utc)).lck_owner
 
 
 def _small_pdf() -> bytes:
