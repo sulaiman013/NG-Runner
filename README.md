@@ -334,7 +334,9 @@ Kickoff call with Jim, Mary, Nicole and Sulaiman. Jim hands over his IC-to-Mozai
 | 3:45 AM | **The drawing-reading test (P2), built up to the model call** | 41 drawings prepared from real summaries, none with any text over it, and 26 walls paired with what was really cut. It waits for a provider key |
 | 4:39 AM | Pushed: [`784170b`](https://github.com/sulaiman013/NG-Runner/commit/784170b) | Phase 1b's nest guard finished: real nest files, Jim's two checks, who holds a job, plus the tracker inbox writer and the `.bak` check. 6,166 of 6,167 tests on a clean checkout; the one timing test was made to retry on a busy PC |
 | 5:39 AM | Pushed: [`be665d0`](https://github.com/sulaiman013/NG-Runner/commit/be665d0) | **Phase 2's shared converter**, IC summary to takeoff. It leaves what the rules don't decide as "could not verify", and matches Jim's frozen jobs exactly. **6,552 tests on a clean checkout** |
-| 5:45 AM | **Now:** adopting Jim's toolkit through his own regression, the nest-to-design match, and the takeoff on intake | Running |
+| 1:30 AM | **The first real night's work, in shadow on real NG Jobs** | It ran on time, and its "ran" and DEV lines reached Sulaiman by email, with receipts read back |
+| 6:47 AM | **The morning check of the overnight shadow run** | Still running, still in shadow. NG Jobs is file for file as it was at 12:28 AM, and NG Runner wrote nothing there. No new rows or programs came in overnight, so no alarm, false or real. No errors or warnings in the log |
+| 6:47 AM | **Now:** adopting Jim's toolkit through his own regression, the nest-to-design match, and the takeoff on intake | Running |
 
 ## Measured so far
 
