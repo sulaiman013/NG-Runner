@@ -24,7 +24,14 @@ What each fact means here, which is the contract with whoever writes it:
                operation with a note is a refused filing: BLOCKED, with the refusal as its note,
                unless the note says "Old folder": then there is nothing to fix, so OBSERVED. One
                that ended "failed" or "expired", with nothing else open, is NOT_RUN.
-    cards      Open ones, oldest first. An answer is the pipeline's to act on.
+    cards      Open ones, oldest first. An answer is the pipeline's to act on. A sheet size card
+               about a folder with no job has neither ID nor row, and is named from what it asked
+               (guards.kept), so it shows like any other.
+    nests      One row per material, the guard's last verdict. DO NOT CUT is red and on Your list.
+               posted_at None means nothing was posted since install, so it never alarms. A posted
+               NOT CHECKED goes in the digest and the heartbeat, and turns the tray red only once a
+               toolkit snapshot is adopted: today every new post reads so, and a red that never
+               clears teaches people to ignore red (Sulaiman's ruling).
     dev        Open items, by job. A code in templates.ALARMS is that alarm standing, so close it
                when the alarm clears. urgent turns the tray red. told_jim_at, set by the night's
                work, puts the item on the next digest's For you line, so it is told once.
@@ -40,18 +47,23 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 from ngrunner.board.views import (
-    BoardView, CardView, EventView, HealthView, JobRow, ListItem, Tick, TrayState, tray_tooltip,
+    BoardView, CardView, EventView, HealthView, JobRow, ListItem, MaterialRow, Tick, TrayState,
+    tray_tooltip,
 )
 from ngrunner.cards import Card, age_days, card_from_record, reminder_due
 from ngrunner.clock import Clock, fmt_clock, fmt_date, fmt_day, pacific_day
 from ngrunner.config import Settings
 from ngrunner.digest import DigestView, JobLine
 from ngrunner.fab import install_date
+from ngrunner.guards.headsup import UNREADABLE_NOTE
+from ngrunner.guards.kept import folder_of_card, saved_preflights, takeoffs_said
+from ngrunner.interlock import GARAGE_SUFFIX
 from ngrunner.intake.pipeline import (
     CLOSED_BY_FILING, FETCH_STUCK, TRIAL_ONLY_EVENT, all_filed_facts, filed_facts, filed_note_of,
 )
@@ -59,9 +71,10 @@ from ngrunner.interlock import is_paused
 from ngrunner.messages import Message, templates
 from ngrunner.messages.lint import ABOUT_ITSELF, check_line, lint
 from ngrunner.store import (
-    CardRecord, DevRecord, EventRecord, FabRowRecord, JobRecord, PendingRecord, Store,
+    CardRecord, DevRecord, EventRecord, FabRowRecord, JobRecord, NestRecord, PendingRecord, Store,
     get_list_state, get_state, get_state_time, governing_render, list_cards, list_dev, list_events,
-    list_fab_rows, list_jobs, list_outbox, list_pending, list_renders, outbox_without_receipt,
+    list_fab_rows, list_jobs, list_nests, list_outbox, list_pending, list_renders, list_snapshots,
+    outbox_without_receipt,
 )
 
 COULD_NOT_VERIFY = "could not verify"  # an install date that doesn't read as one date for sure
@@ -92,7 +105,9 @@ _TICKS = (
     ("summary", "Fetched and checked twice"),
     ("filed", "Filed"),
     ("branch", "Closet or garage"),
+    ("nest", "Nest"),
 )
+_NOT_CHECKED_SHOWN = 10                # every post reads so until the toolkit is here
 _NOT_ON_THE_BOARD = ("seen_at_install", "gone")  # a row with no job in these: nothing will happen
 _ROW_WAITS = ("new", "waiting_list", "matched")  # a row in these moves on by itself
 
@@ -136,6 +151,8 @@ class _JobFacts:
     blocked_since: datetime | None
     facts: dict[str, Any] | None = None     # pipeline.filed_facts, read once for all the jobs
     trial_only: bool = False
+    nests: tuple[NestRecord, ...] = ()      # its materials, as the guard last read them
+    folders: tuple[str, ...] = ()           # the names its NG Jobs folder can go by
 
 
 @dataclass(frozen=True)
@@ -150,21 +167,32 @@ class _Facts:
     names: dict[str, str]
     overdue: bool
     standing: frozenset[str] = frozenset()  # the codes of the alarms the store says stand
+    nests: tuple[NestRecord, ...] = ()      # every material with something posted or from before
+    toolkit_adopted: bool = False           # a posted NOT CHECKED means something only then
+    lock: dict[str, dict[str, Any]] = field(default_factory=dict)      # the last pre-flights
+    takeoffs: dict[str, dict[str, Any]] = field(default_factory=dict)  # by folder
+    card_folders: dict[str, str] = field(default_factory=dict)         # cards with no job or row
+    ng_jobs: Path | None = None
 
 
-def _read(store: Store, now: datetime) -> _Facts:
+def _read(store: Store, now: datetime, settings: Settings | None = None) -> _Facts:
     jobs, rows = list_jobs(store), list_fab_rows(store)
     names = {job.studio_id: job.name for job in jobs}
     texts = {row.id: row.text for row in rows}
-    # A card about neither a job nor a row can't be shown or acted on; add_card allows one.
-    records = tuple(c for c in list_cards(store) if c.studio_id or c.fab_row_id)
+    # A card about neither a job, a Fab row nor a folder can't be shown or acted on; add_card allows
+    # one. It costs only itself: the supervisor's command box goes on working for the rest.
+    open_cards = list_cards(store)
+    card_folders = {c.id: folder for c in open_cards if not (c.studio_id or c.fab_row_id)
+                    and (folder := folder_of_card(store, c.id)) is not None}
+    records = tuple(c for c in open_cards if c.studio_id or c.fab_row_id or c.id in card_folders)
     dev, events = tuple(list_dev(store)), tuple(list_events(store))
+    nests = tuple(n for n in list_nests(store) if n.state != "not_posted")
     return _Facts(
         now=now,
-        jobs=_job_facts(store, jobs, rows, records, dev, events),
+        jobs=_job_facts(store, jobs, rows, records, dev, events, nests),
         free_rows=tuple(r for r in rows
                         if r.studio_id is None and r.state not in _NOT_ON_THE_BOARD),
-        cards=tuple(card_from_record(c, job=names.get(c.studio_id or ""),
+        cards=tuple(card_from_record(c, job=names.get(c.studio_id or "") or card_folders.get(c.id),
                                      row=texts.get(c.fab_row_id or 0)) for c in records),
         records=records,
         dev=dev,
@@ -172,6 +200,12 @@ def _read(store: Store, now: datetime) -> _Facts:
         names=names,
         overdue=_no_receipt(store, now),
         standing=_standing(store, now, dev),
+        nests=nests,
+        toolkit_adopted=any(snapshot.adopted for snapshot in list_snapshots(store)),
+        lock=saved_preflights(store),
+        takeoffs=takeoffs_said(store),
+        card_folders=card_folders,
+        ng_jobs=None if settings is None else settings.ng_jobs,
     )
 
 
@@ -182,6 +216,7 @@ def _job_facts(
     cards: Iterable[CardRecord],
     dev: Iterable[DevRecord],
     events: Iterable[EventRecord],
+    nests: Iterable[NestRecord] = (),
 ) -> tuple[_JobFacts, ...]:
     """Grouped once, not searched per job: every page and tray update reads all the jobs, and
     jobs and their nightly re-fetches only pile up. Finished operations are left out but for
@@ -218,9 +253,22 @@ def _job_facts(
             blocked_since=_blocked_since(refusals_of.get(job.studio_id, ())),
             facts=facts_of.get(job.studio_id),
             trial_only=job.studio_id in trial_only,
+            nests=tuple(n for n in nests if _folder_is_this_jobs(n, job)),
+            folders=_folders_of(job),
         )
         for job in jobs
     )
+
+
+def _folders_of(job: JobRecord) -> tuple[str, ...]:
+    return tuple(dict.fromkeys(name for name in (job.folder, job.name, job.name + GARAGE_SUFFIX)
+                               if name))
+
+
+def _folder_is_this_jobs(nest: NestRecord, job: JobRecord) -> bool:
+    """By its name as well: a post can come before its Fab row, and a row after it."""
+    return nest.studio_id == job.studio_id or nest.folder.casefold() in {
+        name.casefold() for name in _folders_of(job)}
 
 
 def _blocked_since(events: Iterable[EventRecord]) -> datetime | None:
@@ -263,7 +311,7 @@ def board_view(
     job's facts are all in the store. health is the supervisor's, for what only it can see (the
     folders, the toast setting); the alarms the store holds are added to it, so the Health page
     says what the digest says."""
-    facts = _read(store, clock.now())
+    facts = _read(store, clock.now(), settings)
     return BoardView(
         jobs=_board_rows(store, facts, paused=paused),
         your_list=tuple(item for _, item in _your_list(facts, paused=paused)),
@@ -277,12 +325,61 @@ def board_view(
 
 
 def _board_rows(store: Store, facts: _Facts, *, paused: bool) -> tuple[JobRow, ...]:
-    rows = [_job_row(store, j, facts.now, paused=paused) for j in facts.jobs
+    rows = [_job_row(store, j, facts, paused=paused) for j in facts.jobs
             if _still_on_the_board(j, facts.now)]
     away = "ng_jobs_unreachable" in facts.standing
     rows += [_free_row(row, _row_cards(row, facts), paused=paused, away=away)
              for row in facts.free_rows]
+    rows += _folder_rows(facts)
     return tuple(sorted(rows, key=_board_order))
+
+
+def _folder_rows(facts: _Facts) -> list[JobRow]:
+    """A folder in NG Jobs no job has yet, once a guard has something to say about it: what was
+    there at install stays off the board, or 65 old jobs would crowd it."""
+    taken = {name.casefold() for j in facts.jobs for name in j.folders}
+    nests_of: dict[str, list[NestRecord]] = {}
+    for nest in facts.nests:
+        if nest.folder.casefold() not in taken:
+            nests_of.setdefault(nest.folder, []).append(nest)
+    cards_of: dict[str, list[CardRecord]] = {}
+    for card in facts.records:
+        if card.id in facts.card_folders and facts.card_folders[card.id].casefold() not in taken:
+            cards_of.setdefault(facts.card_folders[card.id], []).append(card)
+    unread = [folder for folder, said in facts.takeoffs.items()
+              if said.get("bad") and folder.casefold() not in taken]
+    rows = []
+    for folder in sorted({*nests_of, *cards_of, *unread}):
+        nests = nests_of.get(folder, [])
+        if (any(nest.posted_at or nest.state == "do_not_cut" for nest in nests)
+                or folder in cards_of or folder in unread):
+            cards = cards_of.get(folder, ())
+            rows.append(JobRow(
+                studio_id=None, name=folder, install=None,
+                ticks=_ticks(nest=_nest_tick(nests)),
+                next_step=_card_step(cards[0]) if cards else templates.FOLDER_STEP,
+                materials=_material_rows(nests, facts),
+                notes=_takeoff_notes((folder,), facts),
+                lock=_lock_lines((folder,), facts)))
+    return rows
+
+
+def _material_rows(nests: Iterable[NestRecord], facts: _Facts) -> tuple[MaterialRow, ...]:
+    return tuple(MaterialRow(
+        material=nest.material, state=nest.state, note="; ".join(nest.reasons), at=nest.posted_at,
+        file=None if facts.ng_jobs is None else facts.ng_jobs / nest.folder / nest.material,
+        shown=templates.material_words(nest.material),
+        trial=nest.trial and nest.posted_at is not None) for nest in nests)
+
+
+def _takeoff_notes(folders: Iterable[str], facts: _Facts) -> tuple[str, ...]:
+    bad = any(facts.takeoffs.get(folder, {}).get("bad") for folder in folders)
+    return (UNREADABLE_NOTE,) if bad else ()
+
+
+def _lock_lines(folders: Iterable[str], facts: _Facts) -> tuple[str, ...]:
+    return tuple(item["text"] for folder in folders
+                 for item in facts.lock.get(folder, {}).get("items", ()))
 
 
 def _still_on_the_board(j: _JobFacts, now: datetime) -> bool:
@@ -290,6 +387,8 @@ def _still_on_the_board(j: _JobFacts, now: datetime) -> bool:
     Then nothing more happens to it, and every page would go on reading it: jobs only pile up. Its
     folder, its events in History and "add job" still know it."""
     if j.cards or j.dev or any(r.state != "gone" for r in j.rows):
+        return True
+    if any(nest.state == "do_not_cut" for nest in j.nests):
         return True
     if any(not p.kind.startswith("refetch") for p in j.pending):
         return True
@@ -303,15 +402,18 @@ def _board_order(row: JobRow) -> tuple[bool, date, str]:
     return filed, day, row.name.casefold()
 
 
-def _job_row(store: Store, j: _JobFacts, now: datetime, *, paused: bool) -> JobRow:
+def _job_row(store: Store, j: _JobFacts, facts: _Facts, *, paused: bool) -> JobRow:
     overlay = _overlay(j, paused=paused)
     return JobRow(
         studio_id=j.job.studio_id,
         name=j.job.name,
         install=_install(*_install_cells(j)),
         ticks=_job_ticks(store, j, overlay),
-        next_step=_next_step(store, j, overlay, now),
+        next_step=_next_step(store, j, overlay, facts.now),
         overlay=overlay,
+        materials=_material_rows(j.nests, facts),
+        notes=_takeoff_notes(j.folders, facts),
+        lock=_lock_lines(j.folders, facts),
     )
 
 
@@ -352,8 +454,10 @@ def _row_cards(row: FabRowRecord, facts: _Facts) -> tuple[CardRecord, ...]:
 
 
 def _ticks(*, row: str = "todo", job: str = "todo", summary: str = "todo", filed: str = "todo",
-           branch: str = "todo", branch_label: str | None = None) -> tuple[Tick, ...]:
-    states = {"row": row, "job": job, "summary": summary, "filed": filed, "branch": branch}
+           branch: str = "todo", branch_label: str | None = None,
+           nest: str = "todo") -> tuple[Tick, ...]:
+    states = {"row": row, "job": job, "summary": summary, "filed": filed, "branch": branch,
+              "nest": nest}
     labels = dict(_TICKS)
     if branch_label:
         labels["branch"] = branch_label
@@ -369,7 +473,16 @@ def _job_ticks(store: Store, j: _JobFacts, overlay: str | None) -> tuple[Tick, .
         filed="done" if j.filed_at else ("blocked" if overlay == "BLOCKED" else "todo"),
         branch="done" if j.job.branch else ("blocked" if "closet_or_garage" in kinds else "todo"),
         branch_label=j.job.branch.capitalize() if j.job.branch else None,
+        nest=_nest_tick(j.nests),
     )
+
+
+def _nest_tick(nests: Iterable[NestRecord]) -> str:
+    """Done only when every material is Nest checked; any DO NOT CUT blocks it."""
+    states = {nest.state for nest in nests}
+    if "do_not_cut" in states:
+        return "blocked"
+    return "done" if states == {"nest_checked"} else "todo"
 
 
 def _summary_tick(store: Store, j: _JobFacts, kinds: set[str]) -> str:
@@ -607,7 +720,22 @@ def _your_list(facts: _Facts, *, paused: bool) -> list[tuple[datetime, ListItem]
         blocked = _blocked_item(j, facts.now, paused=paused)
         if blocked is not None:
             items.append(blocked)
+    items += [_do_not_cut_item(nest, facts) for nest in _do_not_cuts(facts)]
     return sorted(items, key=lambda item: item[0])
+
+
+def _do_not_cuts(facts: _Facts) -> list[NestRecord]:
+    return [nest for nest in facts.nests if nest.state == "do_not_cut"]
+
+
+def _do_not_cut_item(nest: NestRecord, facts: _Facts) -> tuple[datetime, ListItem]:
+    raised = nest.posted_at or nest.updated_at
+    return raised, ListItem(
+        _ended(_fit(templates.open_do_not_cut(nest.folder, nest.material, reasons=nest.reasons,
+                                              trial=nest.trial),
+                    "A material is DO NOT CUT; see the board")),
+        job=nest.folder, age_days=(facts.now - raised) // timedelta(days=1),
+        file=None if facts.ng_jobs is None else facts.ng_jobs / nest.folder / nest.material)
 
 
 def _blocked_item(j: _JobFacts, now: datetime, *, paused: bool) -> tuple[datetime, ListItem] | None:
@@ -662,10 +790,12 @@ def tray_state(
     paused: bool,
     shadow: bool,
 ) -> TrayState:
-    """The tray: grey when paused; red when NG Runner is unwell; amber with the count of Your
-    list; green otherwise. unwell is what only the supervisor can see. No receipt for 5 minutes
-    and an urgent DEV item are in the store, so they count whatever it passes. An unreadable
-    store is the supervisor's to show, as no view can be read then."""
+    """The tray: red for DO NOT CUT, whatever else stands, and for a posted NOT CHECKED once a
+    toolkit snapshot is adopted; grey when paused; red when NG Runner is unwell; amber with the count
+    of Your list; green otherwise. A pause stops filing and no guard, so it hides neither. unwell is
+    what only the supervisor can see. No receipt for 5 minutes and an urgent DEV item are in the
+    store, so they count whatever it passes. An unreadable store is the supervisor's to show, as no
+    view can be read then."""
     return _tray(_read(store, clock.now()), unwell=unwell, paused=paused, shadow=shadow)
 
 
@@ -676,6 +806,12 @@ def _tray(facts: _Facts, *, unwell: bool, paused: bool, shadow: bool) -> TraySta
 
 
 def _tray_words(facts: _Facts, count: int, *, unwell: bool, paused: bool) -> tuple[str, str]:
+    do_not_cut = _do_not_cuts(facts)
+    if do_not_cut:
+        return "red", _do_not_cut_words(do_not_cut)
+    unchecked = _posted_not_checked(facts)
+    if unchecked and facts.toolkit_adopted:
+        return "red", _not_checked_words(unchecked)
     if paused:
         return "grey", _ended(templates.ALARMS["paused"])
     if facts.overdue:
@@ -692,6 +828,26 @@ def _tray_words(facts: _Facts, count: int, *, unwell: bool, paused: bool) -> tup
     if alarm:
         return "amber", _ended(alarm)
     return "green", "NG Runner is running, and nothing is waiting on you."
+
+
+def _do_not_cut_words(nests: list[NestRecord]) -> str:
+    if len(nests) == 1:
+        return _ended(_fit(f"DO NOT CUT {nests[0].folder}"
+                           f" {templates.material_words(nests[0].material)}",
+                           "DO NOT CUT: see the board"))
+    return f"DO NOT CUT: {len(nests)} materials; see the board."
+
+
+def _not_checked_words(nests: list[NestRecord]) -> str:
+    return f"NOT CHECKED: {len(nests)} posted {'material' if len(nests) == 1 else 'materials'}."
+
+
+def _posted_not_checked(facts: _Facts) -> list[NestRecord]:
+    """What was posted since install and nothing has checked, newest first. An old job's NOT CHECKED
+    has no time and says nothing new."""
+    posted = [nest for nest in facts.nests
+              if nest.state == "not_checked" and nest.posted_at is not None]
+    return sorted(posted, key=lambda nest: nest.posted_at, reverse=True)
 
 
 # ----- alarms: the same ones on the board, the digest and DEV
@@ -750,18 +906,33 @@ def digest_view(store: Store, settings: Settings | None, clock: Clock) -> Digest
     supervisor adds view.now to each of digest.reminders(view)'s reminded_at. A digest sent late:
     it adds templates.missed_digest to view.owner with dataclasses.replace."""
     now = clock.now()
-    facts = _read(store, now)
+    facts = _read(store, now, settings)
     day, since, paused = pacific_day(now), _last_digest(store), is_paused(store)
     items = _your_list(facts, paused=paused)
     return DigestView(
         now=now,
-        owner=(*_installing_soon(facts, day), *_alarms(store, facts, paused=None),
-               *_told_stuck(facts, since)),
+        owner=(*_nest_lines(facts), *_installing_soon(facts, day),
+               *_alarms(store, facts, paused=None), *_told_stuck(facts, since)),
         jobs=_touched(store, facts, since, paused=paused, day=day),
         cards=facts.cards,
         open_items=len(items),
         oldest_item=items[0][0] if items else None,
     )
+
+
+def _nest_lines(facts: _Facts) -> list[str]:
+    """Every DO NOT CUT, then the newest posted NOT CHECKED. Until the toolkit is here every post
+    reads so for as long as its job is in NG Jobs, so the list is held to a few and a count, or it
+    would bury the rest of the line."""
+    lines = [_fit(templates.open_do_not_cut(nest.folder, nest.material, reasons=nest.reasons,
+                                            trial=nest.trial),
+                  "A material is DO NOT CUT; see the board") for nest in _do_not_cuts(facts)]
+    unchecked = _posted_not_checked(facts)
+    lines += [_fit(templates.open_not_checked(nest.folder, nest.material, posted=nest.posted_at,
+                                              now=facts.now),
+                   templates.more_not_checked(1)) for nest in unchecked[:_NOT_CHECKED_SHOWN]]
+    more = len(unchecked) - _NOT_CHECKED_SHOWN
+    return [*lines, templates.more_not_checked(more)] if more > 0 else lines
 
 
 def _told_stuck(facts: _Facts, since: datetime | None) -> list[str]:

@@ -537,6 +537,13 @@ def test_who_waits_for_morning(tmp_path: Path) -> None:
     assert not waits("SHADOW DO NOT CUT Testerson_101426", "jim", "pushover")
     assert not waits("Your list", "jim", "email")
     assert not waits("A DEV line", "sulaiman", "email")
+    assert waits("Order heads-up", "will", "email")
+    assert waits("Nest checked", "george", "email")
+    assert not waits("DO NOT CUT Testerson_101426", "george", "email")
+    assert not waits("SHADOW DO NOT CUT Testerson_101426", "george", "email")
+    assert not waits("Cleared by Jim · Testerson_101426", "george", "email")
+    assert not waits("No longer DO NOT CUT · Testerson_101426", "george", "email")
+    assert waits("Cleared by Jim · Testerson_101426", "jim", "pushover")
 
 
 def test_barbaras_email_waits_out_the_night_with_no_row_and_keeps_its_id(tmp_path: Path) -> None:

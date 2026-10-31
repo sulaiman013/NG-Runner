@@ -9,8 +9,8 @@ its kind's fixed template instead, and the problems are returned for a DEV item,
 waits on Sulaiman.
 
 The nest guard's board notes live here too, since a DO NOT CUT says the same words on the board and
-in its message. No message ever says OK to cut: the strongest thing NG Runner can say is "Nest
-checked", and until the toolkit is here it can't say even that.
+in its message. No message ever says OK to cut (the lint refuses it): the strongest thing NG Runner
+can say is "Nest checked", and until the toolkit is here it can't say even that.
 """
 from __future__ import annotations
 
@@ -307,19 +307,39 @@ def design_mismatch_card(job: str, *, report: int, proposal: int) -> CardSpec:
 SHEET_SIZE_CHOICES = ("I added this sheet on purpose", "Re-nest it")
 
 
-def sheet_size_card(job: str, *, material: str, program: str, on: str | None,
+def sheet_size_card(job: str, *, material: str, programs: Sequence[tuple[str, str | None]],
                     expected: str) -> CardSpec:
-    """Jim's "A program is past its sheet size": program, read from its cutting moves, is on a sheet
-    this material's rule doesn't expect, or on none NG Runner knows (on is None). Mixed sizes are
-    legal, so only Jim can say it was on purpose, and a file's name can't: one such program was
-    re-posted with a plain name. It stays DO NOT CUT meanwhile."""
-    shown = _program_said(program)
-    sheet = _sheet_clause(on, expected, singular=True)
+    """Jim's "A program is past its sheet size", one card per material however many programs: one
+    real folder has 7. programs: (name, the sheet it reads as), read from its cutting moves; a sheet
+    of None is one NG Runner doesn't know. Mixed sizes are legal, so only Jim can say it was on
+    purpose, and a file's name can't: one such program was re-posted with a plain name. It stays DO
+    NOT CUT meanwhile."""
     return CardSpec(
         "sheet_size", job=job, row=None, choices=SHEET_SIZE_CHOICES,
-        text=f"{shown[0].upper()}{shown[1:]} of {_material(material)} {sheet}. It stays DO NOT CUT"
-             " until you choose, and a re-post asks again.",
+        text=f"{_programs_of(programs, material)} {_sheets_of(programs, expected)}. It stays DO NOT"
+             " CUT until you choose, and a re-post asks again.",
     )
+
+
+def _programs_of(programs: Sequence[tuple[str, str | None]], material: str) -> str:
+    """Program TESS07 of 3/4 Classic White; 7 programs of it, programs TESS01-07; or, with names
+    the lint would stop, 7 programs of it."""
+    names = [name for name, _ in programs]
+    said, shown = _programs_said(names), _material(material)
+    if len(names) == 1:
+        return f"{said[0].upper()}{said[1:]} of {shown}"
+    counted = _count(len(names), "program")
+    return f"{counted} of {shown}" if said == counted else f"{counted} of {shown}, {said},"
+
+
+def _sheets_of(programs: Sequence[tuple[str, str | None]], expected: str) -> str:
+    sheets = list(dict.fromkeys(on for _, on in programs))
+    if len(sheets) == 1:
+        return _sheet_clause(sheets[0], expected, singular=len(programs) == 1)
+    on_each = [on for _, on in programs]
+    each = [f"{on_each.count(on)} on {on}" if on else
+            f"{on_each.count(on)} past every sheet NG Runner knows" for on in sheets]
+    return f"are past this colour's {expected}: {', '.join(each)}"
 
 
 def card_message(card: Card) -> Message:
@@ -340,8 +360,8 @@ def card_subject(card: Card) -> str:
 POSTED_BEFORE = "Posted before NG Runner; not checked"
 SAVE_THE_NEST = "Save the nest in the Optimizer so I can check it"
 NO_PROGRAMS_YET = "No programs read yet; the nest itself is not checked"
-LABELS_NOT_VERIFIED = "Could not verify the labels against the design"
 _NOT_CHECKED = "the nest itself is not checked"
+FOLDER_STEP = "No Fab row names this folder, so NG Runner only reads its programs"
 
 
 def doubled_holes(holes: int, programs: Sequence[str]) -> str:
@@ -385,6 +405,33 @@ def programs_unread_note(programs: Sequence[str]) -> str:
     return f"Could not read {_programs_said(programs)} yet; {_NOT_CHECKED}"
 
 
+def material_words(name: str) -> str:
+    """A material folder as Jim reads it, for the board: 3/4 Classic White."""
+    return _material(name)
+
+
+# What goes on the digest's For you line, and so in the heartbeat's open risks: the watchdog repeats
+# those if no digest goes, and the ones that start "Not checked" are George's (P1b build spec 5.7).
+
+
+def open_do_not_cut(job: str, material: str, *, reasons: Sequence[str], trial: bool) -> str:
+    """DO NOT CUT Testerson_101426 3/4 Classic White: 8 cam holes are doubled in program TESS02"""
+    said = "; ".join(_first_lower(_clause(reason)) for reason in reasons)
+    return f"DO NOT CUT {job} {_material(material)}{_trial(trial)}: {said}"
+
+
+def open_not_checked(job: str, material: str, *, posted: datetime, now: datetime) -> str:
+    """Not checked: Testerson_101426 3/4 Classic White, posted 11:40 PM"""
+    when = _clock_on(posted, pacific_day(now))
+    return f"Not checked: {job} {_material(material)}, posted {when}"
+
+
+def more_not_checked(count: int) -> str:
+    """Every post reads NOT CHECKED until the toolkit is here, so the list is held to a few."""
+    are = "1 more material is" if count == 1 else f"{count} more materials are"
+    return f"Not checked: {are} on the board"
+
+
 # ----- the nest guard's messages (P1b build spec 5.6)
 
 
@@ -418,16 +465,28 @@ def nest_checked(job: str, material: str, *, at: datetime, programs: Sequence[st
     return Message("nest_checked", f"Nest checked · {job} · {shown}", _numbered(items))
 
 
-def sheet_cleared(job: str, material: str, *, program: str, on: str | None,
+def sheet_cleared(job: str, material: str, *, programs: Sequence[tuple[str, str | None]],
                   at: datetime) -> Message:
-    """George's "Cleared by Jim": Jim said one program's sheet was on purpose. Doubled holes, a
+    """George's "Cleared by Jim": Jim said these programs' sheets were on purpose. Doubled holes, a
     failed check and the nest itself are untouched, so it says it clears the size and nothing
-    else."""
+    else. programs: (name, the sheet it reads as)."""
     shown = _material(material)
-    sheet = f" on {on}" if on else ""
+    sheets = {on for _, on in programs}
+    sheet = f" on {next(iter(sheets))}" if len(sheets) == 1 and None not in sheets else ""
+    which = "that sheet" if len(programs) == 1 else "those sheets"
     return Message("sheet_cleared", f"Cleared by Jim · {job} · {shown}", _numbered((
-        f"{job}: Cleared by Jim {fmt_clock(at)}, {_program_said(program)} of {shown}{sheet}: he"
-        f" added that sheet on purpose. This clears the sheet size only; {_NOT_CHECKED}.",)))
+        f"{job}: Cleared by Jim {fmt_clock(at)}, {_programs_said([n for n, _ in programs])} of"
+        f" {shown}{sheet}: he added {which} on purpose. This clears the sheet size only;"
+        f" {_NOT_CHECKED}.",)))
+
+
+def fault_gone(job: str, material: str, *, at: datetime) -> Message:
+    """George was told DO NOT CUT, and what is posted now no longer shows that fault. He is told at
+    any hour, as he was of the alarm. It says only what was read, and leaves the rest to him."""
+    shown = _material(material)
+    return Message("fault_gone", f"No longer DO NOT CUT · {job} · {shown}", _numbered((
+        f"{job}: No longer DO NOT CUT {shown} at {fmt_clock(at)}: the programs there now don't show"
+        f" that fault. It reads NOT CHECKED; {_NOT_CHECKED}.",)))
 
 
 _ESTIMATE = "(takeoff estimate; the nest decides)"
@@ -510,10 +569,6 @@ def _programs_said(names: Sequence[str]) -> str:
     if check_line(shown):
         return _count(len(names), "program")
     return f"{'program' if len(names) == 1 else 'programs'} {shown}"
-
-
-def _program_said(name: str) -> str:
-    return _programs_said((name,))
 
 
 def _sheet_clause(on: str | None, expected: str, *, singular: bool) -> str:
@@ -662,8 +717,11 @@ FIXED = {
                     " not name the job in this message. Jim can see it on his board."),
     "nest_checked": ("Nest checked", "NG Runner checked a nest, but could not name it in this"
                      " email. Jim can see which on his board."),
-    "sheet_cleared": ("Cleared by Jim", "Jim cleared one program's sheet size, but NG Runner could"
-                      " not name it in this email. He can see which on his board."),
+    "sheet_cleared": ("Cleared by Jim", "Jim cleared a sheet size, but NG Runner could not name it"
+                      " in this email. He can see which on his board."),
+    "fault_gone": ("No longer DO NOT CUT", "A material that read DO NOT CUT no longer shows that"
+                   " fault, but NG Runner could not name it in this email. Jim can see which on his"
+                   " board."),
     "heads_up": ("Order heads-up", "NG Runner has an order heads-up, but could not list it in this"
                  " email; the job's takeoff has the numbers."),
     "before_you_lock": ("Before you lock", "NG Runner found something to settle before a lock, but"
@@ -751,6 +809,11 @@ def _count(n: int, noun: str) -> str:
 def _clause(text: str) -> str:
     """A reason from elsewhere, to sit inside a sentence: one line, no closing stop."""
     return _spaced(text).rstrip(".")
+
+
+def _first_lower(text: str) -> str:
+    """Its first letter small, unless it starts a capitalised word like IC or a program's name."""
+    return text[0].lower() + text[1:] if text[1:2].islower() or text[1:2] == " " else text
 
 
 def _sentence(text: str) -> str:

@@ -8,8 +8,9 @@ parts catalog are readable now, so they can show one thing: a part nested but no
 It is not the design's match, and it can't stand in for it. It sees one direction only, since the
 catalog also lists drawer box parts that are never nested. Its catalog has a date with no time and
 no material, and it holds no operations. So nothing here can ever set Nest checked or raise DO NOT
-CUT: DesignMatch.proves_nest is fixed to False, and even all_found says the nest itself isn't
-checked. A part that can't be found reads "could not verify" and adds one line to the pre-flight.
+CUT: LabelsMatch.proves_nest is fixed to False, and even all_found says the nest itself isn't
+checked. It is its own type, and not facts.DesignMatch, the real match, which it can never become.
+A part that can't be found reads "could not verify" and adds one line to the pre-flight.
 
 The catalog lists cabinets only: all 3,513 rows of it read R#C#. Room 0's labels read R0N#, so
 Room 0 is compared by name and size. A label elsewhere with no cabinet (a counter top, R8N0) has
@@ -64,7 +65,7 @@ _NOT_THE_NEST = "The nest itself is not checked."
 
 
 @dataclass(frozen=True)
-class DesignMatch:
+class LabelsMatch:
     """What the labels show. missing holds part and name, never a design's. Whatever the code, this
     proves nothing about the nest."""
 
@@ -193,11 +194,11 @@ def _day(text: str) -> date | None:
 # ----- the match
 
 
-def labels_in_design(labels: Sequence[LabelPart], pieces: Sequence[Piece]) -> DesignMatch:
+def labels_in_design(labels: Sequence[LabelPart], pieces: Sequence[Piece]) -> LabelsMatch:
     """Each label against the catalog, one direction only: a key of part and sorted sizes, within
     1/8in. Room 0 goes by name and size. A label the catalog has no form for is not compared."""
     if not labels or not pieces:
-        return DesignMatch("could_not_read")
+        return LabelsMatch("could_not_read")
     missing: list[str] = []
     compared = not_compared = 0
     for label in labels:
@@ -208,8 +209,8 @@ def labels_in_design(labels: Sequence[LabelPart], pieces: Sequence[Piece]) -> De
         if not any(_is_this_piece(label, piece) for piece in pieces):
             missing.append(f"{label.part} {label.name}")
     if not compared:
-        return DesignMatch("could_not_read", not_compared=not_compared)
-    return DesignMatch("some_missing" if missing else "all_found",
+        return LabelsMatch("could_not_read", not_compared=not_compared)
+    return LabelsMatch("some_missing" if missing else "all_found",
                        tuple(dict.fromkeys(missing)), compared, not_compared)
 
 

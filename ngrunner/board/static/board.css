@@ -208,6 +208,17 @@ code, .mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
   .jobs .ticks { flex-wrap: nowrap; }  /* one line of ticks per job where the width allows */
 }
 
+/* ------------------------------------------------------------------ the nest guard's lines */
+.materials { display: grid; gap: 6px; margin: 10px 0 0; padding: 0; list-style: none; }
+.material { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; font-size: 13px; }
+.material-name { font-weight: 600; overflow-wrap: anywhere; }
+.material-note { flex-basis: 100%; color: var(--ink-2); overflow-wrap: anywhere; }
+.next-note { display: flex; align-items: flex-start; gap: 5px; margin: 6px 0 0; color: var(--warn); }
+.next-note .i { flex: none; width: 15px; height: 15px; margin-top: 2px; }
+.lock { margin-top: 6px; }
+.lock summary { cursor: pointer; font-weight: 600; }
+.lock ul { margin: 4px 0 0; padding-left: 18px; }
+
 /* ------------------------------------------------------------------ rows: Your list and Cards */
 .rows { margin: 0; padding: 0; list-style: none; border: 1px solid var(--line); border-radius: var(--radius-lg);
   background: var(--surface); }

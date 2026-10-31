@@ -17,6 +17,15 @@ the 106 named <a>-<b> the stops between sheets count b-a+1. None of the 1,435 .T
 a tool loaded twice or a hole repeated exactly, and that includes the 51 with <a>-<b> in the name,
 such as a long form's 3-4: 12 of those hold doubled holes, and reading them as merged would hide
 them.
+
+Several sheets in one file overlay, which is why near pairs are skipped there. But 26 of the 228
+hold one sheet, so nothing overlays and a pair is real (Sulaiman's ruling, docs/decisions.md). The
+sheets are counted as the merging tool made them: it stops the machine with an M00 before each one,
+on 216 of the 228. The other 12 have no stop, from an older post of it, and 6 of those load a tool
+twice, which no one-sheet program does. A line number that starts again, or a program end in the
+middle, also means two programs in one file. So "one sheet" takes all of those being absent, and a
+file that can't be told counts as several: a skipped check is said on the board, and a false DO NOT
+CUT stops real work.
 """
 from __future__ import annotations
 
@@ -42,6 +51,7 @@ _CUTTING = (_LINE, 2, 3)
 _MOTION = (_RAPID, *_CUTTING)
 _END_CANNED = 80
 _CANNED = frozenset(range(73, 90)) - {_END_CANNED}
+_STOP, _TOOL_CHANGE, _PROGRAM_END = 0, 6, 30   # M words
 _NOT_A_MOVE = frozenset({4, 28, 43, 53})     # a dwell, home, tool length, machine coordinates
 _INCH, _METRIC = 20, 21
 
@@ -62,7 +72,9 @@ class NearPair:
 @dataclass(frozen=True)
 class Tap:
     """One program. complete: it ends M30 then %. reach: the largest X and Y of its cutting moves,
-    None when it has none. near_pairs is empty for a merged program."""
+    None when it has none. near_pairs is empty for a merged program of several sheets, whose holes
+    overlay. sheets: how many it holds, as its builder marked them; anything but a merged program
+    is read as one, whatever this says."""
 
     name: str
     sha256: str
@@ -73,6 +85,12 @@ class Tap:
     reach: tuple[float, float] | None
     holes: int
     near_pairs: tuple[NearPair, ...]
+    sheets: int = 1
+
+    @property
+    def overlays(self) -> bool:
+        """A merged program of several sheets: its holes were not compared."""
+        return self.family == "merged" and self.sheets > 1
 
 
 def read_tap(name: str, data: bytes) -> Tap:
@@ -80,16 +98,19 @@ def read_tap(name: str, data: bytes) -> Tap:
     lines = _lines(data)
     seen = _walk(lines)
     family = family_of(name)
+    sheets = seen.sheets()
+    overlaid = family == "merged" and sheets > 1
     return Tap(
         name=name, sha256=hashlib.sha256(data).hexdigest(), size=len(data), inches=seen.inches,
         complete=_is_complete(lines), family=family, reach=seen.reach(), holes=len(seen.holes),
-        near_pairs=() if family == "merged" else _near_pairs(seen.holes),
+        near_pairs=() if overlaid else _near_pairs(seen.holes), sheets=sheets,
     )
 
 
 def family_of(name: str) -> Family:
-    """Which kind of program its file name says it is. Only "merged" changes what is checked, and
-    only the extension decides that: a surname can hold "comb", and a long form holds "3-4"."""
+    """Which kind of program its file name says it is. Only the extension says "merged": a surname
+    can hold "comb", and a long form holds "3-4". What it holds decides what is checked (Tap.sheets),
+    and never this."""
     stem = name.rpartition(".")[0]
     if name.endswith(".tap"):
         return "merged"
@@ -146,12 +167,18 @@ class _Seen:
     far_x: float | None = None
     far_y: float | None = None
     holes: list[_Hole] = field(default_factory=list)
+    stops: int = 0
+    ends: int = 0
+    loads: list[str] = field(default_factory=list)
+    last_number: float | None = None
+    numbers_restart: bool = False
 
     def read(self, line: str) -> None:
         words = _WORD.findall(line)
         codes = [float(value) for letter, value in words if letter == "G"]
         self._note_units(codes)
         self._note_tool(words)
+        self._note_sheet_marks(words)
         if any(code in _NOT_A_MOVE for code in codes):
             return
         self._note_mode(codes)
@@ -164,6 +191,23 @@ class _Seen:
             return None
         return (self.far_x or 0.0, self.far_y or 0.0)
 
+    def sheets(self) -> int:
+        """The stops, or 2 at least when anything says one file holds more than its stops show."""
+        loaded_twice = len(self.loads) != len(set(self.loads))
+        if loaded_twice or self.numbers_restart or self.ends > 1:
+            return max(self.stops, 2)
+        return max(self.stops, 1)
+
+    def _note_sheet_marks(self, words: list[tuple[str, str]]) -> None:
+        for letter, value in words:
+            if letter == "N":
+                number = float(value)
+                self.numbers_restart |= self.last_number is not None and number <= self.last_number
+                self.last_number = number
+            elif letter == "M":
+                self.stops += float(value) == _STOP
+                self.ends += float(value) == _PROGRAM_END
+
     def _note_units(self, codes: list[float]) -> None:
         for code in codes:
             if code == _INCH:
@@ -175,8 +219,9 @@ class _Seen:
         for letter, value in words:
             if letter == "T":
                 self.next_tool = value
-        if any(letter == "M" and float(value) == 6 for letter, value in words):
+        if any(letter == "M" and float(value) == _TOOL_CHANGE for letter, value in words):
             self.tool = "T?" if self.next_tool is None else _tool_name(self.next_tool)
+            self.loads.append(self.tool)
             self.plunge = None
 
     def _note_mode(self, codes: list[float]) -> None:

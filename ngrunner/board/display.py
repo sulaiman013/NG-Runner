@@ -38,6 +38,22 @@ OVERLAYS = {
 }
 
 
+NESTS = {
+    "do_not_cut": Style("bad", "x", "DO NOT CUT"),
+    "not_checked": Style("warn", "alert", "NOT CHECKED"),
+    "save_nest": Style("warn", "file", "Save the nest"),
+    "nest_checked": Style("ok", "check", "Nest checked"),
+    "not_posted": Style("muted", "minus", "Not posted"),
+}
+_FROM_BEFORE = Style("muted", "minus", "Not checked")
+
+
+def nest_style(state: str, posted: datetime | None) -> Style:
+    """A material's state. NOT CHECKED on what was there before NG Runner is no warning: nothing
+    new was posted, and today every old job reads so."""
+    return _FROM_BEFORE if state == "not_checked" and posted is None else NESTS[state]
+
+
 def tray_style(colour: str, count: int) -> Style:
     """The tray's state in words, for the status beside the page's tabs."""
     if colour == "green":

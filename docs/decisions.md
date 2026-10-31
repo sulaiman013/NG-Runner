@@ -235,6 +235,32 @@ The recommended defaults, adopted as Sulaiman asked for decisions, and he can ov
 | The interlock | Unchanged in P1b, which writes nothing a Mozaik job reads |
 | Bringing this PC's stopped OneDrive back | No, by Sulaiman's call. The team works in Google Drive, so this PC's OneDrive stays as it is, and what lives only on Jim's PC arrives as a zip on Google Drive |
 
+## Wiring Phase 1b's guards into the app (2026-10-30)
+
+Sulaiman's defaults, which override `docs/p1b/build-spec.md` where they differ, and what the wiring settled as it met real files. He can overrule any of them.
+
+| Question | Ruling | Why |
+|---|---|---|
+| The tray and a posted NOT CHECKED | Red for DO NOT CUT, even while paused, since a pause stops filing and no guard. A posted NOT CHECKED changes no colour until a toolkit snapshot is adopted, and goes red only after that. It still shows on the board, in the digest and in the heartbeat | Today every new post reads NOT CHECKED, and a red that never clears teaches people to ignore red |
+| Both faults at once | `decide` keeps its state order, and a verdict lists every fault: doubled holes, sizes, a failed check. Clearing a size takes only that fault off the list | Jim re-nests once, not once per fault. Doubled holes can never be cleared |
+| The sheet size card | One per material, naming how many and which. Answering writes one clearance per program, each bound to its hash. A new or changed program past its size withdraws the open card and asks again about all that stand. "Re-nest it" stays DO NOT CUT, writes nothing and isn't asked again until a re-post | One real folder has 7 programs past its size, and 7 cards for one click would be noise. An answer stands only for what its card said |
+| A lower-case `.tap` holding one sheet | Near pairs are read. `family_of` still goes by name. One sheet takes at most one M00 stop, no tool loaded twice, line numbers that never start again and one program end; a file that can't be told counts as several | Merged programs overlay sheets, which is why pairs are skipped there. 26 real ones hold one sheet, and 1 of them holds a real pair |
+| "No OK to cut" | A runtime rule in `messages/lint.py` over the whole text, quoted words included | A verdict's reasons can come from a tool's own output, so a test of today's words isn't enough |
+| Counts on real data | They stay as measured, and code isn't fitted to the spec's numbers | Drive's contents move: the whole drive now reads 278 of 1,368 with pairs before the fix, where the spec has 286 of 1,397 |
+| Labels and the real match | Two types: `facts.DesignMatch` is the nest against the design, and `labels.LabelsMatch` the fallback. `MaterialEvidence` has a field for each, and the labels' one wording is `LabelsMatch.note` | Two classes of one name, one of which can pass a nest, is how they get swapped. Either way a labels reading can't reach NEST_CHECKED |
+| A verdict after a click | Jim's answer writes its clearances at once, and the material is read and judged again at the guards' next pass | The store keeps a count of near pairs, and no read of G: may run on the tick's thread. While G: is away it stays DO NOT CUT, which is the safe way to be wrong |
+| A card about a folder with no job | Named from what it asked, kept in the state table. One card that can't be named costs only itself: one DEV item, and the command box goes on working for the rest | `card_from_record` raised on it, which broke the box for every card |
+| A program gone | Gone after two polls, and its row stays, so one that comes back unchanged is what it was and never a new post | A cloud drive can hide a file for a while, and an old doubled program must not go red for that |
+| A listing that loses many folders at once | More than 5, or a quarter of them: not believed for 2 hours, with a DEV item after 10 minutes. After that it stands | A drive starting up shows an empty folder, and that must not clear a DO NOT CUT. Same thinking as an export held (H7) |
+| The first scan | It waits for a pass that listed everything, with a DEV item after 10 minutes. It only lists: a hash is read the first time a verdict needs it | A folder it couldn't read would look new later, and go red |
+| The digest | Every DO NOT CUT, then the 10 newest posted NOT CHECKED and a count of the rest. The heartbeat carries the same lines | Until the toolkit is here every post reads NOT CHECKED while its job is in NG Jobs, which would bury the rest of the For you line |
+| George's and Will's email | Waits out quiet hours like Barbara's. DO NOT CUT never does, and for George neither does what closes it ("Cleared by Jim", "No longer DO NOT CUT") | He heard of the alarm at any hour |
+| A fault gone by a re-post | George gets one line that says so and that it reads NOT CHECKED. It stops short of saying it can be cut | The build spec's scenario, in words the lint allows |
+| The heads-up while `order_flags_on` is off | Live: nothing sent, its hash noted, so turning it on doesn't send every job at once. Shadow: Sulaiman gets one copy, marked. Takeoffs there at install are never sent | Nothing reaches Barbara or Will by surprise |
+| A material holding a person's name | The leak limit stays open: the Pricing check was not added | Measured on the 20 readable real files against the tracker's keys: an exact key refuses 10, a prefix either way 5, and every word being in some key 3 on sheets and 5 on tape. The rule was to add it only if it refused none |
+| Trial labels | After 5 real nests a verdict loses "(trial)", except a material whose feature (garage folder, Tafisa 1/4) no earlier nest has exercised. REA, bridges and stacked towers can't hold one on trial until a `.des` can be read | Only real posts count, not what was there at install |
+| The tracker's folder | No default in code. `setup` takes `NG Conversion program Claude` beside NG Jobs when it is there, and says so. With none, Health says the pre-flight is off | It is only ever read, and a settings file from before P1b must still load |
+
 ## Matching (settled)
 
 | Decision | Ruling | Why |

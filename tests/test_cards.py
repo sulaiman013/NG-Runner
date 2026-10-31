@@ -438,7 +438,7 @@ def test_anything_else_typed_at_a_sheet_size_card_is_refused_and_it_stays_open(t
 def test_a_sheet_size_card_goes_through_the_store_and_its_answer_clears_only_its_hash(tmp_path):
     store = open_store(tmp_path / "ngrunner.db")
     made = t.sheet_size_card("Testerson_101426", material="3-4 Classic White",
-                             program="TESS07.TAP", on="61x109", expected="49x97")
+                             programs=(("TESS07.TAP", "61x109"),), expected="49x97")
     record = add_card(store, prefix=made.prefix, kind=made.kind, text=made.text,
                       choices=made.choices, created_at=WHEN, choice_ids=made.choice_ids)
     assert card_from_record(record, job=made.job).choice_ids == (None, None)

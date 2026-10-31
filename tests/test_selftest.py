@@ -467,3 +467,51 @@ def test_the_version_command_prints_the_build_version(paths):
     assert out.getvalue() == f"NG Runner {launcher.app_version()}\n"
 
 
+
+
+# ----- the guards in a build
+
+
+def test_every_guard_module_is_in_the_list_a_build_is_checked_against():
+    root = Path(selftest.__file__).parent / "guards"
+    made = {f"ngrunner.guards.{path.stem}" for path in root.glob("*.py")
+            if path.stem != "__init__"}
+    assert made and made <= set(selftest.P1A_MODULES)
+
+
+def test_the_spec_carries_every_module_and_the_libraries_the_guards_use():
+    """collect_submodules takes all of ngrunner, and P1A_MODULES the libraries named at run time. The
+    standard library's parts the guards use come in through their plain imports."""
+    spec = (Path(selftest.__file__).parent.parent / "ngrunner.spec").read_text(encoding="utf-8")
+    assert 'collect_submodules("ngrunner")' in spec
+    assert 'name in P1A_MODULES if not name.startswith("ngrunner")' in spec
+    assert "pypdf" in selftest.P1A_MODULES
+
+
+def test_each_guards_reader_runs_on_a_made_up_file(tmp_path):
+    assert selftest.guard_reader_problems(tmp_path / "guards") == []
+
+
+def test_a_reader_that_cant_run_in_this_build_is_named_in_plain_words(tmp_path, monkeypatch):
+    import ngrunner.guards.tap as tap
+
+    def missing(name, data):
+        raise ModuleNotFoundError("No module named 'something_lazy'")
+
+    monkeypatch.setattr(tap, "read_tap", missing)
+    problems = selftest.guard_reader_problems(tmp_path / "guards")
+    assert problems == ["The guards can't read a program in this build (No module named"
+                        " 'something_lazy')."]
+
+
+def test_the_self_test_runs_the_guards_readers(tmp_path, monkeypatch):
+    monkeypatch.setattr(selftest, "guard_reader_problems", lambda work: ["The guards broke."])
+    problems = selftest.run_self_test(AppPaths(tmp_path), modules=(), migrate=lambda path: None,
+                                      samples=lambda: [], lint=lambda message: [],
+                                      credentials=None)
+    assert "The guards broke." in problems
+
+
+def test_what_really_goes_to_barbara_and_will_has_an_example_in_the_self_test():
+    assert any(getattr(message, "kind", "") == "heads_up" and "order heads-up" in message.title
+               for message in selftest.message_samples())

@@ -612,7 +612,8 @@ def nest_templates() -> list[tuple[str, Message]]:
         ("Nest checked", t.nest_checked(job, material, at=NOW, programs=names, trial=True)),
         ("Nest checked, open items", t.nest_checked(job, material, at=NOW, programs=names[:1],
                                                     trial=False, open_items=2)),
-        ("cleared", t.sheet_cleared(job, material, program=names[0], on="61x109", at=NOW)),
+        ("cleared", t.sheet_cleared(job, material, programs=((names[0], "61x109"),), at=NOW)),
+        ("fault gone", t.fault_gone(job, material, at=NOW)),
         ("heads-up", t.order_heads_up(job, sheets=((1, "3/4 Tafisa Apres Skis"),),
                                       tape=((1, '15/16"', "Tafisa Apres Skis"),),
                                       flags=("IC Arctic White, built as Egger Classic White",))),
@@ -621,9 +622,9 @@ def nest_templates() -> list[tuple[str, Message]]:
         ("before you lock", t.before_you_lock(job, items=(
             "2 sheets of 3/4 Spring Blossom have no price in the tracker",))),
         ("sheet size card", t.card_message(card(t.sheet_size_card(
-            job, material=material, program=names[0], on="61x109", expected="49x97")))),
+            job, material=material, programs=((names[0], "61x109"),), expected="49x97")))),
         ("sheet size card, no known sheet", t.card_message(card(t.sheet_size_card(
-            job, material=material, program=names[3], on=None, expected="49x97")))),
+            job, material=material, programs=((names[3], None),), expected="49x97")))),
     ]
 
 
@@ -875,7 +876,7 @@ def test_nest_checked_adds_jims_open_items_only_when_there_are_some(open_items, 
 
 def test_cleared_by_jim_says_only_that_the_size_was_cleared():
     at = datetime(2026, 10, 30, 21, 42, tzinfo=PACIFIC)
-    message = t.sheet_cleared(JOB, CLASSIC, program="TESS07.TAP", on="61x109", at=at)
+    message = t.sheet_cleared(JOB, CLASSIC, programs=(("TESS07.TAP", "61x109"),), at=at)
     assert_clean(message)
     assert message.title == "Cleared by Jim · Testerson_101426 · 3/4 Classic White"
     assert message.lines == (
@@ -1027,9 +1028,9 @@ def test_each_real_kind_of_material_folder_reaches_people_by_name(folder, shown)
     for message in (t.do_not_cut(JOB, folder, reasons=(SIZE_NOTE,), trial=True),
                     t.not_checked(JOB, folder, posted=NOW, now=NOW),
                     t.nest_checked(JOB, folder, at=NOW, programs=SIX_PROGRAMS, trial=False),
-                    t.sheet_cleared(JOB, folder, program="TESS07.TAP", on="61x109", at=NOW),
+                    t.sheet_cleared(JOB, folder, programs=(("TESS07.TAP", "61x109"),), at=NOW),
                     t.card_message(card(t.sheet_size_card(
-                        JOB, material=folder, program="TESS07.TAP", on="61x109",
+                        JOB, material=folder, programs=(("TESS07.TAP", "61x109"),),
                         expected="49x97")))):
         assert t.vetted(message, now=NOW) == t.Vetted(message, ()), message.text
         assert shown in message.text
@@ -1100,7 +1101,7 @@ def test_each_board_note_says_what_the_build_spec_says_and_passes_the_lint(note,
 
 
 def test_every_fixed_note_passes_the_lint():
-    for note in (t.POSTED_BEFORE, t.SAVE_THE_NEST, t.NO_PROGRAMS_YET, t.LABELS_NOT_VERIFIED):
+    for note in (t.POSTED_BEFORE, t.SAVE_THE_NEST, t.NO_PROGRAMS_YET):
         assert check_line(note) == [], note
 
 
@@ -1114,8 +1115,8 @@ def test_a_clean_program_read_never_claims_the_right_sheet():
 
 
 def sheet_card(on: str | None = "61x109"):
-    return card(t.sheet_size_card(JOB, material="3-4 Classic White", program="TESS07.TAP", on=on,
-                                  expected="49x97"))
+    return card(t.sheet_size_card(JOB, material="3-4 Classic White",
+                                  programs=(("TESS07.TAP", on),), expected="49x97"))
 
 
 def test_the_sheet_size_card_offers_jims_two_choices_and_points_at_no_job():
@@ -1141,6 +1142,80 @@ def test_the_sheet_size_card_says_so_when_the_sheet_is_not_one_it_knows():
     assert message.lines[0].startswith(
         "Program TESS07 of 3/4 Classic White runs past every sheet NG Runner knows, and this colour"
         " is 49x97.")
+
+
+def test_one_sheet_size_card_names_how_many_programs_and_which():
+    programs = tuple((f"TESS0{n}.TAP", "61x109") for n in range(1, 8))
+    message = t.card_message(card(t.sheet_size_card(JOB, material="3-4 Classic White",
+                                                    programs=programs, expected="49x97")))
+    assert_clean(message)
+    assert message.lines[0] == (
+        "7 programs of 3/4 Classic White, programs TESS01-07, are on 61x109 and this colour is"
+        " 49x97. It stays DO NOT CUT until you choose, and a re-post asks again.")
+
+
+def test_a_sheet_size_card_over_several_sheets_counts_each():
+    programs = (("TESS01.TAP", "61x109"), ("TESS02.TAP", "61x109"), ("TESS03.TAP", None))
+    message = t.card_message(card(t.sheet_size_card(JOB, material="3-4 Classic White",
+                                                    programs=programs, expected="49x97")))
+    assert_clean(message)
+    assert message.lines[0].startswith(
+        "3 programs of 3/4 Classic White, programs TESS01-03, are past this colour's 49x97: 2 on"
+        " 61x109, 1 past every sheet NG Runner knows.")
+
+
+def test_a_card_counts_programs_whose_names_it_cant_show():
+    programs = (("W=49 first.TAP", "61x109"), ("W=49 second.TAP", "61x109"))
+    message = t.card_message(card(t.sheet_size_card(JOB, material="3-4 Classic White",
+                                                    programs=programs, expected="49x97")))
+    assert_clean(message)
+    assert message.lines[0].startswith("2 programs of 3/4 Classic White are on 61x109")
+
+
+def test_cleared_by_jim_names_all_the_programs_his_one_click_cleared():
+    programs = tuple((f"TESS0{n}.TAP", "61x109") for n in range(1, 8))
+    message = t.sheet_cleared(JOB, CLASSIC, programs=programs, at=NOW)
+    assert_clean(message)
+    assert "programs TESS01-07 of 3/4 Classic White" in message.lines[0]
+    assert "he added those sheets on purpose" in message.lines[0]
+    assert "clears the sheet size only" in message.lines[0]
+
+
+def test_a_fault_gone_says_so_and_stops_short_of_saying_it_can_be_cut():
+    message = t.fault_gone(JOB, "3-4 Classic White", at=NOW)
+    assert_clean(message)
+    assert message.title == "No longer DO NOT CUT · Testerson_101426 · 3/4 Classic White"
+    assert "NOT CHECKED" in message.lines[0] and "nest itself is not checked" in message.lines[0]
+
+
+def test_the_digests_open_do_not_cut_line_says_what_and_why():
+    line = t.open_do_not_cut(JOB, "3-4 Classic White", trial=True, reasons=(
+        "8 cam holes are doubled in programs TESS02 and TESS03",
+        "A program is on 61x109 and this colour is 49x97"))
+    assert check_line(line) == []
+    assert line == ("DO NOT CUT Testerson_101426 3/4 Classic White (trial): 8 cam holes are doubled"
+                    " in programs TESS02 and TESS03; a program is on 61x109 and this colour is"
+                    " 49x97")
+
+
+def test_the_open_not_checked_line_starts_as_the_watchdog_reads_it():
+    posted = datetime(2026, 10, 30, 23, 40, tzinfo=PACIFIC)
+    line = t.open_not_checked(JOB, "3-4 Classic White", posted=posted, now=posted)
+    assert check_line(line) == []
+    assert line == "Not checked: Testerson_101426 3/4 Classic White, posted 11:40 PM"
+    older = t.open_not_checked(JOB, "3-4 Classic White", posted=posted,
+                               now=posted + timedelta(days=2))
+    assert check_line(older) == [] and "posted Fri 10/30 11:40 PM" in older
+
+
+def test_many_open_not_checked_lines_end_in_a_count():
+    assert t.more_not_checked(1) == "Not checked: 1 more material is on the board"
+    assert t.more_not_checked(4) == "Not checked: 4 more materials are on the board"
+    assert check_line(t.more_not_checked(4)) == []
+
+
+def test_a_material_reads_as_jim_writes_it_for_the_board():
+    assert t.material_words("3-4 Egger Classic White") == "3/4 Egger Classic White"
 
 
 def test_the_sheet_size_card_comes_back_in_the_digest():
@@ -1184,7 +1259,7 @@ def test_only_do_not_cut_goes_through_quiet_hours():
     # Sanity on the check above: a phone message of any other kind does wait the night out.
     for message in (t.not_checked(JOB, CLASSIC, posted=NOW, now=NOW),
                     t.nest_checked(JOB, CLASSIC, at=NOW, programs=SIX_PROGRAMS, trial=False),
-                    t.sheet_cleared(JOB, CLASSIC, program="TESS07.TAP", on="61x109", at=NOW),
+                    t.sheet_cleared(JOB, CLASSIC, programs=(("TESS07.TAP", "61x109"),), at=NOW),
                     t.card_message(sheet_card())):
         assert waits(message), message.kind
 
@@ -1195,8 +1270,8 @@ def test_a_fixed_do_not_cut_is_urgent_of_itself():
 
 def test_every_new_kind_has_a_fixed_template_that_carries_no_outside_data():
     kinds = {message.kind for _, message in nest_templates()} - {"card"}
-    assert kinds == {"do_not_cut", "not_checked", "nest_checked", "sheet_cleared", "heads_up",
-                     "before_you_lock"}
+    assert kinds == {"do_not_cut", "not_checked", "nest_checked", "sheet_cleared", "fault_gone",
+                     "heads_up", "before_you_lock"}
     assert kinds <= set(t.FIXED)
     for kind in kinds:
         assert_clean(t.fixed(kind, day=date(2026, 10, 30)))
@@ -1261,7 +1336,7 @@ def said_about_nests() -> list[str]:
     return [
         *(line for message in samples for line in (message.title, *message.lines)),
         t.QUESTIONS["sheet_size"], t._CARD_BACK["sheet_size"], *t.SHEET_SIZE_CHOICES,
-        t.POSTED_BEFORE, t.SAVE_THE_NEST, t.NO_PROGRAMS_YET, t.LABELS_NOT_VERIFIED,
+        t.POSTED_BEFORE, t.SAVE_THE_NEST, t.NO_PROGRAMS_YET,
         t.programs_read_note(at=NOW, sheet="49x97"), t.nest_checked_note(NOW, SIX_PROGRAMS),
     ]
 

@@ -9,6 +9,10 @@ exactly "Nothing to fix — matches IC summary." Templates are linted in the tes
 message that fails is swapped for its kind's fixed template (templates.vetted) and the problems
 open a DEV item, so nothing waits on Sulaiman.
 
+No message ever says it is OK to cut. The strongest thing NG Runner says is "Nest checked", and what
+to do about it is left to the people cutting. That is a rule here and not just a test of today's
+words, since a nest guard's reasons can come from a tool's own output.
+
 What Barbara typed comes back quoted, as she typed it (Fab row "Testerson 10/14/26"), so that she
 can find her row. Those words are hers, so the rules on how NG Runner writes don't judge them; the
 rules that keep addresses, phone numbers, paths, hashes and keys out of every message still do.
@@ -61,7 +65,7 @@ PHONE = re.compile(
 class Problem:
     """One way a message breaks the format. code is stable: tests and the DEV lane group by
     it (structure, numbering, job, path, time, date, hash, key, studio_id, attribute, email,
-    phone, size, intro, signoff, clean, verify, leak)."""
+    phone, size, intro, signoff, clean, verify, leak, ok_to_cut)."""
 
     code: str
     where: str
@@ -231,7 +235,7 @@ def check_line(text: str, where: str = "line", *, candidate: bool = False) -> li
 # Barbara's words as the templates quote them (they turn any quote of hers into a curly one, so
 # the first quote here is the end of her words), and the rules her words are still held to.
 _QUOTED_ROW = re.compile(r'\b(Fab row|now reads) "([^"]*)"')
-_ON_THE_WHOLE_TEXT = frozenset({"path", "hash", "key", "email", "phone"})
+_ON_THE_WHOLE_TEXT = frozenset({"path", "hash", "key", "email", "phone", "ok_to_cut"})
 
 _LINE_BREAKS = frozenset("\n\r\v\f\x1c\x1d\x1e\x85\N{LINE SEPARATOR}\N{PARAGRAPH SEPARATOR}")
 
@@ -454,6 +458,16 @@ def _says_clean_otherwise(text: str) -> bool:
     return text != CLEAN and _CLEAN_LIKE.search(text) is not None
 
 
+# ----- never OK to cut, in any words: only people decide that
+
+_OK_TO_CUT = re.compile(
+    r"\b(?:o\.k\.?|ok(?:ay)?|safe|clear(?:ed)?|good|fine|ready|free|allowed|proceed|go\s+ahead|go"
+    r"|can|may)(?!\w)(?:[\s-]+(?:to|for|and|be|you|it|this))*[\s-]+cut(?:ting)?\b"
+    r"|\bcut(?:ting)?\b(?:\W+\w+){0,2}?\W+(?:o\.k\.|ok(?:ay)?|safe|allowed|fine|away)(?!\w)",
+    re.IGNORECASE,
+)
+
+
 _CONTENT_RULES: tuple[tuple[str, Callable[[str], bool], str], ...] = (
     ("path", _has_path, "has a path or a web address"),
     ("time", _bad_time, "has a time that is not written like 9:42 PM, Pacific time"),
@@ -473,6 +487,7 @@ _CONTENT_RULES: tuple[tuple[str, Callable[[str], bool], str], ...] = (
     ("verify", _search(_UNVERIFIED),
      "says unknown, N/A or nothing is lost; say what could not be verified"),
     ("leak", _search(_LEAK), "has program text (None, null, an error name, code or JSON)"),
+    ("ok_to_cut", _search(_OK_TO_CUT), "says it may be cut; the most NG Runner says is Nest checked"),
 )
 
 

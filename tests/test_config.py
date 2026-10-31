@@ -241,3 +241,50 @@ def test_missing_or_broken_settings_say_so(tmp_path):
 def test_roots_come_from_the_settings_and_the_data_folder(tmp_path):
     r = roots(settings_from(GOOD), AppPaths(tmp_path))
     assert (r.ng_jobs, r.control, r.app_data) == (Path(GOOD["ng_jobs"]), Path(GOOD["control"]), tmp_path)
+
+
+# ----- P1b's settings
+
+
+def _p1b_raw(**more):
+    return {"ng_jobs": r"C:\NG Jobs", "mozaik_shared": r"C:\Mozaik Shared", "control": r"C:\control",
+            **more}
+
+
+def test_p1b_settings_default_so_a_settings_file_from_before_them_still_loads():
+    settings = settings_from(_p1b_raw())
+    assert settings.tracker_folder is None and settings.order_flag_total == 25000
+    assert settings.order_flags_on is False
+
+
+def test_the_tracker_folder_is_a_full_path_when_given():
+    settings = settings_from(_p1b_raw(tracker_folder=r"C:\tracker"))
+    assert str(settings.tracker_folder) == r"C:\tracker"
+    with pytest.raises(SettingsError, match="tracker_folder"):
+        settings_from(_p1b_raw(tracker_folder="relative"))
+    assert settings_from(_p1b_raw(tracker_folder=None)).tracker_folder is None
+    assert settings_from(_p1b_raw(tracker_folder="")).tracker_folder is None
+
+
+@pytest.mark.parametrize("bad", ["25000", 0, -1, True, None, float("inf")])
+def test_the_order_flag_total_is_a_positive_number(bad):
+    with pytest.raises(SettingsError, match="order_flag_total"):
+        settings_from(_p1b_raw(order_flag_total=bad))
+    assert settings_from(_p1b_raw(order_flag_total=30000.5)).order_flag_total == 30000.5
+
+
+@pytest.mark.parametrize("bad", ["yes", 1, None])
+def test_order_flags_on_is_true_or_false(bad):
+    with pytest.raises(SettingsError, match="order_flags_on"):
+        settings_from(_p1b_raw(order_flags_on=bad))
+    assert settings_from(_p1b_raw(order_flags_on=True)).order_flags_on is True
+
+
+def test_p1b_settings_survive_a_save_and_a_load(tmp_path):
+    paths = AppPaths(tmp_path)
+    saved = settings_from(_p1b_raw(tracker_folder=r"C:\tracker", order_flag_total=30000,
+                                   order_flags_on=True))
+    save_settings(paths, saved)
+    assert load_settings(paths) == saved
+    save_settings(paths, settings_from(_p1b_raw()))
+    assert load_settings(paths).tracker_folder is None

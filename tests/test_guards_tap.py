@@ -327,17 +327,19 @@ def test_the_tool_is_named_the_same_however_it_is_written():
 # ----- merged programs: a sheet check, and no near pairs
 
 
-def test_a_merged_program_has_no_near_pairs_though_its_file_holds_some():
-    body = (TOOL6, hole(1.0, 1.0), hole(1.001, 1.0), cut_to(48.75, 96.75))
-    assert len(read_tap(SHEET_NAME, program(*body)).near_pairs) == 1
-    merged = read_tap(MERGED_NAME, program(*body))
-    assert merged.family == "merged"
+def test_a_merged_program_of_several_sheets_has_no_near_pairs_though_its_file_holds_some():
+    first = (*hole(1.0, 1.0), *hole(1.001, 1.0), *cut_to(48.75, 96.75))
+    second = (*hole(5.0, 5.0), *cut_to(48.75, 96.75))
+    data = merged_program(first, second)
+    assert len(read_tap(SHEET_NAME, data).near_pairs) == 1
+    merged = read_tap(MERGED_NAME, data)
+    assert merged.family == "merged" and merged.sheets == 2 and merged.overlays
     assert merged.near_pairs == ()
 
 
 def test_a_merged_program_still_gets_its_sheet_and_its_holes():
-    merged = read_tap(MERGED_NAME, program(TOOL6, hole(1.0, 1.0), hole(1.001, 1.0),
-                                           cut_to(60.75, 108.75)))
+    merged = read_tap(MERGED_NAME, merged_program(
+        (*hole(1.0, 1.0), *hole(1.001, 1.0)), cut_to(60.75, 108.75)))
     assert merged.reach == (60.75, 108.75)
     assert merged.holes == 2
 
@@ -474,7 +476,7 @@ def test_a_taps_repr_holds_names_and_numbers_only():
     # Nothing is left once the name, the field names, the hash and the numbers are taken out.
     left = text.replace("TESS01.TAP", "").replace(tap.sha256, "")
     left = re.sub(r"\b(Tap|NearPair|name|sha256|size|inches|complete|family|reach|holes|near_pairs"
-                  r"|tool|depth|apart_in|x|y|True|False|None|sheet|T6)\b", "", left)
+                  r"|sheets|tool|depth|apart_in|x|y|True|False|None|sheet|T6)\b", "", left)
     assert not re.search(r"[A-Za-z]", left.replace("e-", "").replace("inf", ""))
 
 
@@ -624,6 +626,7 @@ def test_the_whole_drive(capsys):
         pytest.skip("slow: reads every program on the drive (set NGR_NG_JOBS to run it)")
     before = after = before_pairs = after_pairs = holes_after = pairs = 0
     upper_marked = merged_one_sheet = upper_repeats = merged_count = incomplete = 0
+    one_sheet = one_sheet_with_pairs = 0
     dashed = dashed_pairs = 0
     tools: collections.Counter[str] = collections.Counter()
     gaps: collections.Counter[float] = collections.Counter()
@@ -636,6 +639,10 @@ def test_the_whole_drive(capsys):
             merged_count += 1
             stops, tool_again = _marks(data)
             merged_one_sheet += stops <= 2 and not tool_again
+            one_sheet += tap.sheets == 1
+            one_sheet_with_pairs += bool(tap.near_pairs)
+            assert tap.sheets > 1 or tap.near_pairs == read_tap("TESS01.TAP", data).near_pairs
+            assert tap.sheets == 1 or tap.near_pairs == ()
             continue
         stops, tool_again = _marks(data)
         upper_marked += stops > 0 or tool_again
@@ -655,7 +662,8 @@ def test_the_whole_drive(capsys):
         gaps.update(p.apart_in for p in tap.near_pairs)
     with capsys.disabled():
         print(f"\n{len(paths)} programs read, {incomplete} not complete or not in inches, "
-              f"{merged_count} merged ({merged_one_sheet} of them one sheet only)")
+              f"{merged_count} merged ({merged_one_sheet} of them one sheet only; the reader"
+              f" counts {one_sheet}, {one_sheet_with_pairs} of those with near pairs)")
         print(f"not merged: {before} before the fix with {before_pairs} holding near pairs, "
               f"{after} after with {after_pairs} ({holes_after} holes)")
         print(f"{pairs} near pairs: {sorted(tools.items())}, {gaps[0.001]} of them exactly "
@@ -665,3 +673,124 @@ def test_the_whole_drive(capsys):
     assert upper_repeats == 0
     assert after_pairs == 0        # the fault Jim fixed on 10-20 is back, or the rule is wrong
     assert before_pairs > 0        # nothing found at all: the check has gone blind
+
+
+# ----- a lower-case .tap holding one sheet: nothing overlays, so a near pair is real (ruling 4)
+
+
+MERGING_TOOL_HEAD = ["%", "N1 M400", "N2 M00"]
+MERGING_TOOL_STOP = ["M400", "M00"]
+
+
+def numbered(lines: Iterable[str]) -> list[str]:
+    """Lines as the merging tool writes them: each with its line number, except the last %."""
+    return [line if line == "%" else f"N{number} {line}"
+            for number, line in enumerate(lines, start=1)]
+
+
+def merged_program(*sheets: Iterable[str]) -> bytes:
+    """A program as the merging tool builds it, of these sheets: an M00 stop before each one."""
+    lines: list[str] = []
+    for sheet in sheets:
+        lines += [*MERGING_TOOL_STOP, *START, *TOOL6, *sheet,
+                  "G0 Z3.0000", "M09", "M05", "G28 Z0.0 W0.0", "G90", "G00 X0.0000 Y108.0000"]
+    return "\r\n".join(["%", *numbered([*lines, "M200", "M30"]), "%"]).encode("ascii")
+
+
+DOUBLED = [*hole(10.0, 20.0), *hole(10.001, 20.0)]
+PLAIN = [*hole(30.0, 40.0)]
+
+
+def test_a_merged_program_holding_one_sheet_gets_its_near_pairs_read():
+    tap = read_tap(MERGED_NAME, merged_program(DOUBLED))
+    assert tap.family == "merged" and tap.sheets == 1
+    assert [(p.tool, p.apart_in) for p in tap.near_pairs] == [("T6", 0.001)]
+
+
+def test_a_merged_program_holding_two_sheets_gives_no_near_pairs():
+    tap = read_tap(MERGED_NAME, merged_program(DOUBLED, PLAIN))
+    assert tap.family == "merged" and tap.sheets == 2
+    assert tap.near_pairs == ()
+
+
+def test_family_still_goes_by_name_whatever_a_program_holds():
+    assert read_tap(MERGED_NAME, merged_program(DOUBLED)).family == "merged"
+    assert read_tap(SHEET_NAME, merged_program(DOUBLED)).family == "sheet"
+
+
+def test_a_mozaik_program_with_a_stop_in_it_still_gets_its_pairs_read():
+    """None of the 1,435 real .TAP files has a stop, and only the merging tool's own may be read as
+    overlaid, so a surprise here raises an alarm rather than hiding one."""
+    assert len(read_tap(SHEET_NAME, merged_program(DOUBLED, PLAIN)).near_pairs) == 1
+
+
+def test_no_stops_and_no_tool_loaded_twice_is_one_sheet():
+    """6 real .tap files: an older post of the merging tool, with line numbers and no M00."""
+    lines = numbered([*START, *TOOL6, *DOUBLED, "G0 Z3.0000", "M30"])
+    tap = read_tap(MERGED_NAME, "\r\n".join([*lines, "%"]).encode("ascii"))
+    assert tap.sheets == 1 and len(tap.near_pairs) == 1
+
+
+def test_no_stops_and_a_tool_loaded_twice_is_several_sheets():
+    """6 real .tap files, among them one named for 21 sheets: nothing says where a sheet ends, and
+    a tool comes back, which no one-sheet program does, so holes may overlay."""
+    lines = numbered([*START, *TOOL6, *DOUBLED, "G0 Z3.0000", *TOOL6, *PLAIN, "G0 Z3.0000", "M30"])
+    tap = read_tap(MERGED_NAME, "\r\n".join([*lines, "%"]).encode("ascii"))
+    assert tap.sheets > 1 and tap.near_pairs == ()
+
+
+def test_one_stop_and_a_tool_loaded_twice_is_several_sheets():
+    lines = numbered([*MERGING_TOOL_STOP, *START, *TOOL6, *DOUBLED, "G0 Z3.0000", *TOOL6, *PLAIN,
+                      "M30"])
+    tap = read_tap(MERGED_NAME, "\r\n".join(["%", *lines, "%"]).encode("ascii"))
+    assert tap.sheets > 1 and tap.near_pairs == ()
+
+
+def test_a_program_end_in_the_middle_is_several_sheets():
+    """One real .tap holds M30 twice: two programs stuck together."""
+    lines = numbered([*MERGING_TOOL_STOP, *START, *TOOL6, *DOUBLED, "M30", *START, *TOOL6, *PLAIN,
+                      "M30"])
+    tap = read_tap(MERGED_NAME, "\r\n".join(["%", *lines, "%"]).encode("ascii"))
+    assert tap.sheets > 1 and tap.near_pairs == ()
+
+
+def test_line_numbers_that_start_again_are_several_sheets():
+    first = numbered([*START, *TOOL6, *DOUBLED, "G0 Z3.0000"])
+    second = numbered([*START, "M06 T8", *PLAIN, "G0 Z3.0000", "M30"])
+    tap = read_tap(MERGED_NAME, "\r\n".join([*first, *second, "%"]).encode("ascii"))
+    assert tap.sheets > 1 and tap.near_pairs == ()
+
+
+def test_a_stop_in_a_comment_is_no_stop():
+    data = merged_program(DOUBLED).replace(b"N3 M400", b"N3 M400 (M00)")
+    assert read_tap(MERGED_NAME, data).sheets == 1
+
+
+@pytest.mark.parametrize("name, data", [("TESS01.TAP", b""), ("Tes1-3.tap", b""),
+                                        ("Tes1-3.tap", b"\xff\xfe not a program")])
+def test_a_file_with_nothing_in_it_holds_no_sheet_to_overlay(name, data):
+    tap = read_tap(name, data)
+    assert tap.sheets == 1 and tap.near_pairs == ()
+
+
+@pytest.mark.fixtures
+def test_each_real_program_that_holds_one_merged_sheet_reads_near_pairs_as_a_sheet_would():
+    """Read under a sheet's name, the same bytes must give the same pairs: only the sheet count
+    decides. Named by index only."""
+    found = 0
+    for entry, data in real_programs():
+        tap = read_tap(entry["name"], data)
+        if tap.family == "merged" and tap.sheets == 1:
+            found += 1
+            assert tap.near_pairs == read_tap(SHEET_NAME, data).near_pairs, entry["index"]
+    assert found >= 1
+
+
+@pytest.mark.fixtures
+def test_a_real_merged_program_of_several_sheets_gives_no_pairs_though_its_file_holds_some():
+    several = [(entry, data) for entry, data in real_programs()
+               if (tap := read_tap(entry["name"], data)).family == "merged" and tap.sheets > 1]
+    assert several
+    for entry, data in several:
+        assert read_tap(entry["name"], data).near_pairs == (), entry["index"]
+    assert any(read_tap(SHEET_NAME, data).near_pairs for _, data in several)

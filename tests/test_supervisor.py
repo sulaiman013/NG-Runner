@@ -116,6 +116,18 @@ class FakePipeline:
         self.went_live += 1
 
 
+class FakeGuards:
+    """The guards' two ways in, doing nothing: what they do is tests/test_e2e_day.py's."""
+
+    @staticmethod
+    def tick(ctx: Any) -> None:
+        return None
+
+    @staticmethod
+    def take_finished(ctx: Any) -> bool:
+        return False
+
+
 class FakeMessenger:
     """The seam's shape: its rows are real outbox rows, so the job model reads them as it would."""
 
@@ -262,7 +274,7 @@ def make_world(tmp_path, monkeypatch):
                       backup_key)
         monkeypatch.setattr(supervisor, "_seams", lambda: SimpleNamespace(
             pipeline=world.pipeline, messenger=SimpleNamespace(Messenger=FakeMessenger),
-            jobmodel=jobmodel))
+            jobmodel=jobmodel, guards=FakeGuards()))
         if settings:
             world.save_settings()
         worlds.append(world)
@@ -1291,7 +1303,7 @@ def test_the_real_messenger_fits_the_supervisor(make_world, monkeypatch):
     messenger = pytest.importorskip("ngrunner.messenger")
     world = make_world(at(10, 30, 6, 25))
     monkeypatch.setattr(supervisor, "_seams", lambda: SimpleNamespace(
-        pipeline=world.pipeline, messenger=messenger, jobmodel=jobmodel))
+        pipeline=world.pipeline, messenger=messenger, jobmodel=jobmodel, guards=FakeGuards()))
     sup = world.start()
     assert isinstance(sup._messenger, messenger.Messenger)
     world.run(sup, minutes=10)
@@ -1335,7 +1347,7 @@ def real_messenger(world: World, monkeypatch: Any) -> None:
     from ngrunner import messenger
 
     monkeypatch.setattr(supervisor, "_seams", lambda: SimpleNamespace(
-        pipeline=world.pipeline, messenger=messenger, jobmodel=jobmodel))
+        pipeline=world.pipeline, messenger=messenger, jobmodel=jobmodel, guards=FakeGuards()))
 
 
 def test_a_digest_the_lint_replaced_marks_no_card_so_the_next_one_brings_it_back(
@@ -1582,11 +1594,12 @@ def test_every_new_module_is_in_the_self_test():
 def test_the_real_pipeline_messenger_and_job_model_fit_the_supervisor(make_world, monkeypatch):
     """No export key, so no client and no network: an empty control folder, ticking."""
     from ngrunner import messenger
+    from ngrunner.guards import watch
     from ngrunner.intake import pipeline
 
     world = make_world(at(10, 30, 12), secrets={"signing_key": KEY_HEX})
     monkeypatch.setattr(supervisor, "_seams", lambda: SimpleNamespace(
-        pipeline=pipeline, messenger=messenger, jobmodel=jobmodel))
+        pipeline=pipeline, messenger=messenger, jobmodel=jobmodel, guards=watch))
     sup = world.start()
     world.run(sup, minutes=6)
     assert "task_failed" not in world.dev_codes()

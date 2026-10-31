@@ -400,7 +400,7 @@ From the design. Phases P0 to P3 are the committed scope. Each phase stands by i
 |---|---|---|---|
 | **P0 Prepare** | 3 | Setup Check, baseline, default decisions | Done, apart from running the Setup Check on Jim's PC |
 | **P1a File it** | 10 | Summaries filed by themselves, the board, the digest, the heartbeat | **In progress** |
-| **P1b Guards** | 11 | Read-only guards: the nest guard with DO NOT CUT, a lock pre-flight, an order heads-up | Not started |
+| **P1b Guards** | 11 | Read-only guards: the nest guard with DO NOT CUT, a lock pre-flight, an order heads-up | Group 1 wired, not committed; groups 2 and 3 wait |
 | **P2 One toolkit** | 18 | Shared tools go into Jim's chat, so it stops writing per-job scripts. A test on past jobs decides P5 | Not started |
 | **P3 Checks and takeoff** | 18 | Checks run on "sections done", and the takeoff is done on intake | Not started |
 | **P4 Lock and fixes** | 16 | Lock, tracker and fixes run from NG Runner | Not started |

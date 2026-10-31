@@ -6,13 +6,16 @@ and each violation in the table must fail for its stated reason.
 from __future__ import annotations
 
 import re
+from datetime import datetime, timezone
 
 import pytest
 
 from ngrunner.messages import Message
 from ngrunner.messages.lint import (
-    JOB_NAME, SUBJECT_LIMIT, check, lint, redact, subject_line,
+    JOB_NAME, SUBJECT_LIMIT, check, check_line, lint, redact, subject_line,
 )
+
+NOW = datetime(2026, 10, 30, 22, 5, tzinfo=timezone.utc)
 
 
 def msg(text: str, *, kind: str = "test") -> Message:
@@ -514,3 +517,62 @@ def test_redact_keeps_plain_words_and_caps_the_length():
         "Service invoked too many times for one day: email.")
     long = redact("x " * 400)
     assert len(long) <= 300 and long.endswith("…")
+
+
+# ----- no message ever says OK to cut (Sulaiman's ruling: a runtime rule, so no tool's line can)
+
+
+@pytest.mark.parametrize("line", [
+    "Testerson_101426: OK to cut.",
+    "Testerson_101426: ok to cut 3/4 Classic White.",
+    "Testerson_101426: Okay to cut.",
+    "Testerson_101426: O.K. to cut.",
+    "Testerson_101426: ok-to-cut.",
+    "Testerson_101426: safe to cut.",
+    "Testerson_101426: good to cut.",
+    "Testerson_101426: clear to cut.",
+    "Testerson_101426: cleared to cut.",
+    "Testerson_101426: cleared for cutting.",
+    "Testerson_101426: fine to cut.",
+    "Testerson_101426: ready to cut.",
+    "Testerson_101426: ready for cutting.",
+    "Testerson_101426: you can cut it.",
+    "Testerson_101426: it can be cut.",
+    "Testerson_101426: you may cut it.",
+    "Testerson_101426: go ahead and cut.",
+    "Testerson_101426: cut away.",
+    "Testerson_101426: free to cut.",
+    "Testerson_101426: allowed to cut.",
+    "Testerson_101426: proceed to cut.",
+    "Testerson_101426: go cut it.",
+    "Testerson_101426: cutting is OK.",
+])
+def test_no_line_may_say_it_is_ok_to_cut(line: str) -> None:
+    assert "ok_to_cut" in {problem.code for problem in check_line(line)}
+
+
+def test_quoted_words_dont_get_past_the_rule() -> None:
+    line = 'Fab row "Testerson ok to cut" could be more than one job.'
+    assert "ok_to_cut" in {problem.code for problem in check_line(line)}
+
+
+@pytest.mark.parametrize("line", [
+    "Testerson_101426: DO NOT CUT 3/4 Classic White (trial). A program is on 61x109.",
+    "Testerson_101426: Nest checked 9:42 PM for 3/4 Classic White, programs TESS01-06.",
+    "NG Runner raised a DO NOT CUT; check with him before cutting anything newly posted.",
+    "Testerson_101426: Cleared by Jim 9:42 PM, program TESS07 of 3/4 Classic White on 61x109: he"
+    " added that sheet on purpose.",
+    "Testerson_101426: a shortcut is not a problem, and neither is a haircut.",
+])
+def test_the_words_a_guard_really_uses_pass_the_rule(line: str) -> None:
+    assert "ok_to_cut" not in {problem.code for problem in check_line(line)}
+
+
+def test_a_line_that_says_it_is_ok_to_cut_never_goes_out() -> None:
+    from ngrunner.messages import templates as t
+
+    message = t.do_not_cut("Testerson_101426", "3/4 Classic White", trial=False,
+                           reasons=("The check says OK to cut",))
+    sent = t.vetted(message, now=NOW)
+    assert sent.replaced and "ok to cut" not in sent.message.body.casefold()
+    assert sent.message.title.startswith("DO NOT CUT") and sent.message.urgent

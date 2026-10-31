@@ -1,6 +1,6 @@
 # P1b build spec — contracts for the builders
 
-Status: working spec for building Phase 1b ("Guards", design section 7: 11 dev-days). Everything marked measured was read on Sulaiman's PC on 2026-10-30, read-only. The design (`01-final-design.md`, local only) is the source of truth. Where this file departs from it, it says so, and section 9 lists each departure as a ruling for `docs/decisions.md`. Section 9's defaults are adopted (`docs/decisions.md`, 2026-10-30), as Sulaiman asked for decisions, and he can overrule any of them. Real jobs are called Case A, Case B and so on; the key is outside the repo. Made-up names (`Testerson_101426`, abbreviation `TES`) are the only job names here.
+Status: working spec for building Phase 1b ("Guards", design section 7: 11 dev-days). Everything marked measured was read on Sulaiman's PC on 2026-10-30, read-only. The design (`01-final-design.md`, local only) is the source of truth. Where this file departs from it, it says so, and section 9 lists each departure as a ruling for `docs/decisions.md`. Section 9's defaults are adopted (`docs/decisions.md`, 2026-10-30), as Sulaiman asked for decisions, and he can overrule any of them. Real jobs are called Case A, Case B and so on; the key is outside the repo. Made-up names (`Testerson_101426`, abbreviation `TES`) are the only job names here. Group 1 is wired into the running app, and the table "Wiring Phase 1b's guards into the app" in `docs/decisions.md` settles where that differs from what is written below.
 
 ## 1. What changes the plan
 

@@ -37,7 +37,7 @@ from ngrunner.messages.templates import DevLine
 
 UNREADABLE_NOTE = "could not verify the takeoff"        # the board's note on a None
 ESTIMATE = "takeoff estimate; the nest decides"         # the design requires these words
-KIND = "order_heads_up"
+KIND = "heads_up"       # what templates.FIXED knows it by
 _CLIENT_FIELDS = frozenset({"address", "client", "contact_notes", "site", "email"})
 
 

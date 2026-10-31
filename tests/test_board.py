@@ -22,6 +22,7 @@ from ngrunner.board.views import (
     HealthView,
     JobRow,
     ListItem,
+    MaterialRow,
     PathCheck,
     Tick,
     TrayState,
@@ -953,3 +954,62 @@ def test_when_windows_cannot_open_the_file_the_board_says_so(views, actions, ng_
     reason = _open(client, ng_jobs / "Dummitt_103026" / "Dummitt_103026_summary.pdf")
 
     assert reason == "Windows could not open Dummitt_103026_summary.pdf."
+
+
+# ----- the nest guard's lines: icon, label and colour, whatever the state
+
+
+def _with_materials(*materials: MaterialRow, **more) -> BoardView:
+    return _view(jobs=(JobRow("101", "Testerson_101426", None,
+                              _ticks("done", "done", "done", "done", "done"), "Filed",
+                              materials=materials, **more),))
+
+
+@pytest.mark.parametrize("state, tone, icon, label, at", [
+    ("do_not_cut", "bad", "x", "DO NOT CUT", NOW),
+    ("not_checked", "warn", "alert", "NOT CHECKED", NOW),
+    ("not_checked", "muted", "minus", "Not checked", None),
+    ("save_nest", "warn", "file", "Save the nest", NOW),
+    ("nest_checked", "ok", "check", "Nest checked", NOW),
+])
+def test_each_material_state_has_its_icon_label_and_colour(browser, views, state, tone, icon, label,
+                                                           at):
+    views.view = _with_materials(MaterialRow("3-4 Classic White", state, "What it found.", at=at,
+                                             shown="3/4 Classic White"))
+    page = browser.get("/", base_url=BASE).get_data(as_text=True)
+    found = re.search(rf'<li class="material">\s*<span class="tag tag--{tone}">'
+                      rf'<svg[^>]*><use href="#i-{icon}"></use></svg><span>{label}</span>', page)
+    assert found, page
+    assert "3/4 Classic White" in page and "What it found." in page
+
+
+def test_a_verdict_on_trial_says_so_and_one_that_isnt_doesnt(browser, views):
+    views.view = _with_materials(MaterialRow("3-4 Classic White", "do_not_cut", at=NOW, trial=True))
+    assert "(trial)" in browser.get("/", base_url=BASE).get_data(as_text=True)
+    views.view = _with_materials(MaterialRow("3-4 Classic White", "do_not_cut", at=NOW))
+    assert "(trial)" not in browser.get("/", base_url=BASE).get_data(as_text=True)
+
+
+def test_a_material_opens_its_folder(browser, views):
+    views.view = _with_materials(MaterialRow("3-4 Classic White", "do_not_cut", at=NOW,
+                                             file=Path(r"C:\NG Jobs\Testerson_101426\3-4")))
+    page = browser.get("/", base_url=BASE).get_data(as_text=True)
+    assert r"C:\NG Jobs\Testerson_101426\3-4" in page and "Open" in page
+
+
+def test_the_pre_flight_and_a_note_show_in_the_rows_next_step(browser, views):
+    views.view = _with_materials(notes=("could not verify the takeoff",),
+                                 lock=("2 sheets of 3/4 Spring Blossom have no price",))
+    page = browser.get("/", base_url=BASE).get_data(as_text=True)
+    assert "could not verify the takeoff" in page
+    assert "Before you lock (1)" in page and "2 sheets of 3/4 Spring Blossom" in page
+
+
+def test_a_job_with_no_materials_shows_no_empty_list(browser, views):
+    views.view = _with_materials()
+    assert 'class="materials"' not in browser.get("/", base_url=BASE).get_data(as_text=True)
+
+
+def test_a_material_in_a_state_the_guard_doesnt_have_is_refused_where_it_is_made():
+    with pytest.raises(ValueError):
+        MaterialRow("3-4 Classic White", "ok_to_cut")

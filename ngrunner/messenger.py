@@ -63,7 +63,11 @@ GIVE_UP = timedelta(hours=24)         # then a lost message stops holding the tr
 PHONE_CHANNELS = ("pushover", "slack")
 ROLE_BARBARA = "barbara"
 ROLE_SULAIMAN = "sulaiman"
+OFFICE_HOURS_ONLY = (ROLE_BARBARA, "will", "george")   # their email waits out quiet hours
 DO_NOT_CUT = "DO NOT CUT"             # the one exception to quiet hours (P1b on)
+# What closes that alarm: George heard of it at any hour, so he hears this at any hour too. Only a
+# DO NOT CUT itself reaches a phone at night.
+_CLOSES_THE_ALARM = ("Cleared by Jim", "No longer DO NOT CUT")
 _HELD = "messenger.held"              # state key: messages waiting out quiet hours
 # A stream counts a few a day, so only a restore's jump of 1,000,000 puts a queued row this far
 # behind it, and the Apps Script would refuse its number with no receipt.
@@ -89,11 +93,15 @@ def in_quiet_hours(now: datetime, settings: Settings) -> bool:
 
 def waits_for_morning(title: str, *, to: str, channel: str, now: datetime,
                       settings: Settings) -> bool:
-    """Ruling 25: a message for a phone, or Barbara's email, waits out quiet hours, cant_send
-    included. Only DO NOT CUT goes through. Jim's and Sulaiman's email never waits."""
-    if title.removeprefix(f"{SHADOW} ").startswith(DO_NOT_CUT):
+    """Ruling 25: a message for a phone, or email to the office (Barbara, Will, George), waits out
+    quiet hours, cant_send included. Only DO NOT CUT goes through, and for George what closes it.
+    Jim's and Sulaiman's email never waits."""
+    plain = title.removeprefix(f"{SHADOW} ")
+    if plain.startswith(DO_NOT_CUT):
         return False
-    if channel not in PHONE_CHANNELS and to != ROLE_BARBARA:
+    if channel not in PHONE_CHANNELS and to not in OFFICE_HOURS_ONLY:
+        return False
+    if channel not in PHONE_CHANNELS and plain.startswith(_CLOSES_THE_ALARM):
         return False
     return in_quiet_hours(now, settings)
 

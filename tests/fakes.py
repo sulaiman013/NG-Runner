@@ -720,13 +720,15 @@ class RecordingToasts:
 # ----- waiting for fetches
 
 
-def wait_for_fetches(timeout: float = 90.0) -> None:
+def wait_for_fetches(timeout: float = 90.0, *, guards: bool = True) -> None:
     """A tick never waits for a fetch, so the simulation does, before it moves the clock: a fetch
     stamped after the clock moved would read as later than it was. BackgroundFetches.start returns
     with its thread running, so every fetch a tick started is listed here. tests/test_e2e_day.py's
-    slow-fetch test fails if these threads ever stop being named so."""
+    slow-fetch test fails if these threads ever stop being named so. guards: the guards' read of
+    NG Jobs too."""
+    names = ("ngrunner-fetch-", "ngrunner-guards-") if guards else ("ngrunner-fetch-",)
     for thread in threading.enumerate():
-        if thread.name.startswith("ngrunner-fetch-"):
+        if thread.name.startswith(names):
             thread.join(timeout)
             if thread.is_alive():
                 raise AssertionError(f"{thread.name} did not finish within {timeout} s")
@@ -756,7 +758,8 @@ class World:
     """
 
     def __init__(self, tmp: Path, parts: _Parts, clock: FakeClock, *, mode: str = "live",
-                 data: str = "data", secrets: Mapping[str, str] | None = None) -> None:
+                 data: str = "data", secrets: Mapping[str, str] | None = None,
+                 tracker: bool = False, order_flags_on: bool = False) -> None:
         self.tmp = tmp
         self.clock = clock
         self.studio = parts.studio
@@ -769,10 +772,13 @@ class World:
         self.paths = AppPaths(tmp / data)
         for folder in (self.control, self.old, self.mozaik, self.paths.app_data):
             folder.mkdir(parents=True, exist_ok=True)
+        self.tracker = tmp / "tracker snapshots"
         self.settings = Settings(ng_jobs=self.ng_jobs, mozaik_shared=self.mozaik,
                                  control=self.control, render_url=RENDER_URL,
                                  studio_url=STUDIO_URL, mode=mode,
-                                 backup_public_key=BACKUP_PUBLIC_KEY)
+                                 backup_public_key=BACKUP_PUBLIC_KEY,
+                                 tracker_folder=self.tracker if tracker else None,
+                                 order_flags_on=order_flags_on)
         save_settings(self.paths, self.settings)
         self.secrets = MemorySecrets({"signing_key": KEY_HEX, "export_key": EXPORT_KEY,
                                       **(secrets or {})})
@@ -873,6 +879,8 @@ class World:
         self.script.on_clock()
         self._run_due()
         wait_for_fetches()
+        if self.sup is not None:       # the scheduler looks every second: the guards' pass is back
+            self.sup.run_due(self.clock.now())
         self.script.deliver()
 
     def run(self, *, minutes: float, step: float = 60.0) -> None:
@@ -1011,7 +1019,7 @@ def filed_paths(folder: str) -> set[str]:
 
 @contextmanager
 def running_world(tmp: Path, *, mode: str = "live", at: datetime = START, data: str = "data",
-                  secrets: Mapping[str, str] | None = None) -> Iterator[World]:
+                  secrets: Mapping[str, str] | None = None, **settings: Any) -> Iterator[World]:
     """A world with its fakes running, stopped with NG Runner at the end of the block."""
     clock = FakeClock(at)
     with running_studio() as fake, running_render(clock) as render:
@@ -1019,7 +1027,7 @@ def running_world(tmp: Path, *, mode: str = "live", at: datetime = START, data: 
         http = LocalRoutes({urlsplit(STUDIO_URL).hostname: studio.base_url,
                             urlsplit(RENDER_URL).hostname: render.base_url})
         world = World(tmp, _Parts(studio, render, http), clock, mode=mode, data=data,
-                      secrets=secrets)
+                      secrets=secrets, **settings)
         try:
             yield world
         finally:

@@ -107,6 +107,9 @@ Jim's lock clicks. Lock design records the job with calculated quantities before
 **DO NOT CUT / NOT CHECKED / Nest checked**:
 The three states a nested material can show; never silence, never "OK to cut".
 
+**Clearance**:
+Jim's click saying a program past its sheet size is on a sheet he added on purpose. It is bound to that program's hash, so a re-post asks again, and it never touches doubled holes.
+
 **Card**:
 A question for Jim with fixed choices and a recorded verbatim answer. A choice that names a job holds its Studio project ID, so an answer means that one job whenever it comes.
 

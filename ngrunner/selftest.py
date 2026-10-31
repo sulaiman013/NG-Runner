@@ -7,8 +7,8 @@ forbidden write through, or a message that breaks Jim's format is caught at inst
 Sulaiman, instead of overnight on Jim's PC. The installer runs it as
 NGRunner.exe --self-test --record; the exit code is 0 only when run_self_test() finds nothing.
 
-It checks four things, each reported in plain words:
-1. Every P1a module and library imports (in a build, a module PyInstaller missed fails here).
+It checks five things, each reported in plain words:
+1. Every P1a and P1b module and library imports (in a build, a module PyInstaller missed fails here).
 2. The database migration runs, twice, on a copy of the live database taken with SQLite's
    online backup (a new, empty database on a fresh install). The live database is only read.
 3. The 20 scripted forbidden writes (the P1a exit test, design 3.2) are each refused by the
@@ -16,6 +16,9 @@ It checks four things, each reported in plain words:
    Two allowed writes must succeed there first: a sandbox that refuses everything (a folder
    it can't reach, say) would refuse the 20 for the wrong reason and prove nothing.
 4. Every message template passes the message lint.
+5. Each guard's reader runs once on a small made-up file: a program, a shared read, a job sheet, a
+   labels PDF and a tracker snapshot. A module imported by name at run time passes an import and
+   fails only when used, as a real build showed: this is that use.
 
 Everything it makes is inside NG Runner's own data folder (staging\selftest-<random>), and
 removed again at the end, by remove_own_tree, which never follows a link.
@@ -27,9 +30,11 @@ import importlib
 import itertools
 import secrets
 import sys
+import zipfile
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
+from io import BytesIO
 from pathlib import Path, PureWindowsPath
 from typing import Any
 
@@ -50,6 +55,11 @@ P1A_MODULES: tuple[str, ...] = (
     "ngrunner.selftest", "ngrunner.intake.pipeline", "ngrunner.interlock", "ngrunner.jobmodel",
     "ngrunner.messenger", "ngrunner.supervisor", "ngrunner.canary",
     "ngrunner.intake.studio_designs",
+    "ngrunner.guards.facts", "ngrunner.guards.headsup", "ngrunner.guards.kept",
+    "ngrunner.guards.labels", "ngrunner.guards.lockcheck", "ngrunner.guards.nest_state",
+    "ngrunner.guards.preflight", "ngrunner.guards.reads", "ngrunner.guards.scan",
+    "ngrunner.guards.sheets", "ngrunner.guards.takeoffs", "ngrunner.guards.tap",
+    "ngrunner.guards.tracker", "ngrunner.guards.watch",
     "flask", "waitress", "requests", "pystray", "PIL", "psutil", "win32api", "pywintypes",
     "pythoncom", "win32com", "win32com.shell", "win32com.propsys", "win32cred", "win32timezone",
     "windows_toasts",
@@ -88,6 +98,7 @@ def run_self_test(
     try:
         problems += _migration(paths, work / "database", migrate)
         problems += forbidden_write_problems(work / "writes")
+        problems += guard_reader_problems(work / "guards")
     finally:
         left = remove_own_tree(work, inside=paths.staging)
         if left:
@@ -374,8 +385,10 @@ def message_samples() -> list[object]:
         t.remake_card(job, row="Testerson"),
         t.design_mismatch_card(job, report=3, proposal=4),
         t.design_mismatch_card(other, report=3, proposal=3),
-        t.sheet_size_card(job, material="3-4 Classic White", program="TESS07.TAP", on="61x109",
+        t.sheet_size_card(job, material="3-4 Classic White", programs=(("TESS07.TAP", "61x109"),),
                           expected="49x97"),
+        t.sheet_size_card(job, material="3-4 Classic White", expected="49x97", programs=(
+            ("TESS07.TAP", "61x109"), ("TESS08.TAP", "61x109"), ("TESS09.TAP", None))),
     )]
     echoes = [t.echo(parse_command(typed, cards)) for typed in (
         f"{cards[2].id} 2", "pause", "resume", f"add job {job}", "add job 84213")]
@@ -414,7 +427,7 @@ def _nest_samples(t: Any, job: str) -> list[object]:
     checked = datetime(2026, 10, 31, 4, 42, tzinfo=timezone.utc)     # 9:42 PM Pacific
     doubled, six = ("TESS02.TAP", "TESS03.TAP"), tuple(f"TESS0{n}.TAP" for n in range(1, 7))
     skis = "Tafisa Apres Skis"
-    notes = (t.POSTED_BEFORE, t.SAVE_THE_NEST, t.NO_PROGRAMS_YET, t.LABELS_NOT_VERIFIED,
+    notes = (t.POSTED_BEFORE, t.SAVE_THE_NEST, t.NO_PROGRAMS_YET,
              t.nest_checked_note(checked, six),
              t.programs_read_note(at=checked, sheet="49x97"),
              t.programs_read_note(at=checked, sheet=None, merged=1),
@@ -427,15 +440,37 @@ def _nest_samples(t: Any, job: str) -> list[object]:
         t.not_checked(job, classic, posted=posted, now=posted),
         t.nest_checked(job, classic, at=checked, programs=six, trial=False),
         t.nest_checked(job, classic, at=checked, programs=six, trial=True, open_items=2),
-        t.sheet_cleared(job, classic, program="TESS07.TAP", on="61x109", at=checked),
+        t.sheet_cleared(job, classic, programs=(("TESS07.TAP", "61x109"),), at=checked),
+        t.sheet_cleared(job, classic, programs=(("TESS07.TAP", "61x109"), ("TESS08.TAP", None)),
+                        at=checked),
+        t.fault_gone(job, classic, at=checked),
+        *(Message("nest_risk", "NG Runner", (line,)) for line in (
+            t.open_do_not_cut(job, classic, trial=True, reasons=(t.doubled_holes(8, doubled),
+                                                                 t.past_its_size(1, "61x109",
+                                                                                 "49x97"))),
+            t.open_not_checked(job, classic, posted=posted, now=posted),
+            t.more_not_checked(4), t.material_words("3-4 Classic White"))),
         t.order_heads_up(job, sheets=((12, f"3/4 {skis}"), (4, f"1/4 {skis}")),
                          tape=((240, '15/16"', skis),)),
         t.order_heads_up(job, sheets=((12, f"3/4 {skis}"),), tape=(), revised=True,
                          flags=("IC Arctic White, built as Egger Classic White",)),
         t.before_you_lock(job, items=("2 sheets of 3/4 Spring Blossom have no price in the"
                                       " tracker",)),
+        *_heads_up_samples(job),
         *(Message("nest_note", "NG Runner", (note,)) for note in notes),
     ]
+
+
+def _heads_up_samples(job: str) -> list[object]:
+    """What really goes out to Barbara and Will: guards/headsup.py makes it, over a made-up takeoff."""
+    from ngrunner.guards.headsup import Takeoff, TapeLine, heads_up, order_flags
+    from ngrunner.guards.headsup import SheetLine as HeadsUpSheet
+
+    takeoff = Takeoff((HeadsUpSheet("Egger Classic White", 0.75, 12, 11.2),),
+                      (TapeLine("Egger Classic White", '15/16"', 240.0),), 26000.0,
+                      "Arctic White (WH)", 10)
+    flags = order_flags(takeoff, total_line=25000)
+    return [heads_up(job, takeoff, flags, revised=False), heads_up(job, takeoff, (), revised=True)]
 
 
 def _function(module: str, name: str) -> Callable[..., object]:
@@ -465,6 +500,83 @@ def template_problems(samples: Callable[[], Iterable[object]],
             continue
         problems += [f"Message template {kind}: {_sentence(text)}" for text in found]
     return problems
+
+
+# ----- 5. the guards' readers, for real
+
+
+_SMALL_PROGRAM = (b"G00 G17 G20 G40\r\nM06 T6\r\nG0 X1.0000 Y1.0000 Z1.5100\r\nG1 Z0.1300 F150.0\r\n"
+                  b"G0 X1.0000 Y1.0000 Z1.5100\r\nG1 X2.0000 Y3.0000 F738.0\r\nM30\r\n%\r\n")
+_SMALL_SHEET = (b'<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+                b"<w:body><w:p><w:r><w:t>Job Name: Testerson_101426</w:t></w:r></w:p></w:body>"
+                b"</w:document>")
+_SMALL_SNAPSHOT = {
+    "meta": "key,value\nsnapshot_taken,2026-10-30T23:51:34Z\n",
+    "SheetGoods": 'Job,Material,Calc Sheets,Optimizer Sheets,$/Sheet,Material Cost ($),Sheet Status\n'
+                  "TOTALS\n",
+    "Edgeband": "Job,Material,Calc Lin Ft,Optimizer Lin Ft,$/LF,EB Cost ($),Status\nTOTALS\n",
+    "JobSummary": "Job,Status\nTOTALS\n",
+    "Pricing": "SHEET GOODS\nMaterial\n\u25b2 end\nEDGEBAND\nMaterial\n\u25b2 end\n",
+}
+
+
+def guard_reader_problems(work: Path) -> list[str]:
+    """Each guard's reader once, on made-up files in work. Each must give what it should."""
+    from ngrunner.guards.labels import read_catalog, read_labels
+    from ngrunner.guards.preflight import read_job_sheet
+    from ngrunner.guards.reads import read_shared
+    from ngrunner.guards.tap import read_tap
+    from ngrunner.guards.tracker import read_tracker
+
+    work.mkdir(parents=True)
+    checks: list[tuple[str, Callable[[], bool]]] = [
+        ("a program", lambda: read_tap("TESS01.TAP", _SMALL_PROGRAM).reach == (2.0, 3.0)),
+        ("a shared read", lambda: _shared_read(work, read_shared)),
+        ("a job sheet", lambda: _job_sheet_name(work, read_job_sheet) == "Testerson_101426"),
+        ("a labels file", lambda: read_labels(_small_pdf()) == ()),
+        ("the parts catalog", lambda: read_catalog(b"Job,Part,Pieces,JobModified\n") == ()),
+        ("a tracker snapshot", lambda: _snapshot_rows(work, read_tracker) == 0),
+    ]
+    problems = []
+    for what, check in checks:
+        try:
+            if not check():
+                problems.append(f"The guards read {what} wrongly in this build.")
+        except Exception as exc:  # noqa: BLE001 - whatever stops a reader fails this build
+            problems.append(f"The guards can't read {what} in this build ({_reason(exc)}).")
+    return problems
+
+
+def _shared_read(work: Path, read_shared: Callable[[Path], bytes]) -> bool:
+    path = work / "shared.txt"
+    path.write_bytes(SANDBOX_CONTENT)
+    return read_shared(path) == SANDBOX_CONTENT
+
+
+def _job_sheet_name(work: Path, read_job_sheet: Callable[[Path], Any]) -> str:
+    path = work / "sheet.docx"
+    with zipfile.ZipFile(path, "w") as sheet:
+        sheet.writestr("word/document.xml", _SMALL_SHEET)
+    return read_job_sheet(path).name
+
+
+def _small_pdf() -> bytes:
+    """A real one-page PDF with no label on it, so pypdf's text extraction runs to its end."""
+    from pypdf import PdfWriter
+
+    out = BytesIO()
+    writer = PdfWriter()
+    writer.add_blank_page(width=72, height=72)
+    writer.write(out)
+    return out.getvalue()
+
+
+def _snapshot_rows(work: Path, read_tracker: Callable[[Path], Any]) -> int:
+    folder = work / "tracker"
+    folder.mkdir()
+    for tab, text in _SMALL_SNAPSHOT.items():
+        (folder / f"tracker_snapshot_{tab}.csv").write_text(text, encoding="utf-8")
+    return len(read_tracker(folder).sheets)
 
 
 # ----- wording

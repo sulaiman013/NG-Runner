@@ -29,7 +29,7 @@ from typing import Protocol
 from xml.etree import ElementTree
 
 from ngrunner.clock import fmt_date, pacific_day, utc
-from ngrunner.guards.labels import DesignMatch
+from ngrunner.guards.labels import LabelsMatch
 from ngrunner.guards.tracker import (
     SheetRow,
     TapeRow,
@@ -43,7 +43,7 @@ MAX_SNAPSHOT_AGE = timedelta(minutes=20)    # design 5: the same age a drop to t
 CODES = frozenset({
     "snapshot_old", "no_rows", "duplicate_row", "not_priced", "zero_cost", "key_spelled_twice",
     "status_unknown", "nest_state", "no_check", "check_flagged", "check_older_than_design",
-    "check_same_day", "labels_not_in_design",
+    "check_same_day", "labels_not_in_design", "tracker_unreadable",
 })
 
 
@@ -86,7 +86,7 @@ class CheckFile:
 
 def preflight(job: str, snap: TrackerSnapshot, nests: Sequence[NestFacts],
               check: CheckFile | None, catalog_date: date | None, *, now: datetime,
-              labels: DesignMatch | None = None) -> Preflight:
+              labels: LabelsMatch | None = None) -> Preflight:
     """What to look at before locking job. It reads and reports; it decides nothing."""
     if abs(utc(now) - snap.taken) > MAX_SNAPSHOT_AGE:
         return Preflight((_item("snapshot_old", _FIXED["snapshot_old"]),), snap.taken)
@@ -115,6 +115,8 @@ _FIXED = {
     "check_older_than_design": "The crosscheck is older than the design's last change",
     "check_same_day": "Could not verify that the crosscheck is newer than the design",
     "labels_not_in_design": "Could not verify the labels against the parts catalog",
+    "tracker_unreadable": "The tracker's snapshot could not be read, so this pre-flight could not"
+                          " verify anything",
 }
 
 
@@ -128,6 +130,13 @@ def _item(code: str, *tries: str) -> PreflightItem:
 
 def _count(n: float, one: str, many: str) -> str:
     return f"{n:g} {one if n == 1 else many}"
+
+
+def could_not_read_tracker(problem: str, now: datetime) -> Preflight:
+    """The whole result when the snapshot itself won't read: TrackerUnreadable's plain words, for
+    the same reason an old snapshot gets one line."""
+    text = f"{problem}, so this pre-flight could not verify anything"
+    return Preflight((_item("tracker_unreadable", text),), now)
 
 
 # ----- rows, prices and status
@@ -286,7 +295,7 @@ def _check_age(day: date, design: date | None) -> list[PreflightItem]:
     return []
 
 
-def _label_items(labels: DesignMatch | None) -> list[PreflightItem]:
+def _label_items(labels: LabelsMatch | None) -> list[PreflightItem]:
     """The labels fallback only ever adds a line. It clears nothing above."""
     if labels is None or labels.code != "some_missing":
         return []

@@ -413,7 +413,7 @@ def test_a_revised_takeoff_says_so() -> None:
 def test_the_title_names_the_job_and_every_line_passes_the_lint() -> None:
     message = heads_up(JOB, good(), (), revised=False)
     assert JOB in message.title
-    assert message.kind == "order_heads_up"
+    assert message.kind == "heads_up"       # what templates.FIXED knows it by
     assert message.urgent is False
     assert lint(message) == []
 

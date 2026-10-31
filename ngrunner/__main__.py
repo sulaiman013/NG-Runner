@@ -59,6 +59,9 @@ class _UsageError(Exception):
     pass
 
 
+TRACKER_FOLDER_NAME = "NG Conversion program Claude"     # beside NG Jobs (P1b build spec 3.5)
+
+
 class _Parser(argparse.ArgumentParser):
     def error(self, message: str) -> NoReturn:
         raise _UsageError(f"{self.prog}: {message}")
@@ -467,6 +470,7 @@ def _ask_settings(before: Settings | None, read_line: Callable[[str], str],
                                 ("control", "control", None)):
         current = None if before is None else str(getattr(before, name))
         answers[name] = _ask_folder(label, called, current, read_line, say)
+    answers["tracker_folder"] = _tracker_folder(before, answers["ng_jobs"], say)
     stays_on = True if before is None else not before.pc_sleeps_at_night
     answers["pc_sleeps_at_night"] = not _ask_yes_no("Does this PC stay on overnight?", stays_on,
                                                     read_line, say)
@@ -476,6 +480,19 @@ def _ask_settings(before: Settings | None, read_line: Callable[[str], str],
         answers[name] = _ask_time(label, current, read_line, say)
     answers["backup_public_key"] = _ask_backup_key(before, read_secret, say)
     return answers
+
+
+def _tracker_folder(before: Settings | None, ng_jobs: str, say: _Say) -> str | None:
+    """Where the tracker's snapshots are, with no question: Jim's chat drops them beside NG Jobs, in
+    a folder of this name, on every PC with the Drive. It is only ever read, and with none the lock
+    pre-flight says so on Health. A folder set before stays."""
+    if before is not None and before.tracker_folder is not None:
+        return str(before.tracker_folder)
+    found = Path(ng_jobs).parent / TRACKER_FOLDER_NAME
+    if not found.is_dir():
+        return None
+    say(f"Tracker snapshots: {found}")
+    return str(found)
 
 
 def _ask_folder(label: str, called: str | None, current: str | None,

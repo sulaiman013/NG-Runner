@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import ast
 import json
+from dataclasses import replace
 from datetime import date, datetime, timezone
 from pathlib import Path
 
@@ -18,7 +19,7 @@ from pypdf import PdfReader, PdfWriter
 from conftest import FIXTURES
 from helpers_pdf import _Page, _write_pdf
 from ngrunner.guards.labels import (
-    DesignMatch,
+    LabelsMatch,
     LabelPart,
     Piece,
     catalog_date,
@@ -314,7 +315,7 @@ def test_a_file_with_no_part_numbers_gives_could_not_read() -> None:
 # ----- it never passes a nest and never raises DO NOT CUT
 
 
-def _all_three() -> list[DesignMatch]:
+def _all_three() -> list[LabelsMatch]:
     return [labels_in_design((label(),), (piece(),)),
             labels_in_design((label(part="R1C9"),), (piece(),)),
             labels_in_design((), ())]
@@ -347,7 +348,7 @@ def test_every_reading_is_marked_as_never_proving_the_nest() -> None:
 
 def test_the_mark_can_not_be_set_on_a_match() -> None:
     with pytest.raises(TypeError):
-        DesignMatch(code="all_found", proves_nest=True)  # type: ignore[call-arg]
+        LabelsMatch(code="all_found", proves_nest=True)  # type: ignore[call-arg]
     match = labels_in_design((label(),), (piece(),))
     with pytest.raises(AttributeError):
         match.proves_nest = True  # type: ignore[misc]
@@ -404,10 +405,25 @@ def test_the_control_a_real_design_match_does_reach_nest_checked() -> None:
     ((), ()),                                   # could_not_read
 ])
 def test_with_all_else_passing_no_labels_reading_decides_the_nest(labels, pieces) -> None:
+    nest_state, evidence = _passing_evidence(lambda facts, checked: None)
+    verdict = nest_state.decide(replace(evidence, labels=labels_in_design(labels, pieces)))
+    assert verdict.state == nest_state.NestState.NOT_CHECKED
+
+
+@pytest.mark.parametrize("labels, pieces", [
+    ((label(),), (piece(),)), ((label(part="R1C9"),), (piece(),)), ((), ()),
+])
+def test_a_labels_reading_where_the_real_match_goes_decides_nothing_either(labels, pieces) -> None:
     nest_state, evidence = _passing_evidence(
         lambda facts, checked: labels_in_design(labels, pieces))
-    verdict = nest_state.decide(evidence)
-    assert verdict.state == nest_state.NestState.NOT_CHECKED
+    assert nest_state.decide(evidence).state == nest_state.NestState.NOT_CHECKED
+
+
+def test_the_real_match_and_the_labels_fallback_are_two_types_not_one() -> None:
+    from ngrunner.guards import facts
+
+    assert LabelsMatch is not facts.DesignMatch
+    assert not hasattr(facts.DesignMatch("matches"), "proves_nest")
 
 
 @pytest.mark.parametrize("labels, pieces, says", [
@@ -417,10 +433,10 @@ def test_with_all_else_passing_no_labels_reading_decides_the_nest(labels, pieces
 ])
 def test_only_a_labels_reading_that_did_not_fit_adds_could_not_verify(labels, pieces,
                                                                       says) -> None:
-    nest_state, evidence = _passing_evidence(
-        lambda facts, checked: labels_in_design(labels, pieces))
-    said = " ".join(nest_state.decide(evidence).reasons).casefold()
-    assert ("could not verify the labels" in said) is says
+    nest_state, evidence = _passing_evidence(lambda facts, checked: None)
+    verdict = nest_state.decide(replace(evidence, labels=labels_in_design(labels, pieces)))
+    said = " ".join(verdict.reasons).casefold()
+    assert ("could not verify" in said and "parts catalog" in said) is says
 
 
 # ----- the newest file per material

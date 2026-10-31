@@ -113,6 +113,10 @@ class Settings:
     sold_stages: tuple[str, ...] = ("Ready to Order", "Ready to Install")  # questionnaire 3a
     mode: str = "shadow"                 # live only by a deliberate switch (integration spec 7)
     backup_public_key: str = ""          # blank: the nightly backup is a board item, not a crash
+    # P1b. No default for the folder: with none, the lock pre-flight says it could not verify.
+    tracker_folder: Path | None = None   # where Jim's tracker drops its snapshots; only ever read
+    order_flag_total: float = 25000      # decision 12c: a heads-up names a total at or above this
+    order_flags_on: bool = False         # nothing reaches Barbara or Will until Sulaiman turns it on
     # What load_settings set aside, as (name, value), sorted. No setting of this version: nothing
     # reads, compares or prints it, and save_settings puts it back for the version that knows it.
     set_aside: tuple[tuple[str, Any], ...] = field(default=(), compare=False, repr=False)
@@ -168,7 +172,27 @@ def settings_from(raw: Mapping[str, Any]) -> Settings:
         if name in raw:
             values[name] = _wall(raw[name], name)
     values.update(_choices(raw))
+    values.update(_guard_settings(raw))
     return Settings(**values)
+
+
+def _guard_settings(raw: Mapping[str, Any]) -> dict[str, Any]:
+    """Each is optional, as a settings file from before P1b must still load: two failed starts
+    retire a version."""
+    values: dict[str, Any] = {}
+    if raw.get("tracker_folder"):
+        values["tracker_folder"] = _full_path(str(raw["tracker_folder"]), "tracker_folder")
+    if "order_flag_total" in raw:
+        total = raw["order_flag_total"]
+        if (isinstance(total, bool) or not isinstance(total, int | float)
+                or not 0 < total < float("inf")):
+            raise SettingsError("order_flag_total must be a dollar amount above 0")
+        values["order_flag_total"] = total
+    if "order_flags_on" in raw:
+        if not isinstance(raw["order_flags_on"], bool):
+            raise SettingsError("order_flags_on must be true or false")
+        values["order_flags_on"] = raw["order_flags_on"]
+    return values
 
 
 def _choices(raw: Mapping[str, Any]) -> dict[str, Any]:
@@ -201,6 +225,7 @@ def settings_to_json(settings: Settings) -> dict[str, Any]:
     for name in _PATHS:
         out[name] = str(out[name])
     out["sold_stages"] = list(settings.sold_stages)
+    out["tracker_folder"] = None if settings.tracker_folder is None else str(settings.tracker_folder)
     return out
 
 

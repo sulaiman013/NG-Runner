@@ -12,25 +12,33 @@ what isn't known is never a pass:
 3. A new program with near pairs: DO_NOT_CUT. Nothing can clear this.
 4. A new program past its size that Jim hasn't cleared: DO_NOT_CUT. A clearance names one program's
    hash, so a re-post asks again, and it clears only this row (docs/decisions.md, Q3a).
-5. A check that says it failed: DO_NOT_CUT.
+5. A check that says it failed: DO_NOT_CUT. Rows 3, 4 and 5 give one state, and a verdict lists every
+   fault of the three, doubled holes first, so Jim re-nests once and not once per fault. Clearing a
+   size only takes that fault off the list.
 6. A nest with parts and no sheets: SAVE_NEST.
 7. A nest, both checks passing, the design matching, and all of it on the files on disk right now:
    NEST_CHECKED. On today's data nothing reaches this, since no .opt can be read yet.
 8. Anything else: NOT_CHECKED, saying what was read and that the nest was not.
 
 A clean read of the programs can never say more than row 8 does: a program check can raise DO NOT
-CUT, and only Jim's own checks can say "Nest checked". No verdict means OK to cut.
+CUT, and only Jim's own checks can say "Nest checked". No verdict means it may be cut, and the lint
+refuses any line that says so.
 
 The words are in messages.templates, since a DO NOT CUT says the same on the board and in its
-message. Which programs a row found are in doubled_programs() and past_size_programs(), for the
-cards a verdict opens: first match gives one row's notes, and a material with both faults still has
-a size to ask Jim about.
+message. Which programs a row found are in doubled_programs() and past_size_programs(), for the card
+a verdict opens.
+
+Two facts can look alike and must never be taken for each other. design is the real match, the nest
+against the design's cutlist (facts.DesignMatch), which needs files that can't be read yet. labels is
+the fallback (guards.labels.LabelsMatch), which can only add "could not verify": decide reads nothing
+else from it, so no reading of it can reach NEST_CHECKED, whichever field it lands in.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum, auto
+from typing import TYPE_CHECKING
 
 from ngrunner.guards import sheets
 from ngrunner.guards.facts import (
@@ -40,13 +48,16 @@ from ngrunner.guards.facts import (
 from ngrunner.guards.tap import Tap
 from ngrunner.messages import templates as words
 
+if TYPE_CHECKING:
+    from ngrunner.guards.labels import LabelsMatch
+
 BASIS_PROGRAMS = "programs"
 BASIS_NEST = "nest"
 _BOTH_TOOLS = frozenset({SHEET_SIZE, BR_CAM_NEST})
 # The sheets real programs fit, smallest first (build spec 3.1): how a program's reach is put into
 # words. A rule's size comes from guards/sheets.py, never from here.
 _KNOWN_SHEETS = ((49.0, 97.0), (61.0, 109.0), (49.0, 121.0))
-_LABELS_DID_NOT_FIT = ("some_missing", "could_not_read")
+_LABELS_DID_NOT_FIT = ("some_missing", "could_not_read")     # guards.labels' codes
 _A_CHECK_FAILED = "A check of the nest failed"
 
 
@@ -66,6 +77,7 @@ class MaterialEvidence:
     taps: every program in it now.
     seen_at_install: all of them were there at the first scan, unchanged.
     opt, tools, design: the nest, Jim's checks and the design match. None or empty: not known.
+    labels: what the labels fallback found, which can only add a "could not verify" note.
     cleared: the sha256 of each program whose size Jim cleared on this job and material
         (store.cleared_programs).
     before_install: (name, sha256) of each program in taps that was there at the first scan and
@@ -86,6 +98,7 @@ class MaterialEvidence:
     before_install: frozenset[tuple[str, str]] = frozenset()
     room_hashes: tuple[tuple[str, str], ...] = ()
     read_at: datetime | None = None
+    labels: LabelsMatch | None = None
 
 
 @dataclass(frozen=True)
@@ -107,24 +120,30 @@ def decide(ev: MaterialEvidence) -> Verdict:
         return _verdict(NestState.NOT_CHECKED, (words.POSTED_BEFORE,))
     if not ev.taps and ev.opt is None:
         return _verdict(NestState.NOT_POSTED, ())
-    doubled = doubled_programs(ev)
-    if doubled:
-        holes = sum(len(tap.near_pairs) for tap in doubled)
-        note = words.doubled_holes(holes, [tap.name for tap in doubled])
-        return _verdict(NestState.DO_NOT_CUT, (note,))
-    past = past_size_programs(ev)
-    if past:
-        return _verdict(NestState.DO_NOT_CUT, _past_size_notes(ev.material, past))
-    failed = [tool for tool in ev.tools if tool.code == FAILED]
-    if failed:
-        return _verdict(NestState.DO_NOT_CUT,
-                        tuple(tool.line.strip() or _A_CHECK_FAILED for tool in failed), BASIS_NEST)
+    faults = _faults(ev)
+    if faults:
+        in_programs = doubled_programs(ev) or past_size_programs(ev)
+        return _verdict(NestState.DO_NOT_CUT, faults, BASIS_PROGRAMS if in_programs else BASIS_NEST)
     if ev.opt is not None and ev.opt.parts > 0 and not ev.opt.sheets:
         return _verdict(NestState.SAVE_NEST, (words.SAVE_THE_NEST,), BASIS_NEST)
     if _nest_is_checked(ev):
         note = words.nest_checked_note(ev.read_at, [tap.name for tap in ev.taps])
         return _verdict(NestState.NEST_CHECKED, (note,), BASIS_NEST)
     return _verdict(NestState.NOT_CHECKED, _not_checked_notes(ev))
+
+
+def _faults(ev: MaterialEvidence) -> tuple[str, ...]:
+    """Every reason for a DO NOT CUT (rows 3, 4 and 5), each fault in its own words."""
+    notes: list[str] = []
+    doubled = doubled_programs(ev)
+    if doubled:
+        holes = sum(len(tap.near_pairs) for tap in doubled)
+        notes.append(words.doubled_holes(holes, [tap.name for tap in doubled]))
+    past = past_size_programs(ev)
+    if past:
+        notes += _past_size_notes(ev.material, past)
+    notes += [tool.line.strip() or _A_CHECK_FAILED for tool in ev.tools if tool.code == FAILED]
+    return tuple(notes)
 
 
 def doubled_programs(ev: MaterialEvidence) -> tuple[Tap, ...]:
@@ -135,8 +154,8 @@ def doubled_programs(ev: MaterialEvidence) -> tuple[Tap, ...]:
 
 
 def past_size_programs(ev: MaterialEvidence) -> tuple[Tap, ...]:
-    """The new programs past this material's size and not cleared: one sheet_size card each. A
-    clearance counts only for the hash it names, so a re-post is back here."""
+    """The new programs past this material's size and not cleared: what its one sheet_size card
+    asks about. A clearance counts only for the hash it names, so a re-post is back here."""
     if ev.seen_at_install:
         return ()
     judged = _judged(ev)
@@ -225,8 +244,8 @@ def _not_checked_notes(ev: MaterialEvidence) -> tuple[str, ...]:
     notes = [_what_was_read(ev)]
     notes += [tool.line.strip() for tool in ev.tools
               if tool.code == COULD_NOT_VERIFY and tool.line.strip()]
-    if ev.design is not None and ev.design.code in _LABELS_DID_NOT_FIT:
-        notes.append(words.LABELS_NOT_VERIFIED)
+    if ev.labels is not None and ev.labels.code in _LABELS_DID_NOT_FIT:
+        notes.append(ev.labels.note)
     return tuple(notes)
 
 
@@ -238,7 +257,7 @@ def _what_was_read(ev: MaterialEvidence) -> str:
     if not judged:
         return words.POSTED_BEFORE if ev.taps else words.NO_PROGRAMS_YET
     cleared = _past_size_names(ev.material, judged)   # row 4 didn't match, so Jim cleared them all
-    merged = sum(1 for tap in judged if tap.family == "merged")
+    merged = sum(1 for tap in judged if tap.overlays)
     return words.programs_read_note(at=ev.read_at, sheet=expected_sheet(ev.material),
                                     cleared=len(cleared), merged=merged)
 

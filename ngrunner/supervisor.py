@@ -18,8 +18,11 @@ Jim's PC. The rules that shaped it:
   window the PC was off for is caught up at the next run_due, and named.
 - One task failing never stops the others: it is logged and opens a DEV item.
 
+The guards run beside the pipeline's tick and never inside it: a guard's failure is its own, and
+their reads of G: are on a worker, whose result is taken up within a second of coming back.
+
 Quit means quit until the next logon (launcher.record_quit), and pause means filing stops while
-heartbeats, the digest and messages go on: the interlock decides that, so the pipeline keeps ticking
+heartbeats, the digest, the guards and messages go on: the interlock decides that, so the pipeline keeps ticking
 while paused and carries on where it stopped. A pause can come from the tray, the board or a signed
 file in the control folder; a resume only from the PC.
 
@@ -66,6 +69,7 @@ from ngrunner.clock import (
     utc,
 )
 from ngrunner.config import AppPaths, Settings, SettingsError
+from ngrunner.guards.kept import folder_of_card
 from ngrunner.intake.studio_designs import StudioSite
 from ngrunner.interlock import PAUSED, is_paused
 from ngrunner.joblist import RenderClient
@@ -168,6 +172,8 @@ NO_PARTS = "NG Runner could not start its work, so nothing is being filed. Tell 
 NOT_OPEN = "That question is no longer open, so nothing changed."
 NOT_A_CHOICE = "That isn't one of the question's answers, so nothing changed."
 CHECKING = "Checking the Fab Schedule now."
+NO_TRACKER_FOLDER = ("The lock pre-flight is off: NG Runner has no tracker folder. Tell Sulaiman.")
+_THE_GUARDS_SAY = ("DO NOT CUT", "NOT CHECKED")  # a red that keeps its own words over a setup line
 _BOARD_TOKEN = re.compile(r"([?&]t=)[A-Za-z0-9_-]+")
 
 
@@ -175,9 +181,10 @@ def _seams() -> SimpleNamespace:
     """The modules built alongside this one, imported here so a test can hand in fakes. A build
     that lacks one fails its self-test first (selftest.P1A_MODULES), and then fails to start."""
     from ngrunner import jobmodel, messenger
+    from ngrunner.guards import watch
     from ngrunner.intake import pipeline
 
-    return SimpleNamespace(pipeline=pipeline, messenger=messenger, jobmodel=jobmodel)
+    return SimpleNamespace(pipeline=pipeline, messenger=messenger, jobmodel=jobmodel, guards=watch)
 
 
 def night_key(now: datetime) -> date:
@@ -324,6 +331,7 @@ class Supervisor:
             _Task("database check", MINUTE, self._check_store),
             _Task("setup check", MINUTE, self._check_setup),
             _Task("pause files", MINUTE, self._read_pause_files),
+            _Task("guards", MINUTE, self._guards),
             _Task("pipeline tick", MINUTE, self._tick),
             _Task("receipts check", MINUTE, self._check_receipts),
             _Task("heartbeat", HEARTBEAT_EVERY, self._heartbeat),
@@ -562,7 +570,23 @@ class Supervisor:
             next(task for task in self._tasks if task.name == "pipeline tick").last = None
         if "support" in asked:
             self._guarded("support bundle", self._send_support_bundle, now)
-        return bool(asked)
+        return self._take_guards(now) or bool(asked)
+
+    def _take_guards(self, now: datetime) -> bool:
+        """What the guards' read found, within a second of its coming back. True when there was
+        something, so the tray looks. Looked at every second, so not _guarded, which reads the DEV
+        lane each time; the guards' next clean pass closes what this opens."""
+        if self._ctx is None or self._store_problem:
+            return False
+        try:
+            return bool(self._seams.guards.take_finished(self._ctx))
+        except StoreError as exc:
+            _log.error("the guards could not use the database: %s", exc)
+            self._store_problem = NO_STORE
+        except Exception as exc:  # noqa: BLE001 - a guard's failure must never stop the schedule
+            _log.exception("the guards failed")
+            self._dev(now, "task_failed", f"The guards failed ({type(exc).__name__}).")
+        return False
 
     def _guarded(self, name: str, action: Callable[[datetime], object], now: datetime) -> None:
         try:
@@ -738,6 +762,12 @@ class Supervisor:
         if self._ready():
             self._seams.pipeline.tick(self._ctx)
 
+    def _guards(self, now: datetime) -> None:
+        """Beside the pipeline and never inside it: a guard's failure is its own, and a guard only
+        reads, so it runs through a pause and with no signing key. Telling people waits for one."""
+        if self._ctx is not None and not self._store_problem:
+            self._seams.guards.tick(self._ctx)
+
     def _check_receipts(self, now: datetime) -> None:
         if self._ready():
             self._messenger.check_receipts()
@@ -822,8 +852,9 @@ class Supervisor:
         cards = list_cards(self._store, state="open")
         shown = set(json.loads(get_state(self._store, TOASTED_CARDS, "[]") or "[]"))
         for record in cards:
-            if record.id not in shown:
-                self._messenger.toast_card(self._card_of(record))
+            card = None if record.id in shown else self._card_or_none(record)
+            if card is not None:
+                self._messenger.toast_card(card)
         set_state(self._store, TOASTED_CARDS, json.dumps(sorted(card.id for card in cards)))
 
     def _toast_morning_list(self, now: datetime) -> None:
@@ -852,7 +883,8 @@ class Supervisor:
                 _path_check(label, path) for label, path in (
                     ("NG Jobs", self._settings.ng_jobs),
                     ("Control folder", self._settings.control),
-                    ("Mozaik Shared", self._settings.mozaik_shared)))
+                    ("Mozaik Shared", self._settings.mozaik_shared),
+                    ("Tracker snapshots", self._settings.tracker_folder)) if path is not None)
 
     # ----- the digest
 
@@ -1134,7 +1166,8 @@ class Supervisor:
         except StoreError:
             self._store_problem = NO_STORE
             return TrayState("red", 0, tray_tooltip(NO_STORE, shadow=shadow))
-        if problem and state.colour == "red":
+        if problem and state.colour == "red" and not any(
+                words in state.tooltip for words in _THE_GUARDS_SAY):
             return replace(state, tooltip=tray_tooltip(problem, shadow=shadow))
         return state
 
@@ -1185,9 +1218,11 @@ class Supervisor:
                     Path(p) for p in json.loads(get_state(store, LEFTOVER_TEMPS, "[]") or "[]"))
             except StoreError:
                 self._store_problem = NO_STORE
+        off = (NO_TRACKER_FOLDER,) if (self._settings is not None
+                                       and self._settings.tracker_folder is None) else ()
         return HealthView(paths=self._path_checks, last_export=last_export,
                           list_synced_at=list_synced_at, heartbeat=beat,
-                          toasts=self._toast_setting, alarms=(*self._blockers, *self._notes),
+                          toasts=self._toast_setting, alarms=(*self._blockers, *self._notes, *off),
                           leftover_temps=leftovers, app_version=launcher.app_version())
 
     def _is_paused(self) -> bool:
@@ -1301,13 +1336,26 @@ class Supervisor:
         return self._add_job(parsed)
 
     def _open_cards(self) -> list[Card]:
-        return [self._card_of(record) for record in list_cards(self._store, state="open")]
+        found = (self._card_or_none(record) for record in list_cards(self._store, state="open"))
+        return [card for card in found if card is not None]
 
     def _card_of(self, record: Any) -> Card:
+        """Named by its job, its row, or for a sheet size card with neither, its folder."""
         job = None if record.studio_id is None else get_job(self._store, record.studio_id)
         row = None if record.fab_row_id is None else get_fab_row(self._store, record.fab_row_id)
-        return card_from_record(record, job=None if job is None else job.name,
-                                row=None if row is None else row.text)
+        name = job.name if job is not None else (
+            folder_of_card(self._store, record.id) if row is None else None)
+        return card_from_record(record, job=name, row=None if row is None else row.text)
+
+    def _card_or_none(self, record: Any) -> Card | None:
+        """One card that can't be shown costs only itself: the command box reads every open card,
+        and it must go on working for the rest."""
+        try:
+            return self._card_of(record)
+        except ValueError:
+            self._dev(self._clock.now(), "card_unshowable",
+                      f"Card {record.id} is about nothing NG Runner can name, so it can't be shown.")
+            return None
 
     def _answer(self, card_id: str, choice: str, *, words: str, channel: str) -> str:
         """Jim's answer is recorded as he gave it, and the pipeline's next tick acts on it, only

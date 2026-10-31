@@ -24,6 +24,7 @@ from ngrunner.guards.nest_state import (
     MaterialEvidence, NestState, Verdict, decide, doubled_programs, expected_sheet,
     past_size_programs, sheet_of,
 )
+from ngrunner.guards.labels import LabelsMatch
 from ngrunner.guards.tap import NearPair, Tap
 from ngrunner.messages import templates as t
 from ngrunner.messages.lint import check_line
@@ -54,10 +55,10 @@ PAIR = NearPair(tool="T6", depth=0.13, apart_in=0.001, x=10.0, y=20.0)
 
 def tap(name: str = "TESS01.TAP", *, mark: int = 1, reach: tuple[float, float] | None = FITS_49,
         pairs: int = 0, complete: bool = True, inches: bool = True,
-        family: str = "sheet") -> Tap:
+        family: str = "sheet", sheets: int = 1) -> Tap:
     """A program as tap.read_tap describes one, made by hand."""
     return Tap(name=name, sha256=sha(mark), size=2048, inches=inches, complete=complete,
-               family=family, reach=reach, holes=120, near_pairs=(PAIR,) * pairs)
+               family=family, reach=reach, holes=120, near_pairs=(PAIR,) * pairs, sheets=sheets)
 
 
 class StandInSheets:
@@ -240,12 +241,34 @@ def test_row_3_doubled_holes_are_do_not_cut_counted_and_named() -> None:
     assert verdict.basis == "programs"
 
 
-def test_row_3_comes_before_a_size_a_failed_tool_and_a_nest_with_no_sheets() -> None:
+def test_row_3_comes_before_a_nest_with_no_sheets_and_lists_every_fault_to_fix() -> None:
+    """The state's order holds, but Jim re-nests once: he hears of all of it at once."""
     verdict = decide(evidence(tap(reach=FITS_61, pairs=1), opt=nested_opt(sheets=()),
                               tools=(tool(code="failed", line="A fault."),)))
 
     assert verdict.state == NestState.DO_NOT_CUT
-    assert verdict.reasons == ("1 cam hole is doubled in program TESS01",)
+    assert verdict.reasons == ("1 cam hole is doubled in program TESS01",
+                               "A program is on 61x109 and this colour is 49x97", "A fault.")
+    assert verdict.basis == "programs"
+
+
+def test_doubled_holes_and_a_size_fault_in_two_programs_list_both() -> None:
+    verdict = decide(evidence(tap("TESS01.TAP", mark=1, pairs=2),
+                              tap("TESS02.TAP", mark=2, reach=FITS_61)))
+
+    assert verdict.state == NestState.DO_NOT_CUT
+    assert verdict.reasons == ("2 cam holes are doubled in program TESS01",
+                               "A program is on 61x109 and this colour is 49x97")
+
+
+def test_clearing_the_size_of_both_faults_leaves_the_doubled_holes_alone() -> None:
+    doubled = tap("TESS01.TAP", mark=1, pairs=2)
+    past = tap("TESS02.TAP", mark=2, reach=FITS_61)
+
+    verdict = decide(evidence(doubled, past, cleared=frozenset({past.sha256})))
+
+    assert verdict.state == NestState.DO_NOT_CUT
+    assert verdict.reasons == ("2 cam holes are doubled in program TESS01",)
 
 
 def test_row_3_comes_before_every_check_passing() -> None:
@@ -307,11 +330,12 @@ def test_row_4_is_measured_against_this_materials_own_size() -> None:
     assert verdict.reasons == ("A program is on 49x121 and this colour is 61x109",)
 
 
-def test_row_4_comes_before_a_failed_tool_and_a_nest_with_no_sheets() -> None:
+def test_row_4_comes_before_a_nest_with_no_sheets_and_lists_a_failed_tool_too() -> None:
     verdict = decide(evidence(tap(reach=FITS_61), opt=nested_opt(sheets=()),
                               tools=(tool(code="failed", line="A fault."),)))
 
-    assert verdict.reasons == ("A program is on 61x109 and this colour is 49x97",)
+    assert verdict.reasons == ("A program is on 61x109 and this colour is 49x97", "A fault.")
+    assert verdict.basis == "programs"
 
 
 def test_row_4_comes_before_every_check_passing() -> None:
@@ -685,10 +709,16 @@ def test_row_8_never_says_on_the_right_sheet() -> None:
     assert " on 49x97" not in decide(evidence(tap())).reasons[0]
 
 
-def test_row_8_says_merged_programs_were_not_compared_for_doubled_holes() -> None:
-    verdict = decide(evidence(tap("TESS1-2.tap", family="merged")))
+def test_row_8_says_merged_programs_of_several_sheets_were_not_compared_for_doubled_holes() -> None:
+    verdict = decide(evidence(tap("TESS1-2.tap", family="merged", sheets=2)))
 
     assert verdict.reasons == (t.programs_read_note(at=AT, sheet="49x97", merged=1),)
+
+
+def test_row_8_leaves_out_a_merged_program_of_one_sheet_since_its_holes_were_compared() -> None:
+    verdict = decide(evidence(tap("TESS1.tap", family="merged", sheets=1)))
+
+    assert verdict.reasons == (t.programs_read_note(at=AT, sheet="49x97"),)
 
 
 def test_row_8_with_a_nest_and_no_programs_says_so() -> None:
@@ -724,10 +754,42 @@ def test_row_8_passes_on_what_a_tool_could_not_verify() -> None:
 
 @pytest.mark.parametrize("code", ["some_missing", "could_not_read"])
 def test_labels_that_dont_fit_read_could_not_verify_and_raise_nothing(code: str) -> None:
-    verdict = decide(evidence(tap(), design=DesignMatch(code)))
+    labels = LabelsMatch(code, missing=("R1C9 FEnd",) if code == "some_missing" else ())
+    verdict = decide(evidence(tap(), labels=labels))
 
     assert verdict.state == NestState.NOT_CHECKED
-    assert verdict.reasons[1:] == ("Could not verify the labels against the design",)
+    assert verdict.reasons[1:] == (labels.note,)
+    assert "could not verify" in labels.note.casefold()
+
+
+def test_labels_that_all_fit_add_nothing_and_are_no_pass() -> None:
+    verdict = decide(evidence(tap(), labels=LabelsMatch("all_found", compared=3)))
+
+    assert verdict.state == NestState.NOT_CHECKED and len(verdict.reasons) == 1
+
+
+def test_with_every_check_passing_the_labels_can_stand_in_for_no_design_match() -> None:
+    ev = replace(a_pass(tap()), design=None, labels=LabelsMatch("all_found", compared=3))
+
+    assert decide(ev).state == NestState.NOT_CHECKED
+
+
+def test_a_labels_reading_in_the_design_field_by_mistake_is_still_no_pass() -> None:
+    ev = replace(a_pass(tap()), design=LabelsMatch("all_found", compared=3))
+
+    assert decide(ev).state == NestState.NOT_CHECKED
+
+
+def test_a_size_that_could_not_be_read_falls_through_to_not_checked(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """SizeFinding's fourth code: neither a fault nor a pass."""
+    from ngrunner.guards.sheets import SizeFinding
+
+    monkeypatch.setattr(StandInSheets, "size_finding", classmethod(
+        lambda cls, material, taps: SizeFinding("could_not_read", ("TESS01.TAP",), (49.0, 97.0))))
+    verdict = decide(evidence(tap(reach=FITS_61)))
+
+    assert verdict.state == NestState.NOT_CHECKED
 
 
 def test_row_8_with_no_time_given_leaves_the_time_out() -> None:
@@ -853,7 +915,8 @@ def test_the_programs_to_ask_about_stand_behind_a_headline_of_doubled_holes() ->
 
     ev = evidence(doubled, past)
 
-    assert decide(ev).reasons == ("1 cam hole is doubled in program TESS01",)
+    assert decide(ev).reasons == ("1 cam hole is doubled in program TESS01",
+                                  "A program is on 61x109 and this colour is 49x97")
     assert past_size_programs(ev) == (past,)
 
 

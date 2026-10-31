@@ -26,6 +26,7 @@ Lane = Literal["ACT", "LOG", "DEV"]
 # A job's overlays (design 3.4). The reason, the fix or the retry goes in its next step line.
 OVERLAYS = ("WAITING", "BLOCKED", "NOT_RUN", "HELD", "OBSERVED", "PAUSED")
 SHADOW = "SHADOW"  # what the board and the tray say in shadow mode (integration spec 7)
+NEST_STATES = ("not_posted", "not_checked", "save_nest", "do_not_cut", "nest_checked")
 
 
 def _one_of(value: object, allowed: Sequence[object], what: str) -> None:
@@ -54,11 +55,33 @@ class Tick:
 
 
 @dataclass(frozen=True)
+class MaterialRow:
+    """One material of a job, as the nest guard last read it. state: one of NEST_STATES. note: what
+    it found, in plain words. at: when a real post landed, None for one from before NG Runner, which
+    is what tells a NOT CHECKED worth saying from an old one. file: its folder, for Open. shown: its
+    name as Jim reads it. trial: its verdict still says "(trial)"."""
+
+    material: str
+    state: str
+    note: str = ""
+    at: datetime | None = None
+    file: Path | None = None
+    shown: str = ""
+    trial: bool = False
+
+    def __post_init__(self) -> None:
+        _one_of(self.state, NEST_STATES, "a material's state")
+        _aware(self.at, "a material's time")
+
+
+@dataclass(frozen=True)
 class JobRow:
     """One row per job, and one for a Fab row with no job yet: its studio_id is None and its
-    name is the row as Barbara typed it. install: a date, the text to show when it isn't one
+    name is the row as Barbara typed it. A folder in NG Jobs with no Fab row gets one too, once the
+    guard has something to say about it. install: a date, the text to show when it isn't one
     (the job model's words, such as "could not verify"), or None when the Fab row has no
-    install date."""
+    install date. materials: the nest guard's lines. notes: anything else a guard can't verify. lock:
+    what the pre-flight would have him look at before he locks."""
 
     studio_id: str | None
     name: str
@@ -66,6 +89,9 @@ class JobRow:
     ticks: tuple[Tick, ...]
     next_step: str
     overlay: str | None = None
+    materials: tuple[MaterialRow, ...] = ()
+    notes: tuple[str, ...] = ()
+    lock: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if self.overlay is not None:

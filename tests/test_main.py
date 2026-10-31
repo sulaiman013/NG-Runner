@@ -6,6 +6,7 @@ from __future__ import annotations
 import io
 import json
 import tempfile
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -597,3 +598,31 @@ def test_dev_close_says_when_there_is_no_such_item_or_no_database(paths: AppPath
 
 def test_dev_close_wants_a_number(paths: AppPaths) -> None:
     assert _main(paths, "dev-close", "seven")[0] == 2
+
+
+# ----- setup and the tracker's folder
+
+
+def test_setup_finds_the_trackers_folder_beside_ng_jobs(paths: AppPaths, folders: dict[str, Path]) -> None:
+    tracker = folders["ng_jobs"].parent / "NG Conversion program Claude"
+    tracker.mkdir()
+    code, text = _setup(paths, _first_run(folders), MemorySecrets())
+    assert code == 0 and f"Tracker snapshots: {tracker}" in text
+    assert load_settings(paths).tracker_folder == tracker
+
+
+def test_setup_with_no_trackers_folder_leaves_it_unset(paths: AppPaths, folders: dict[str, Path]) -> None:
+    code, text = _setup(paths, _first_run(folders), MemorySecrets())
+    assert code == 0 and "Tracker snapshots" not in text
+    assert load_settings(paths).tracker_folder is None
+
+
+def test_setup_keeps_a_trackers_folder_already_set(paths: AppPaths, folders: dict[str, Path],
+                                                   tmp_path: Path) -> None:
+    secrets = MemorySecrets()
+    _setup(paths, _first_run(folders), secrets)
+    kept = replace(load_settings(paths), tracker_folder=tmp_path / "elsewhere")
+    save_settings(paths, kept)
+    answers = Answers("", "", "", "", "", "", secrets=("", "", "", ""))
+    assert _setup(paths, answers, secrets)[0] == 0
+    assert load_settings(paths).tracker_folder == tmp_path / "elsewhere"

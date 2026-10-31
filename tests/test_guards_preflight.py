@@ -22,6 +22,7 @@ from ngrunner.guards.preflight import (
     CheckFile,
     Preflight,
     PreflightItem,
+    could_not_read_tracker,
     preflight,
     read_check_file,
     read_job_sheet,
@@ -765,3 +766,16 @@ def test_no_real_job_sheet_keeps_its_special_notes() -> None:
         kept = repr(read_job_sheet(path))
         leaked += sum(1 for note in notes if len(note) >= 8 and note in kept)
     assert leaked == 0
+
+
+def test_a_tracker_that_wont_read_gives_one_line_in_plain_words_and_nothing_else() -> None:
+    result = could_not_read_tracker("The tracker's Pricing snapshot was cut short", NOW)
+    assert codes(result) == ["tracker_unreadable"]
+    assert texts(result, "tracker_unreadable") == [
+        "The tracker's Pricing snapshot was cut short, so this pre-flight could not verify anything"]
+    assert check_line(result.items[0].text) == []
+
+
+def test_a_tracker_reason_the_lint_would_stop_reads_as_the_fixed_line() -> None:
+    result = could_not_read_tracker(r"G:\a\path was cut short", NOW)
+    assert texts(result, "tracker_unreadable") == [_FIXED["tracker_unreadable"]]

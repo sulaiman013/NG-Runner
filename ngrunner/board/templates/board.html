@@ -42,8 +42,29 @@
             <li class="tick tick--{{ tick.state }}" title="{{ tick.label }}: {{ s.label }}">{{ m.icon(s.icon) }}<span>{{ tick.label }}</span><span class="vh">: {{ s.label }}</span></li>
           {% endfor %}
           </ul>
+          {% if job.materials %}
+          <ul class="materials">
+          {% for material in job.materials %}
+            <li class="material">
+              {{ m.tag(nest_style(material.state, material.at)) }}
+              <span class="material-name">{{ material.shown or material.material }}{% if material.trial %} (trial){% endif %}</span>
+              {% if material.note %}<span class="material-note">{{ material.note }}</span>{% endif %}
+              {% if material.file %}{{ m.open_button(material.file, page) }}{% endif %}
+            </li>
+          {% endfor %}
+          </ul>
+          {% endif %}
         </td>
-        <td class="next" data-label="Next step">{{ job.next_step }}</td>
+        <td class="next" data-label="Next step">
+          {{ job.next_step }}
+          {% for note in job.notes %}<p class="next-note">{{ m.icon("alert") }}<span>{{ note }}</span></p>{% endfor %}
+          {% if job.lock %}
+          <details class="lock">
+            <summary>Before you lock ({{ job.lock|length }})</summary>
+            <ul>{% for line in job.lock %}<li>{{ line }}</li>{% endfor %}</ul>
+          </details>
+          {% endif %}
+        </td>
         <td data-label="Status">{% if job.overlay %}{{ m.tag(overlay_style(job.overlay)) }}{% endif %}</td>
       </tr>
     {% endfor %}

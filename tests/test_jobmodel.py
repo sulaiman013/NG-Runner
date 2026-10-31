@@ -13,8 +13,10 @@ from ngrunner.clock import FakeClock
 from ngrunner.digest import compose, reminders
 from ngrunner.messages import templates
 from ngrunner.messages.lint import check_line, lint
+from ngrunner.guards.kept import AskedProgram, SizeQuestion, keep_question
 from ngrunner.store import (
-    add_card, add_fab_row, add_outbox, add_pending, add_render, answer_card, close_dev, ensure_job,
+    add_card, add_fab_row, add_nest, add_outbox, add_pending, add_render, add_snapshot, answer_card,
+    close_dev, ensure_job,
     finish_pending, list_pending, log_event, mark_dev_told_jim, mark_outbox_written, open_dev,
     open_store, record_receipt, record_reminder, replace_opportunities, retry_pending,
     set_governing, set_state, set_state_time, update_fab_row, update_job, withdraw_card,
@@ -82,16 +84,16 @@ def tray(store, clock, *, unwell=False, paused=False, shadow=False) -> TrayState
 # ----- rows and ticks
 
 
-def test_a_new_job_has_the_five_ticks_in_order_with_plain_labels(store, clock):
+def test_a_new_job_has_the_six_ticks_in_order_with_plain_labels(store, clock):
     a_job(store)
     row = row_named(view_of(store, clock))
     assert [(t.key, t.label) for t in row.ticks] == [
         ("row", "On the Fab Schedule"), ("job", "Matched to Salesforce"),
         ("summary", "Fetched and checked twice"), ("filed", "Filed"),
-        ("branch", "Closet or garage"),
+        ("branch", "Closet or garage"), ("nest", "Nest"),
     ]
     assert ticks(row) == {"row": "todo", "job": "done", "summary": "todo", "filed": "todo",
-                          "branch": "todo"}
+                          "branch": "todo", "nest": "todo"}
     assert row.studio_id == "101"
 
 
@@ -128,7 +130,8 @@ def test_a_filed_job_says_when_and_ticks_all_with_its_branch(store, clock):
     row = row_named(view_of(store, clock))
     assert row.next_step == "Filed 10/30 3:05 PM"
     assert row.overlay is None
-    assert set(ticks(row).values()) == {"done"}
+    assert set(ticks(row).values()) == {"done", "todo"} and ticks(row)["nest"] == "todo"
+    assert {state for key, state in ticks(row).items() if key != "nest"} == {"done"}
     assert [t.label for t in row.ticks if t.key == "branch"] == ["Garage"]
 
 
@@ -1400,3 +1403,201 @@ def test_the_board_reads_filed_facts_in_one_query_however_many_jobs(store, clock
     many, view = connections()
     assert few == many
     assert "3 designs, 19 pages" in view.jobs[0].next_step
+
+
+# ----- the nest guard's facts: one row per material
+
+
+CLASSIC = "3-4 Egger Classic White"
+DOUBLED_NOTE = "8 cam holes are doubled in program TESS01"
+
+
+def a_nest(store, folder=JOB, material=CLASSIC, *, state="do_not_cut", reasons=(DOUBLED_NOTE,),
+           posted=NOW - HOUR, sid=None, trial=True):
+    extra = {}
+    if state == "nest_checked":
+        extra = dict(opt_sha256="a" * 64, manifest={"TESS01.TAP": "b" * 64},
+                     room_hashes={"Room1.des": "c" * 64}, checked_at=NOW, basis="nest")
+    return add_nest(store, **{"basis": "programs", "folder": folder, "material": material,
+                              "state": state, "reasons": reasons, "updated_at": NOW,
+                              "studio_id": sid, "posted_at": posted, "trial": trial, **extra})
+
+
+def owner_lines(store, clock):
+    return jobmodel.digest_view(store, None, clock).owner
+
+
+def tray_of(store, clock, *, paused=False):
+    return jobmodel.tray_state(store, None, clock, unwell=False, paused=paused, shadow=False)
+
+
+@pytest.mark.parametrize("states, tick", [
+    (("not_checked",), "todo"),
+    (("do_not_cut",), "blocked"),
+    (("nest_checked", "do_not_cut"), "blocked"),
+    (("nest_checked", "not_checked"), "todo"),
+    (("nest_checked", "save_nest"), "todo"),
+    (("nest_checked",), "done"),
+    (("nest_checked", "nest_checked"), "done"),
+])
+def test_the_nest_tick_is_done_only_when_every_material_is_checked(store, clock, states, tick):
+    sid = a_job(store)
+    for n, state in enumerate(states):
+        a_nest(store, material=f"3-4 Colour {n}", state=state, sid=sid)
+    assert ticks(row_named(view_of(store, clock)))["nest"] == tick
+
+
+def test_a_job_with_nothing_posted_has_its_nest_tick_to_do(store, clock):
+    sid = a_job(store)
+    a_nest(store, state="not_posted", reasons=(), posted=None, sid=sid)
+    row = row_named(view_of(store, clock))
+    assert ticks(row)["nest"] == "todo" and row.materials == ()
+
+
+def test_a_material_row_says_what_the_guard_found(store, clock):
+    sid = a_job(store)
+    a_nest(store, sid=sid, reasons=(DOUBLED_NOTE, "A program is on 61x109"))
+    material, = row_named(view_of(store, clock)).materials
+    assert material.material == CLASSIC and material.shown == "3/4 Egger Classic White"
+    assert material.state == "do_not_cut" and material.at == NOW - HOUR and material.trial
+    assert material.note == f"{DOUBLED_NOTE}; A program is on 61x109"
+
+
+def test_a_nest_row_finds_its_job_by_folder_name_even_when_it_was_posted_first(store, clock):
+    a_nest(store, sid=None)
+    a_job(store)
+    view = view_of(store, clock)
+    assert [row.name for row in view.jobs] == [JOB]
+    assert view.jobs[0].studio_id == "101" and len(view.jobs[0].materials) == 1
+
+
+def test_a_garage_folder_is_its_jobs_too(store, clock):
+    a_nest(store, f"{JOB}_Gar", sid=None)
+    a_job(store)
+    assert len(row_named(view_of(store, clock)).materials) == 1
+
+
+def test_a_filed_job_with_a_do_not_cut_stays_on_the_board_past_its_30_days(store, clock):
+    sid = a_job(store, at=NOW - timedelta(days=60))
+    a_nest(store, sid=sid, posted=NOW - timedelta(days=60))
+    assert [row.name for row in view_of(store, clock).jobs] == [JOB]
+
+
+def test_a_folder_with_no_job_shows_only_once_a_guard_has_something_to_say(store, clock):
+    a_nest(store, "Fakeley_102726", state="not_checked", reasons=(templates.POSTED_BEFORE,),
+           posted=None)
+    assert view_of(store, clock).jobs == ()
+
+    a_nest(store, "Mockford_102726", state="not_checked", reasons=("Read.",))
+    row, = view_of(store, clock).jobs
+    assert row.name == "Mockford_102726" and row.studio_id is None
+    assert row.next_step == templates.FOLDER_STEP and ticks(row)["job"] == "todo"
+    assert row.materials[0].state == "not_checked"
+
+
+def test_a_sheet_size_card_about_a_folder_with_no_job_shows_and_names_it(store, clock):
+    card = add_card(store, prefix="FAK", kind="sheet_size", text="A program is past its size.",
+                    choices=templates.SHEET_SIZE_CHOICES, created_at=NOW)
+    keep_question(store, card.id, SizeQuestion(
+        "Fakeley_102726", CLASSIC, "49x97", (AskedProgram("FAKS01.TAP", "a" * 64, "61x109"),)))
+    a_nest(store, "Fakeley_102726", reasons=("A program is on 61x109",))
+    view = view_of(store, clock)
+    shown, = view.cards
+    assert shown.id == card.id and shown.job == "Fakeley_102726"
+    assert any(item.card_id == card.id for item in view.your_list)
+    assert view.jobs[0].next_step.startswith(f"Card {card.id}")
+
+
+def test_a_card_about_nothing_at_all_is_left_out_and_costs_nothing_else(store, clock):
+    add_card(store, prefix="NON", kind="sheet_size", text="About nothing.",
+             choices=templates.SHEET_SIZE_CHOICES, created_at=NOW)
+    a_card(store, sid=a_job(store))
+    assert [c.job for c in view_of(store, clock).cards] == [JOB]
+
+
+def test_do_not_cut_is_red_whatever_else_stands_and_says_so(store, clock):
+    a_nest(store)
+    state = tray_of(store, clock)
+    assert state.colour == "red" and state.tooltip.startswith("DO NOT CUT Testerson_101426 3/4")
+
+
+def test_a_pause_hides_no_do_not_cut(store, clock):
+    a_nest(store)
+    assert tray_of(store, clock, paused=True).colour == "red"
+
+
+def test_several_do_not_cuts_are_counted(store, clock):
+    a_nest(store)
+    a_nest(store, "Fakeley_102726")
+    assert tray_of(store, clock).tooltip == "DO NOT CUT: 2 materials; see the board."
+
+
+def test_a_posted_not_checked_changes_no_colour_until_a_snapshot_is_adopted(store, clock):
+    a_nest(store, state="not_checked", reasons=("Read.",))
+    assert tray_of(store, clock).colour == "green"
+
+    add_snapshot(store, taken_at=NOW, sha256="a" * 64, adopted=False)
+    assert tray_of(store, clock).colour == "green"
+
+    add_snapshot(store, taken_at=NOW, sha256="b" * 64, adopted=True)
+    state = tray_of(store, clock)
+    assert state.colour == "red" and state.tooltip == "NOT CHECKED: 1 posted material."
+
+
+def test_an_old_not_checked_never_changes_a_colour_even_once_adopted(store, clock):
+    a_nest(store, state="not_checked", reasons=(templates.POSTED_BEFORE,), posted=None)
+    add_snapshot(store, taken_at=NOW, sha256="b" * 64, adopted=True)
+    assert tray_of(store, clock).colour == "green"
+
+
+def test_the_digest_says_do_not_cut_first_and_every_one(store, clock):
+    a_nest(store, reasons=(DOUBLED_NOTE, "A program is on 61x109 and this colour is 49x97"))
+    a_nest(store, "Fakeley_102726", trial=False)
+    a_job(store, OTHER, "202", install=("Friday", "11/6"))
+    lines = owner_lines(store, clock)
+    assert lines[:2] == (
+        "DO NOT CUT Fakeley_102726 3/4 Egger Classic White: 8 cam holes are doubled in program"
+        " TESS01",
+        "DO NOT CUT Testerson_101426 3/4 Egger Classic White (trial): 8 cam holes are doubled in"
+        " program TESS01; a program is on 61x109 and this colour is 49x97")
+    assert all(check_line(line) == [] for line in lines)
+    message = compose(jobmodel.digest_view(store, None, clock))
+    assert lint(message) == [] and "DO NOT CUT Testerson_101426" in message.lines[0]
+
+
+def test_the_digest_holds_not_checked_to_a_few_and_counts_the_rest(store, clock):
+    for n in range(13):
+        a_nest(store, f"Sampleton_1014{n:02d}", state="not_checked", reasons=("Read.",),
+               posted=NOW - timedelta(minutes=n))
+    lines = owner_lines(store, clock)
+    assert len(lines) == 11 and lines[-1] == "Not checked: 3 more materials are on the board"
+    assert lines[0] == "Not checked: Sampleton_101400 3/4 Egger Classic White, posted 3:05 PM"
+    assert all(line.startswith("Not checked") for line in lines)
+
+
+def test_an_old_material_says_nothing_in_the_digest(store, clock):
+    a_nest(store, state="not_checked", reasons=(templates.POSTED_BEFORE,), posted=None)
+    assert owner_lines(store, clock) == ()
+
+
+def test_a_name_the_lint_would_stop_costs_only_its_own_line(store, clock):
+    a_nest(store, "Testerson W=49", state="do_not_cut")
+    a_nest(store, "Fakeley_102726")
+    lines = owner_lines(store, clock)
+    assert all(check_line(line) == [] for line in lines)
+    assert "A material is DO NOT CUT; see the board" in lines
+    assert not any("W=49" in line for line in lines)
+    assert any("Fakeley_102726" in line for line in lines)
+
+
+def test_do_not_cut_is_on_your_list_and_opens_its_folder(store, clock, tmp_path):
+    from ngrunner.config import Settings
+
+    a_nest(store)
+    settings = Settings(ng_jobs=tmp_path / "NG Jobs", mozaik_shared=tmp_path, control=tmp_path)
+    view = jobmodel.board_view(store, settings, clock, health=HEALTH, paused=False, shadow=False)
+    item, = view.your_list
+    assert item.text.startswith("DO NOT CUT Testerson_101426") and item.job == JOB
+    assert item.file == tmp_path / "NG Jobs" / JOB / CLASSIC
+    assert view.jobs[0].materials[0].file == tmp_path / "NG Jobs" / JOB / CLASSIC
+    assert item.age_days == 0

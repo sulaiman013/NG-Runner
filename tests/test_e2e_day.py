@@ -9,12 +9,18 @@ database), the real google/Outbox.gs and Watchdog.gs run under node.
 """
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 import random
+import shutil
 import socket
+import threading
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, replace
 from datetime import date, datetime, time, timedelta
+from time import monotonic
+from typing import Any
 
 import pytest
 
@@ -40,8 +46,13 @@ from fakes import (
     wait_for_fetches,
     with_studio_site,
 )
-from ngrunner import fab, heartbeat, single, toasts
-from ngrunner.clock import at_pacific
+from conftest import FIXTURES
+from helpers_tap import BOTH, CLEAN, DOUBLED, ON_61, program
+from test_guards_headsup import takeoff_json
+from test_guards_labels import label_page, pdf
+from test_guards_tracker import write_snapshot
+from ngrunner import fab, heartbeat, jobmodel, single, toasts
+from ngrunner.clock import at_pacific, from_iso, to_iso
 from ngrunner.config import load_settings
 from ngrunner.intake.fetch import FetchTarget, Render, agree, fetch_render, report_urls
 from ngrunner.intake.summary_check import check_summary, content_fingerprint
@@ -51,7 +62,16 @@ from ngrunner.messages import Message, pushover, templates
 from ngrunner.messages.lint import lint
 from ngrunner.messages.outbox import outbox_file, read_receipt
 from ngrunner.signing import open_envelope
-from ngrunner.store import answer_card, get_list_state, get_outbox
+from ngrunner.guards import headsup, watch
+from ngrunner.guards.kept import ask_for_redo
+from ngrunner.guards import scan as guards_scan_module
+from ngrunner.guards.scan import Plan
+from ngrunner.guards.scan import scan as guard_scan
+from ngrunner.store import (
+    LATEST, MIGRATIONS, ProgramRecord, Store, add_card, add_snapshot, answer_card, ensure_job,
+    get_heads_up, get_list_state, get_nest, get_outbox, get_program, get_state, list_clearances,
+    list_nests, list_programs, migrate, set_state,
+)
 from ngrunner.tray import COLOURS, draw_icon
 
 PE, LS = "Pat Example", "Lee Sample"
@@ -68,6 +88,7 @@ GARAGE_ONLY = (("Testerson - Garage", "Garage"),)
 MIXED = (("Fakeley - Primary Closet", "His and Her Master"), ("Fakeley - Garage", "Garage"))
 BLANK_CATEGORY = (("Mockford - Thing", ""),)
 JIM_MAIL, DEV_MAIL = "jim@example.com", "dev@example.com"
+GUARD_JOB, CLASSIC_FOLDER = "Testerson_101426", "3-4 Egger Classic White"
 
 
 def minutes(n: float) -> timedelta:
@@ -414,7 +435,7 @@ def test_scenario_02_a_bare_surname_row_is_filed_told_and_listed(make_world, tmp
     summary = (world.ng_jobs / "Testerson_101426" / "Testerson_101426_summary.pdf").read_bytes()
     assert check_summary(summary).project_name == "Testerson_101426"
     record = record_of(world, "Testerson_101426")
-    assert record["schema"] == 1 and record["job"] == "Testerson_101426"
+    assert record["schema"] == 2 and record["job"] == "Testerson_101426"
     assert record["branch"] == "closet" and record["items"] == []
     assert record["summary"]["file"] == "Testerson_101426_summary.pdf"
     assert record["summary"]["sha256"] == tree(world.ng_jobs)[
@@ -1502,3 +1523,990 @@ def test_scenario_29_going_live_files_what_the_trial_run_filed_aside(make_world)
     row = world.board_row("Testerson_101426")
     assert row.next_step.startswith("Filed") and "Trial" not in row.next_step
     assert {t.key: t.state for t in row.ticks}["filed"] == "done"
+
+
+# ----- the nest guard (P1b build spec 6, step 4): real files on a fake clock, the real reader
+
+
+def post(world: World, folder: str, material: str, name: str, data: bytes) -> None:
+    """A program lands in NG Jobs, as a post from Mozaik does."""
+    place = world.ng_jobs / folder / material
+    place.mkdir(parents=True, exist_ok=True)
+    (place / name).write_bytes(data)
+
+
+def nest_of(world: World, folder: str = GUARD_JOB, material: str = CLASSIC_FOLDER) -> Any:
+    return get_nest(world.store, folder, material)
+
+
+def nest_is(world: World, state: str, folder: str = GUARD_JOB,
+            material: str = CLASSIC_FOLDER) -> Callable[[], bool]:
+    return lambda: (nest := nest_of(world, folder, material)) is not None and nest.state == state
+
+
+def guards_dev(world: World) -> set[str]:
+    """The DEV items a scenario here is about: a world has no Studio login, and may have no list."""
+    return {d.code for d in world.dev()} - {"setup", "job_list", "job_list_stale", "studio_unavailable"}
+
+
+def to_george(world: World, subject: str = "") -> list[Any]:
+    return world.outbox(to="george", subject=subject or None)
+
+
+def sheet_cards(world: World) -> list[Any]:
+    return world.cards("sheet_size")
+
+
+def test_scenario_30_a_first_scan_alarms_nothing_whatever_is_already_there(make_world):
+    world = make_world()
+    post(world, GUARD_JOB, CLASSIC_FOLDER, "TESS01.TAP", DOUBLED)
+    post(world, GUARD_JOB, CLASSIC_FOLDER, "TESS02.TAP", ON_61)
+    post(world, "Fakeley_101426", CLASSIC_FOLDER, "FAKS01.TAP", BOTH)
+    installed(world)
+    world.run(minutes=5)
+
+    assert world.tray.colour != "red" and world.tray_state().colour != "red"
+    assert to_george(world) == [] and sheet_cards(world) == [] and guards_dev(world) == set()
+    assert {p.state for p in list_programs(world.store)} == {"seen_at_install"}
+    nest = nest_of(world)
+    assert nest.state == "not_checked" and nest.posted_at is None
+    assert nest.reasons == (templates.POSTED_BEFORE,)
+    assert not [line for line in jobmodel.digest_view(world.store, world.settings,
+                                                      world.clock).owner
+                if "Not checked" in line or "DO NOT CUT" in line]
+    assert world.board().jobs == ()                 # an old folder with no job doesn't crowd it
+
+
+def test_scenario_31_an_upgrade_from_before_the_guards_alarms_nothing_and_keeps_what_was_there(
+        make_world):
+    """The live shadow run's database goes through migration 4 and then this very first scan."""
+    world = make_world()
+    assert migrate(Store(world.paths.db), MIGRATIONS[:3]) == 3
+    old = Store(world.paths.db)
+    ensure_job(old, "4242", "Testerson_101426", now=START, designer="PE")
+    set_state(old, "installed_at", "kept")
+    post(world, GUARD_JOB, CLASSIC_FOLDER, "TESS01.TAP", DOUBLED)
+    post(world, "Fakeley_101426", CLASSIC_FOLDER, "FAKS01.TAP", ON_61)
+    installed(world)
+    world.run(minutes=5)
+
+    assert Store(world.paths.db).schema_version() == LATEST
+    assert list((world.paths.backup).rglob("ngrunner-v3.db"))            # copied before the upgrade
+    assert get_state(world.store, "installed_at") == "kept" and world.job("4242") is not None
+    assert world.tray.colour != "red" and to_george(world) == [] and sheet_cards(world) == []
+    assert guards_dev(world) == set()
+    assert nest_of(world).state == "not_checked" and nest_of(world).posted_at is None
+    assert nest_of(world).studio_id == "4242"       # its job is known, so its row will show it
+
+
+def test_scenario_32_a_doubled_program_is_red_in_two_minutes_with_one_email_to_george(make_world):
+    world = make_world()
+    installed(world)
+    world.run(minutes=1)
+
+    post(world, GUARD_JOB, CLASSIC_FOLDER, "TESS01.TAP", DOUBLED)
+    world.run_until(nest_is(world, "do_not_cut"), within=minutes(2))
+
+    assert nest_of(world).reasons == ("8 cam holes are doubled in program TESS01",)
+    assert world.tray.colour == "red" and "DO NOT CUT" in world.tray.tooltip
+    told = to_george(world, "DO NOT CUT")
+    assert len(told) == 1 and told[0].urgent
+    assert told[0].lines == ("1. Testerson_101426: DO NOT CUT 3/4 Egger Classic White (trial). 8 cam"
+                             " holes are doubled in program TESS01.",)
+    assert [toast.kind for toast in world.toasts.shown] == ["do_not_cut"]
+
+    # On the board, on Your list and on the digest's first line, with a free row for its folder.
+    row, = world.board().jobs
+    assert row.name == GUARD_JOB and row.studio_id is None
+    assert {t.key: t.state for t in row.ticks}["nest"] == "blocked"
+    assert [(m.material, m.state) for m in row.materials] == [(CLASSIC_FOLDER, "do_not_cut")]
+    assert row.materials[0].note == "8 cam holes are doubled in program TESS01"
+    assert any("DO NOT CUT" in item.text for item in world.board().your_list)
+    view = jobmodel.digest_view(world.store, world.settings, world.clock)
+    assert view.owner[0] == ("DO NOT CUT Testerson_101426 3/4 Egger Classic White (trial): 8 cam"
+                             " holes are doubled in program TESS01")
+
+    # Nothing new, nothing more.
+    world.run(minutes=30)
+    assert len(to_george(world, "DO NOT CUT")) == 1 and len(world.toasts.shown) == 1
+    assert sheet_cards(world) == []                 # doubled holes have no card: nothing clears them
+
+
+def test_scenario_32b_two_materials_in_one_pass_are_two_messages_never_one_in_the_others_place(
+        make_world):
+    world = make_world()
+    installed(world)
+    world.run(minutes=1)
+    post(world, GUARD_JOB, CLASSIC_FOLDER, "TESS01.TAP", DOUBLED)
+    post(world, GUARD_JOB, "1-4 Egger Classic White", "TESS02.TAP", DOUBLED)
+    post(world, "Fakeley_101426", CLASSIC_FOLDER, "FAKS01.TAP", DOUBLED)
+    world.run(minutes=2)
+
+    told = to_george(world, "DO NOT CUT")
+    assert sorted(m.subject for m in told) == [
+        "DO NOT CUT · Fakeley_101426 · 3/4 Egger Classic White",
+        "DO NOT CUT · Testerson_101426 · 1/4 Egger Classic White",
+        "DO NOT CUT · Testerson_101426 · 3/4 Egger Classic White"]
+
+
+def test_scenario_33_a_half_written_file_waits_then_acts_once_whole(make_world):
+    world = make_world()
+    installed(world)
+    world.run(minutes=1)
+
+    post(world, GUARD_JOB, CLASSIC_FOLDER, "TESS01.TAP", DOUBLED[:len(DOUBLED) // 2])
+    world.step()
+    world.step()
+    assert world.tray.colour != "red" and to_george(world) == []
+    assert nest_of(world) is None or nest_of(world).state != "do_not_cut"
+
+    # Still growing: it never settles, so it isn't even read.
+    grown = bytearray(DOUBLED[:len(DOUBLED) // 2])
+    for extra in range(4):
+        grown += b"G0 Z1.5100\r\n"
+        post(world, GUARD_JOB, CLASSIC_FOLDER, "TESS01.TAP", bytes(grown))
+        world.step()
+    assert to_george(world) == []
+
+    # It stops, not whole: it is re-read, and after 10 minutes Sulaiman hears.
+    world.run(minutes=5)
+    assert to_george(world) == [] and guards_dev(world) == set()
+    world.run(minutes=8)
+    assert to_george(world) == []
+    assert guards_dev(world) == {"program_unfinished"}
+    assert world.tray.colour != "red"
+    assert "could not read" in nest_of(world).reasons[0].casefold()
+
+    post(world, GUARD_JOB, CLASSIC_FOLDER, "TESS01.TAP", DOUBLED)
+    world.run_until(nest_is(world, "do_not_cut"), within=minutes(2))
+    assert len(to_george(world, "DO NOT CUT")) == 1
+    assert guards_dev(world) == set()
+
+
+def test_scenario_33b_a_program_acts_only_once_two_polls_agree_on_it(make_world):
+    world = make_world()
+    installed(world)
+    world.run(minutes=1)
+
+    post(world, GUARD_JOB, CLASSIC_FOLDER, "TESS01.TAP", DOUBLED)
+    world.step()                                      # the first poll sees it, and reads nothing
+    assert get_program(world.store, GUARD_JOB, CLASSIC_FOLDER, "TESS01.TAP").state == "new"
+    assert nest_of(world) is None
+
+    post(world, GUARD_JOB, CLASSIC_FOLDER, "TESS01.TAP", program(doubled=3))    # whole, and changed
+    world.step()                                      # no two polls agree yet
+    assert nest_of(world) is None and to_george(world) == []
+
+    world.step()                                      # now they do
+    assert nest_of(world).reasons == ("3 cam holes are doubled in program TESS01",)
+
+
+def test_scenario_34_a_repost_with_the_fault_gone_returns_to_not_checked_and_george_is_told(
+        make_world):
+    world = make_world()
+    installed(world)
+    world.run(minutes=1)
+    post(world, GUARD_JOB, CLASSIC_FOLDER, "TESS01.TAP", DOUBLED)
+    world.run_until(nest_is(world, "do_not_cut"), within=minutes(2))
+    world.step()
+
+    post(world, GUARD_JOB, CLASSIC_FOLDER, "TESS01.TAP", CLEAN)
+    world.run_until(nest_is(world, "not_checked"), within=minutes(2))
+
+    assert "0 doubled holes" in nest_of(world).reasons[0]
+    assert "the nest itself is not checked" in nest_of(world).reasons[0]
+    assert nest_of(world).posted_at is not None
+    told = to_george(world, "No longer DO NOT CUT")
+    assert len(told) == 1 and "NOT CHECKED" in told[0].lines[0]
+    assert world.tray.colour != "red"
+    assert not [item for item in world.board().your_list if "DO NOT CUT" in item.text]
+
+
+def test_scenario_35_jims_clearance_closes_the_card_and_a_repost_asks_again(make_world):
+    world = make_world()
+    installed(world)
+    world.run(minutes=1)
+    post(world, GUARD_JOB, CLASSIC_FOLDER, "TESS07.TAP", ON_61)
+    world.run_until(nest_is(world, "do_not_cut"), within=minutes(2))
+
+    assert nest_of(world).reasons == ("A program is on 61x109 and this colour is 49x97",)
+    card, = sheet_cards(world)
+    assert card.choices == templates.SHEET_SIZE_CHOICES and card.studio_id is None
+    assert "Program TESS07 of 3/4 Egger Classic White is on 61x109" in card.text
+    assert any(c.id == card.id for c in world.board().cards)     # no job, no row, and still shown
+
+    # A click, through the same way in as the board's button.
+    assert world.actions.answer(card.id, templates.SHEET_SIZE_CHOICES[0]).startswith("Saved")
+    world.run_until(nest_is(world, "not_checked"), within=minutes(2))
+
+    assert sheet_cards(world) == [] and world.tray.colour != "red"
+    sha = hashlib.sha256(ON_61).hexdigest()
+    assert [(c.program_sha256, c.what, c.card_id) for c in list_clearances(world.store)] == [
+        (sha, "sheet_size", card.id)]
+    told = to_george(world, "Cleared by Jim")
+    assert len(told) == 1 and "clears the sheet size only" in told[0].lines[0]
+    assert to_george(world, "No longer DO NOT CUT") == []        # said already, by Cleared by Jim
+    assert "1 cleared past 49x97" in nest_of(world).reasons[0]
+
+    # The same bytes posted again change nothing, as the clearance names them; others ask again.
+    world.run(minutes=5)
+    post(world, GUARD_JOB, CLASSIC_FOLDER, "TESS07.TAP", ON_61)
+    os.utime(world.ng_jobs / GUARD_JOB / CLASSIC_FOLDER / "TESS07.TAP", (1_800_000_000, 1_800_000_000))
+    world.run(minutes=3)
+    assert sheet_cards(world) == [] and nest_of(world).state == "not_checked"
+    assert len(to_george(world, "DO NOT CUT")) == 1
+    post(world, GUARD_JOB, CLASSIC_FOLDER, "TESS07.TAP", program(reach=(60.75, 108.75), mark=1))
+    world.run_until(nest_is(world, "do_not_cut"), within=minutes(2))
+    again, = sheet_cards(world)
+    assert again.id != card.id and world.tray.colour == "red"
+    assert len(to_george(world, "DO NOT CUT")) == 2
+
+
+def test_scenario_36_seven_programs_past_their_size_are_one_card_with_a_clearance_each(make_world):
+    world = make_world()
+    installed(world)
+    world.run(minutes=1)
+    datas = {f"TESS0{n}.TAP": program(reach=(60.75, 108.75), mark=n) for n in range(1, 8)}
+    for name, data in datas.items():
+        post(world, GUARD_JOB, CLASSIC_FOLDER, name, data)
+    world.run_until(nest_is(world, "do_not_cut"), within=minutes(2))
+
+    card, = sheet_cards(world)
+    assert "7 programs of 3/4 Egger Classic White, programs TESS01-07, are on 61x109" in card.text
+
+    # An eighth while it is open: one card still, saying what stands now.
+    post(world, GUARD_JOB, CLASSIC_FOLDER, "TESS08.TAP", program(reach=(60.75, 108.75), mark=8))
+    world.run(minutes=2)
+    card, = sheet_cards(world)
+    assert "8 programs" in card.text and "TESS01-08" in card.text
+    datas["TESS08.TAP"] = program(reach=(60.75, 108.75), mark=8)
+
+    answer(world, card, templates.SHEET_SIZE_CHOICES[0])
+    world.run_until(nest_is(world, "not_checked"), within=minutes(2))
+    assert {c.program_sha256 for c in list_clearances(world.store)} == {
+        hashlib.sha256(data).hexdigest() for data in datas.values()}
+    assert len(list_clearances(world.store)) == 8 and sheet_cards(world) == []
+
+    # A ninth names only itself.
+    post(world, GUARD_JOB, CLASSIC_FOLDER, "TESS09.TAP", program(reach=(60.75, 108.75), mark=9))
+    world.run_until(nest_is(world, "do_not_cut"), within=minutes(2))
+    card, = sheet_cards(world)
+    assert "Program TESS09 of" in card.text
+
+
+def test_scenario_37_both_faults_say_both_and_clearing_the_size_leaves_the_doubled_holes(make_world):
+    world = make_world()
+    installed(world)
+    world.run(minutes=1)
+    post(world, GUARD_JOB, CLASSIC_FOLDER, "TESS01.TAP", BOTH)
+    world.run_until(nest_is(world, "do_not_cut"), within=minutes(2))
+
+    assert nest_of(world).reasons == ("2 cam holes are doubled in program TESS01",
+                                      "A program is on 61x109 and this colour is 49x97")
+    george, = to_george(world, "DO NOT CUT")
+    assert len(george.lines) == 2
+    card, = sheet_cards(world)
+
+    answer(world, card, templates.SHEET_SIZE_CHOICES[0])
+    world.run(minutes=3)
+    assert nest_of(world).state == "do_not_cut"
+    assert nest_of(world).reasons == ("2 cam holes are doubled in program TESS01",)
+    assert sheet_cards(world) == [] and world.tray.colour == "red"
+    assert len(to_george(world, "Cleared by Jim")) == 1
+    assert len(to_george(world, "DO NOT CUT")) == 1          # nothing new is wrong
+    assert to_george(world, "No longer DO NOT CUT") == []
+
+
+def test_scenario_38_re_nest_it_stays_do_not_cut_and_doesnt_ask_again_until_a_repost(make_world):
+    world = make_world()
+    installed(world)
+    world.run(minutes=1)
+    post(world, GUARD_JOB, CLASSIC_FOLDER, "TESS07.TAP", ON_61)
+    world.run_until(nest_is(world, "do_not_cut"), within=minutes(2))
+    card, = sheet_cards(world)
+
+    answer(world, card, templates.SHEET_SIZE_CHOICES[1])
+    world.run(minutes=5)
+
+    assert nest_of(world).state == "do_not_cut" and world.tray.colour == "red"
+    assert sheet_cards(world) == [] and list_clearances(world.store) == []
+    assert to_george(world, "Cleared by Jim") == []
+    assert guards_dev(world) == set()                # acted on, and nothing refused along the way
+
+    post(world, GUARD_JOB, CLASSIC_FOLDER, "TESS07.TAP", CLEAN)
+    world.run_until(nest_is(world, "not_checked"), within=minutes(2))
+    assert len(to_george(world, "No longer DO NOT CUT")) == 1
+
+
+def test_scenario_39_a_pause_stops_no_guard_since_a_guard_only_reads(make_world):
+    world = make_world()
+    installed(world)
+    world.actions.pause()
+    world.run(minutes=1)
+
+    post(world, GUARD_JOB, CLASSIC_FOLDER, "TESS01.TAP", DOUBLED)
+    world.run_until(nest_is(world, "do_not_cut"), within=minutes(2))
+
+    assert len(to_george(world, "DO NOT CUT")) == 1
+    assert world.tray.colour == "red"                # grey must not hide a DO NOT CUT
+    assert tree(world.ng_jobs).keys() == {f"{GUARD_JOB}/{CLASSIC_FOLDER}/TESS01.TAP"}
+
+
+def test_scenario_40_shadow_mode_tells_only_sulaiman_marked_and_shows_no_toast(make_world):
+    world = make_world(mode="shadow")
+    installed(world)
+    world.run(minutes=1)
+
+    post(world, GUARD_JOB, CLASSIC_FOLDER, "TESS01.TAP", BOTH)
+    world.run_until(nest_is(world, "do_not_cut"), within=minutes(2))
+    world.step()
+
+    assert to_george(world) == [] and world.outbox(to="jim") == []
+    assert len(world.outbox(to="sulaiman", subject="SHADOW DO NOT CUT")) == 1
+    assert {s.to for s in world.script.sent} == {"sulaiman"}
+    assert world.toasts.shown == []
+    assert world.board().shadow and world.tray.tooltip.startswith("SHADOW")
+    assert world.tray.colour == "red"
+
+    card, = sheet_cards(world)
+    answer(world, card, templates.SHEET_SIZE_CHOICES[0])
+    world.run(minutes=3)
+    assert to_george(world) == []
+    assert len(world.outbox(to="sulaiman", subject="SHADOW Cleared by Jim")) == 1
+
+
+def test_scenario_41_a_card_for_a_folder_with_no_job_works_through_the_command_box(make_world):
+    world = make_world()
+    installed(world, TESTERSON)
+    world.run(minutes=1)
+    post(world, "Fakeley_101426", CLASSIC_FOLDER, "FAKS01.TAP", ON_61)
+    world.run_until(nest_is(world, "do_not_cut", folder="Fakeley_101426"), within=minutes(2))
+    card, = sheet_cards(world)
+    assert card.studio_id is None and card.fab_row_id is None
+
+    # A card the store allows about nothing at all can't be shown, and must cost only itself.
+    add_card(world.store, prefix="NON", kind="sheet_size", text="About nothing.",
+             choices=templates.SHEET_SIZE_CHOICES, created_at=START)
+    assert world.actions.command("pause").startswith("Paused")
+    world.actions.resume()
+    reply = world.actions.command(f"{card.id} 1")
+    assert reply.startswith("Saved"), reply
+    world.run_until(nest_is(world, "not_checked", folder="Fakeley_101426"), within=minutes(2))
+    assert card.id not in {c.id for c in world.board().cards}
+    assert guards_dev(world) == {"card_unshowable"}     # said once, to Sulaiman
+
+
+def test_scenario_42_a_guard_that_fails_stops_no_filing(make_world, monkeypatch):
+    world = make_world()
+    installed(world, TESTERSON)
+
+    def broken(plan: Any) -> Any:
+        raise RuntimeError("a guard fell over")
+
+    monkeypatch.setattr(watch, "scan", broken)
+    world.script.add_row("Testerson", "PE")
+    world.run_until(is_filed(world, "Testerson_101426"), within=minutes(45))
+
+    assert guards_dev(world) == {"guard_failed"}
+    assert "a guard fell over" not in " ".join(d.text for d in world.dev())
+    monkeypatch.undo()
+    world.step()
+    assert guards_dev(world) == set()                # the next clean pass closes it
+
+
+def test_scenario_42b_one_material_that_fails_costs_only_itself(make_world, monkeypatch):
+    world = make_world()
+    installed(world)
+    world.run(minutes=1)
+    real = watch._one_material
+
+    def broken_for_one(ctx: Any, plan: Any, found: Any, place: Any, *rest: Any) -> None:
+        if place[0] == "Fakeley_101426":
+            raise RuntimeError("one bad material")
+        real(ctx, plan, found, place, *rest)
+
+    monkeypatch.setattr(watch, "_one_material", broken_for_one)
+    post(world, "Fakeley_101426", CLASSIC_FOLDER, "FAKS01.TAP", DOUBLED)
+    post(world, GUARD_JOB, CLASSIC_FOLDER, "TESS01.TAP", DOUBLED)
+    world.run(minutes=3)
+
+    assert nest_of(world).state == "do_not_cut"            # the other one is still judged
+    assert guards_dev(world) == {"guard_failed"}
+    item = next(d for d in world.dev() if d.code == "guard_failed")
+    world.run(minutes=3)
+    assert next(d for d in world.dev() if d.code == "guard_failed").id == item.id    # one, standing
+    monkeypatch.undo()
+    world.run(minutes=3)
+    assert guards_dev(world) == set()
+    assert nest_of(world, "Fakeley_101426").state == "do_not_cut"
+
+
+def test_scenario_42c_a_tracker_that_fails_for_any_reason_costs_no_verdict(make_world, monkeypatch):
+    world = make_world(tracker=True)
+    installed(world, TESTERSON)
+    world.run(minutes=1)
+
+    def broken(folder: Any) -> Any:
+        raise RuntimeError("something nobody thought of")
+
+    monkeypatch.setattr(guards_scan_module, "read_tracker", broken)
+    post(world, GUARD_JOB, CLASSIC_FOLDER, "TESS01.TAP", DOUBLED)
+    world.run_until(nest_is(world, "do_not_cut"), within=minutes(2))
+
+    assert len(to_george(world, "DO NOT CUT")) == 1
+    world.step()                                      # with a real post, the pre-flight is due
+    post(world, GUARD_JOB, CLASSIC_FOLDER, "TESS02.TAP", program(doubled=2))
+    world.run(minutes=2)
+    assert "10 cam holes are doubled" in " ".join(nest_of(world).reasons)     # still judging
+    assert "guard_failed" in guards_dev(world)
+    assert "nobody thought" not in " ".join(d.text for d in world.dev())
+    monkeypatch.undo()
+    world.run(minutes=2)
+    assert "guard_failed" not in guards_dev(world)
+
+
+def test_scenario_42d_a_guard_tick_that_fails_outright_stops_no_filing(make_world, monkeypatch):
+    world = make_world()
+    installed(world, TESTERSON)
+
+    def broken(ctx: Any) -> Any:
+        raise RuntimeError("a guard fell over before it read anything")
+
+    monkeypatch.setattr(watch, "_plan", broken)
+    world.script.add_row("Testerson", "PE")
+    world.run_until(is_filed(world, "Testerson_101426"), within=minutes(45))
+
+    assert any(d.code == "task_failed" and d.text.startswith("The guards failed")
+               for d in world.dev())
+    assert world.heartbeats()                        # and the rest of the schedule goes on
+    monkeypatch.undo()
+    world.run(minutes=2)
+    assert not any(d.code == "task_failed" for d in world.dev())
+
+
+def test_scenario_43_a_guard_read_that_hangs_holds_up_no_filing(make_world, monkeypatch):
+    world = make_world()
+    installed(world, TESTERSON)
+    release = threading.Event()
+    real_scan = watch.scan
+
+    def stuck(plan: Any) -> Any:
+        release.wait(60)
+        return real_scan(plan)
+
+    monkeypatch.setattr(watch, "scan", stuck)
+    world.script.add_row("Testerson", "PE")
+    try:
+        for _ in range(60):                          # step(), waiting only for the fetches
+            world.clock.advance(60)
+            world.render.on_clock()
+            world.script.on_clock()
+            began = monotonic()
+            world.sup.run_due(world.clock.now())
+            assert monotonic() - began < 20, "a pass of the schedule waited on the guards' read"
+            wait_for_fetches(guards=False)
+            world.script.deliver()
+            if is_filed(world, "Testerson_101426")():
+                break
+        assert is_filed(world, "Testerson_101426")(), world.where_things_stand()
+        assert any(t.name.startswith("ngrunner-guards-") for t in threading.enumerate())
+    finally:
+        release.set()
+    wait_for_fetches()
+
+
+def test_scenario_44_a_read_stops_between_files_on_a_stop_request_and_concludes_nothing(tmp_path):
+    root = tmp_path / "NG Jobs"
+    for n in range(3):
+        (root / f"Testerson_10142{n}" / CLASSIC_FOLDER).mkdir(parents=True)
+    asked = {"count": 0}
+
+    def stop() -> bool:
+        asked["count"] += 1
+        return asked["count"] > 1
+
+    found = guard_scan(Plan(ng_jobs=root, stop=stop))
+    assert found.stopped and not found.is_whole()
+    assert asked["count"] == 2
+
+
+def test_scenario_44b_a_file_not_the_size_its_listing_said_has_not_settled(tmp_path, monkeypatch):
+    place = tmp_path / "NG Jobs" / GUARD_JOB / CLASSIC_FOLDER
+    place.mkdir(parents=True)
+    (place / "TESS01.TAP").write_bytes(DOUBLED)
+    first = guard_scan(Plan(ng_jobs=tmp_path / "NG Jobs", first_scan=True))
+    listed = first.listed((GUARD_JOB, CLASSIC_FOLDER))["TESS01.TAP"]
+    row = ProgramRecord(GUARD_JOB, CLASSIC_FOLDER, "TESS01.TAP", None, listed.size, listed.mtime, None,
+                        None, None, None, START, "new")
+    monkeypatch.setattr(guards_scan_module, "read_shared", lambda path: DOUBLED[:100])
+
+    found = guard_scan(Plan(ng_jobs=tmp_path / "NG Jobs",
+                            known={(GUARD_JOB, CLASSIC_FOLDER, "TESS01.TAP"): row}))
+    assert found.taps == {} and found.unread == {(GUARD_JOB, CLASSIC_FOLDER, "TESS01.TAP")}
+
+
+def test_scenario_45_a_posted_not_checked_changes_no_colour_until_a_toolkit_is_adopted(make_world):
+    world = make_world()
+    installed(world)
+    world.run(minutes=1)
+    post(world, GUARD_JOB, CLASSIC_FOLDER, "TESS01.TAP", CLEAN)
+    world.run_until(nest_is(world, "not_checked"), within=minutes(2))
+
+    assert nest_of(world).posted_at is not None
+    assert world.tray_state().colour == "green"
+    row, = world.board().jobs                         # still on the board
+    assert row.materials[0].state == "not_checked"
+    view = jobmodel.digest_view(world.store, world.settings, world.clock)
+    risk = next(line for line in view.owner if line.startswith("Not checked"))   # and in the digest
+    assert GUARD_JOB in risk and "3/4 Egger Classic White" in risk
+    world.run(minutes=6)
+    assert any(line.startswith("Not checked") for line in
+               world.heartbeats()[-1].payload["open_risks"])    # for the watchdog, as it stands
+
+    add_snapshot(world.store, taken_at=world.clock.now(), sha256="a" * 64, adopted=False)
+    assert world.tray_state().colour == "green"       # taken isn't adopted
+    add_snapshot(world.store, taken_at=world.clock.now(), sha256="b" * 64, adopted=True)
+    assert world.tray_state().colour == "red"
+    assert "NOT CHECKED" in world.tray_state().tooltip
+
+
+def test_scenario_46_verdicts_lose_trial_after_five_real_nests_but_a_new_feature_stays_on_trial(
+        make_world):
+    world = make_world()
+    installed(world)
+    world.run(minutes=1)
+    for n in range(5):
+        post(world, f"Sampleton_10142{n}", CLASSIC_FOLDER, f"SAMS0{n}.TAP", CLEAN)
+    world.run(minutes=2)
+    assert all(nest.trial for nest in list_nests(world.store))
+
+    post(world, GUARD_JOB, CLASSIC_FOLDER, "TESS01.TAP", DOUBLED)
+    world.run_until(nest_is(world, "do_not_cut"), within=minutes(2))
+    assert nest_of(world).trial is False
+    assert "(trial)" not in to_george(world, "DO NOT CUT")[0].lines[0]
+
+    post(world, "Fakeley_101426_Gar", CLASSIC_FOLDER, "FAKS01.TAP", DOUBLED)
+    world.run_until(nest_is(world, "do_not_cut", folder="Fakeley_101426_Gar"), within=minutes(2))
+    assert nest_of(world, "Fakeley_101426_Gar").trial is True
+    post(world, "Mockford_101426_Gar", CLASSIC_FOLDER, "MOCS01.TAP", DOUBLED)
+    world.run_until(nest_is(world, "do_not_cut", folder="Mockford_101426_Gar"), within=minutes(2))
+    assert nest_of(world, "Mockford_101426_Gar").trial is False
+
+
+def test_scenario_47_a_program_gone_then_back_unchanged_is_no_new_post(make_world):
+    world = make_world()
+    post(world, GUARD_JOB, CLASSIC_FOLDER, "TESS01.TAP", DOUBLED)
+    installed(world)
+    world.run(minutes=1)
+    held = tmp_copy = world.tmp / "aside.TAP"
+    place = world.ng_jobs / GUARD_JOB / CLASSIC_FOLDER / "TESS01.TAP"
+    os.replace(place, held)
+    world.run(minutes=4)
+    assert nest_of(world).state == "not_posted"
+    os.replace(tmp_copy, place)
+    world.run(minutes=4)
+    assert nest_of(world).state == "not_checked" and nest_of(world).posted_at is None
+    assert to_george(world) == [] and world.tray.colour != "red"
+
+
+def test_scenario_47b_an_old_program_beside_a_new_one_alarms_nothing_and_a_new_fault_names_only_it(
+        make_world):
+    world = make_world()
+    post(world, GUARD_JOB, CLASSIC_FOLDER, "TESS01.TAP", DOUBLED)
+    installed(world)
+    world.run(minutes=1)
+
+    post(world, GUARD_JOB, CLASSIC_FOLDER, "TESS02.TAP", CLEAN)
+    world.run_until(lambda: nest_of(world).posted_at is not None, within=minutes(2))
+    assert nest_of(world).state == "not_checked" and to_george(world) == []
+    old = get_program(world.store, GUARD_JOB, CLASSIC_FOLDER, "TESS01.TAP")
+    assert old.state == "seen_at_install" and old.sha256 == hashlib.sha256(DOUBLED).hexdigest()
+
+    post(world, GUARD_JOB, CLASSIC_FOLDER, "TESS03.TAP", program(doubled=2))
+    world.run_until(nest_is(world, "do_not_cut"), within=minutes(2))
+    assert nest_of(world).reasons == ("2 cam holes are doubled in program TESS03",)
+
+
+def test_scenario_48_a_folder_moved_to_old_stops_being_watched_and_clears_its_red(make_world):
+    world = make_world()
+    installed(world)
+    world.run(minutes=1)
+    post(world, GUARD_JOB, CLASSIC_FOLDER, "TESS01.TAP", ON_61)
+    world.run_until(nest_is(world, "do_not_cut"), within=minutes(2))
+    assert len(sheet_cards(world)) == 1
+
+    os.replace(world.ng_jobs / GUARD_JOB, world.old / GUARD_JOB)
+    world.run(minutes=4)
+
+    assert nest_of(world).state == "not_posted" and world.tray.colour != "red"
+    assert sheet_cards(world) == [] and world.board().jobs == ()
+
+
+def test_scenario_49_a_listing_that_loses_most_folders_at_once_is_not_believed(make_world, monkeypatch):
+    world = make_world()
+    for n in range(12):
+        post(world, f"Sampleton_10142{n:02d}"[:17], CLASSIC_FOLDER, "SAMS01.TAP", CLEAN)
+    installed(world)
+    world.run(minutes=1)
+    post(world, GUARD_JOB, CLASSIC_FOLDER, "TESS01.TAP", DOUBLED)
+    world.run_until(nest_is(world, "do_not_cut"), within=minutes(2))
+
+    # The drive starts up and shows an empty folder for a while.
+    aside = world.tmp / "aside"
+    os.replace(world.ng_jobs, aside)
+    world.ng_jobs.mkdir()
+    world.run(minutes=20)
+    assert nest_of(world).state == "do_not_cut" and world.tray.colour == "red"
+    assert "ng_jobs_looks_empty" in {d.code for d in world.dev()}
+
+    shutil.rmtree(world.ng_jobs)
+    os.replace(aside, world.ng_jobs)
+    world.run(minutes=3)
+    assert nest_of(world).state == "do_not_cut"
+    assert len(to_george(world, "DO NOT CUT")) == 1      # nothing was forgotten, so nothing is new
+    assert "ng_jobs_looks_empty" not in {d.code for d in world.dev()}
+
+
+def test_scenario_49b_many_folders_really_moved_to_old_are_believed_after_two_hours(make_world):
+    world = make_world()
+    for n in range(12):
+        post(world, f"Sampleton_1014{n:02d}", CLASSIC_FOLDER, "SAMS01.TAP", CLEAN)
+    installed(world)
+    world.run(minutes=1)
+    post(world, GUARD_JOB, CLASSIC_FOLDER, "TESS01.TAP", DOUBLED)
+    world.run_until(nest_is(world, "do_not_cut"), within=minutes(2))
+
+    os.replace(world.ng_jobs / GUARD_JOB, world.old / GUARD_JOB)
+    for n in range(12):
+        os.replace(world.ng_jobs / f"Sampleton_1014{n:02d}", world.old / f"Sampleton_1014{n:02d}")
+    world.run(minutes=100)
+    assert nest_of(world).state == "do_not_cut"       # not yet
+    world.run(minutes=25)
+
+    assert nest_of(world).state == "not_posted" and world.tray.colour != "red"
+    assert "ng_jobs_looks_empty" not in {d.code for d in world.dev()}
+
+
+def test_scenario_50_a_first_scan_waits_for_a_listing_of_everything(make_world, monkeypatch):
+    world = make_world()
+    post(world, GUARD_JOB, CLASSIC_FOLDER, "TESS01.TAP", DOUBLED)
+    post(world, "Fakeley_101426", CLASSIC_FOLDER, "FAKS01.TAP", DOUBLED)
+    real = guards_scan_module._list_folder
+
+    def one_folder_fails(path: Any, folder: str, found: Any) -> None:
+        if folder == GUARD_JOB:
+            raise OSError("the drive said no")
+        real(path, folder, found)
+
+    monkeypatch.setattr(guards_scan_module, "_list_folder", one_folder_fails)
+    installed(world)
+    world.run(minutes=3)
+    assert get_state(world.store, watch.FIRST_SCAN) is None and list_programs(world.store) == []
+    world.run(minutes=9)
+    assert "first_scan_waiting" in {d.code for d in world.dev()}
+
+    monkeypatch.undo()
+    world.run(minutes=3)
+    assert get_state(world.store, watch.FIRST_SCAN) is not None
+    assert {p.state for p in list_programs(world.store)} == {"seen_at_install"}
+    assert to_george(world) == [] and world.tray.colour != "red" and guards_dev(world) == set()
+
+
+def test_scenario_51_ng_jobs_out_of_reach_uses_the_alarm_it_has_and_alarms_nothing_else(make_world):
+    world = make_world()
+    post(world, GUARD_JOB, CLASSIC_FOLDER, "TESS01.TAP", DOUBLED)
+    installed(world)
+    world.run(minutes=1)
+    aside = world.tmp / "aside"
+    os.replace(world.ng_jobs, aside)
+    world.run(minutes=3)
+    assert "ng_jobs_unreachable" in {d.code for d in world.dev()}
+    assert to_george(world) == [] and nest_of(world).state == "not_checked"
+    os.replace(aside, world.ng_jobs)
+    world.run(minutes=3)
+    assert "ng_jobs_unreachable" not in {d.code for d in world.dev()}
+    assert to_george(world) == [] and nest_of(world).posted_at is None
+
+
+# ----- the order heads-up
+
+
+def post_takeoff(world: World, folder: str, data: dict[str, Any] | bytes) -> None:
+    place = world.ng_jobs / folder
+    place.mkdir(parents=True, exist_ok=True)
+    body = data if isinstance(data, bytes) else json.dumps(data).encode("utf-8")
+    (place / f"{folder}_IC_Conversion.json").write_bytes(body)
+
+
+def heads_ups(world: World, to: str | None = None) -> list[Any]:
+    return [m for m in world.outbox(to=to) if "order heads-up" in m.subject]
+
+
+def test_scenario_52_a_shadow_run_sends_each_takeoff_once_to_sulaiman_and_a_change_says_revised(
+        make_world):
+    world = make_world(mode="shadow")
+    installed(world)
+    world.run(minutes=1)
+    post_takeoff(world, GUARD_JOB, takeoff_json())
+    world.run(minutes=2)
+
+    told = heads_ups(world, "sulaiman")
+    assert len(told) == 1 and told[0].subject.startswith("SHADOW ")
+    assert "revised" not in told[0].subject
+    assert "Testerson Lane" not in " ".join(told[0].lines)   # the address stays in the file
+    assert world.outbox(to="barbara") == [] and world.outbox(to="will") == []
+
+    # The same bytes synced again send nothing, and aren't taken for a new heads-up.
+    went = get_heads_up(world.store, GUARD_JOB).sent_at
+    post_takeoff(world, GUARD_JOB, takeoff_json())
+    world.run(minutes=3)
+    assert len(heads_ups(world, "sulaiman")) == 1
+    assert get_heads_up(world.store, GUARD_JOB).sent_at == went
+
+    post_takeoff(world, GUARD_JOB, takeoff_json(estimate={"total": 26000.0}))
+    world.run(minutes=2)
+    told = heads_ups(world, "sulaiman")
+    assert len(told) == 2 and "revised" in told[1].subject
+    assert any("$26,000.00" in line for line in told[1].lines)
+
+
+def test_scenario_53_nothing_reaches_barbara_or_will_until_it_is_turned_on(make_world):
+    world = make_world()
+    installed(world)
+    world.run(minutes=1)
+    post_takeoff(world, GUARD_JOB, takeoff_json())
+    world.run(minutes=3)
+    assert heads_ups(world) == []
+    assert get_heads_up(world.store, GUARD_JOB) is not None    # noted, so turning it on sends no pile
+
+
+def test_scenario_54_turned_on_each_takeoff_goes_to_barbara_and_will_once(make_world):
+    world = make_world(order_flags_on=True)
+    post_takeoff(world, "Fakeley_101426", takeoff_json())        # there at install: never sent
+    installed(world)
+    world.run(minutes=1)
+    post_takeoff(world, GUARD_JOB, takeoff_json())
+    world.run(minutes=3)
+    assert len(heads_ups(world, "barbara")) == 1 and len(heads_ups(world, "will")) == 1
+    assert all(GUARD_JOB in m.subject for m in heads_ups(world))
+    assert to_george(world) == [] and world.outbox(to="jim") == []
+
+
+def test_scenario_55_a_takeoff_that_wont_read_is_one_dev_item_a_board_note_and_no_list(make_world):
+    world = make_world(mode="shadow")
+    installed(world)
+    world.run(minutes=1)
+    post_takeoff(world, GUARD_JOB, takeoff_json(buckets={"0.75": {"sheets": 3}}))
+    world.run(minutes=3)
+
+    assert heads_ups(world) == []
+    assert guards_dev(world) == {"takeoff_unreadable"}
+    row, = world.board().jobs
+    assert row.notes == (headsup.UNREADABLE_NOTE,)
+    world.run(minutes=5)
+    assert [d.code for d in world.dev()].count("takeoff_unreadable") == 1    # not one a minute
+
+    post_takeoff(world, GUARD_JOB, takeoff_json())
+    world.run(minutes=3)
+    assert len(heads_ups(world, "sulaiman")) == 1 and guards_dev(world) == set()
+    assert world.board().jobs == ()
+
+
+# ----- <folder>_NGRunner.json, schema 2, and the pre-flight
+
+
+def test_scenario_56_a_filed_jobs_notes_carry_its_nests_and_pre_flight(make_world):
+    world = make_world(tracker=True)
+    installed(world, TESTERSON)
+    world.script.add_row("Testerson", "PE")
+    world.run_until(is_filed(world, "Testerson_101426"), within=minutes(45))
+    write_snapshot(world.tracker, taken=to_iso(world.clock.now()).replace("+00:00", "Z"))
+    post(world, "Testerson_101426", CLASSIC_FOLDER, "TESS01.TAP", DOUBLED)
+    world.run_until(nest_is(world, "do_not_cut"), within=minutes(2))
+    world.run(minutes=16)
+
+    record = record_of(world, "Testerson_101426")
+    assert record["schema"] == 2
+    nest, = record["nests"]
+    assert (nest["material"], nest["state"], nest["basis"], nest["programs"]) == (
+        CLASSIC_FOLDER, "do_not_cut", "programs", ["TESS01.TAP"])
+    assert from_iso(nest["at"])
+    assert record["preflight"]["at"]
+    assert {"code": "no_check", "text": record["preflight"]["items"][-1]["text"]} in (
+        record["preflight"]["items"]) or record["preflight"]["items"]
+
+    # On the board too, and the row names the job, not a free folder.
+    row = world.board_row("Testerson_101426")
+    assert [m.state for m in row.materials] == ["do_not_cut"]
+    assert row.lock and all(isinstance(line, str) for line in row.lock)
+
+    # A time alone is no reason to write: a fresh pre-flight, or a verdict made afresh.
+    before = tree(world.ng_jobs)["Testerson_101426/Testerson_101426_NGRunner.json"]
+    ask_for_redo(world.store, "Testerson_101426", CLASSIC_FOLDER)
+    write_snapshot(world.tracker, taken=to_iso(world.clock.now()).replace("+00:00", "Z"))
+    world.run(minutes=16)
+    assert tree(world.ng_jobs)["Testerson_101426/Testerson_101426_NGRunner.json"] == before
+
+    # What changes reaches the file.
+    post(world, "Testerson_101426", CLASSIC_FOLDER, "TESS01.TAP", CLEAN)
+    world.run_until(nest_is(world, "not_checked"), within=minutes(2))
+    world.step()
+    assert record_of(world, "Testerson_101426")["nests"][0]["state"] == "not_checked"
+
+
+def test_scenario_57_an_observed_job_gets_no_writes_and_its_guards_show_on_the_board(make_world):
+    world = make_world()
+    world.make_folder("Testerson_101426")
+    post(world, "Testerson_101426", CLASSIC_FOLDER, "TESS01.TAP", CLEAN)
+    installed(world, TESTERSON)
+    world.script.add_row("Testerson_101426", "PE")
+    world.run_until(lambda: world.job("4242") is not None and world.job("4242").mode == "observed",
+                    within=minutes(30))
+    before = tree(world.ng_jobs)
+    post(world, "Testerson_101426", CLASSIC_FOLDER, "TESS02.TAP", DOUBLED)
+    world.run_until(nest_is(world, "do_not_cut"), within=minutes(2))
+    world.run(minutes=3)
+
+    after = tree(world.ng_jobs)
+    assert set(after) - set(before) == {f"Testerson_101426/{CLASSIC_FOLDER}/TESS02.TAP"}
+    assert [m.state for m in world.board_row("Testerson_101426").materials] == ["do_not_cut"]
+    assert len(to_george(world, "DO NOT CUT")) == 1
+
+
+def test_scenario_57b_an_observed_job_marked_filed_still_gets_no_notes_for_its_guards(make_world):
+    world = make_world()
+    opps(world, FAKELEY)
+    world.make_folder("Fakeley_101426", summary=world.studio.report("4343", note=99_000))
+    installed(world)
+    world.script.add_row("Fakeley_101426", "PE")
+    world.run_until(row_is(world, "Fakeley_101426", "filed"), within=minutes(45))
+    assert world.job("4343").mode == "observed"
+    before = tree(world.ng_jobs)
+
+    post(world, "Fakeley_101426", CLASSIC_FOLDER, "FAKS01.TAP", DOUBLED)
+    world.run_until(nest_is(world, "do_not_cut", folder="Fakeley_101426"), within=minutes(2))
+    world.run(minutes=3)
+
+    assert set(tree(world.ng_jobs)) - set(before) == {
+        f"Fakeley_101426/{CLASSIC_FOLDER}/FAKS01.TAP"}
+    assert world.events(kind="notes_gone") == []     # it never even tried
+    assert [m.state for m in world.board_row("Fakeley_101426").materials] == ["do_not_cut"]
+
+
+def test_scenario_58_a_tracker_it_cant_read_says_so_and_stops_nothing(make_world):
+    world = make_world(tracker=True)
+    installed(world, TESTERSON)
+    world.script.add_row("Testerson", "PE")
+    world.run_until(is_filed(world, "Testerson_101426"), within=minutes(45))
+    world.run(minutes=16)
+
+    assert "could not" in " ".join(world.board_row("Testerson_101426").lock).casefold()
+    record = record_of(world, "Testerson_101426")
+    assert [item["code"] for item in record["preflight"]["items"]] == ["tracker_unreadable"]
+    world.run(minutes=61)
+    assert "tracker_unreadable" in {d.code for d in world.dev()}
+    write_snapshot(world.tracker, taken=to_iso(world.clock.now()).replace("+00:00", "Z"))
+    world.run(minutes=16)
+    assert "tracker_unreadable" not in {d.code for d in world.dev()}
+
+
+def test_scenario_59_labels_that_dont_fit_read_could_not_verify_and_alarm_nobody(make_world):
+    world = make_world(tracker=True)
+    installed(world)
+    world.run(minutes=1)
+    write_snapshot(world.tracker, taken=to_iso(world.clock.now()).replace("+00:00", "Z"))
+    (world.tracker / "parts_catalog.csv").write_text(
+        "Job,Room,RoomName,Part,Product,W,H,D,Wall,Pieces,JobModified\n"
+        f"{GUARD_JOB},1,Room,R1C3,Tower,635,96,523,1_1,FEnd (L)~484.2~2132~1,2026-10-20\n",
+        encoding="utf-8")
+    post(world, GUARD_JOB, CLASSIC_FOLDER, "TESS01.TAP", CLEAN)
+    world.run_until(nest_is(world, "not_checked"), within=minutes(2))
+    label = pdf(label_page(part="R1C9"))                 # a part the catalog doesn't have
+    (world.ng_jobs / GUARD_JOB / f"{GUARD_JOB} Labels.pdf").write_bytes(label)
+    world.run(minutes=20)
+
+    row, = world.board().jobs
+    assert any("parts catalog" in line for line in row.lock)
+    assert any("could not verify" in reason.casefold() and "parts catalog" in reason
+               for reason in nest_of(world).reasons)
+    assert nest_of(world).state == "not_checked" and to_george(world) == []
+    assert world.tray.colour != "red"
+
+
+# ----- the same paths on real programs, named by case and never printed (build spec 11)
+
+
+def _real_programs(**match: str) -> list[tuple[dict[str, Any], bytes]]:
+    index = FIXTURES / "p1b" / "taps" / "index.json"
+    if not index.exists():
+        pytest.skip("no real programs on this PC")
+    entries = json.loads(index.read_text(encoding="utf-8"))
+    return [(entry, (index.parent / entry["file"]).read_bytes()) for entry in entries
+            if all(entry[field] == value for field, value in match.items())]
+
+
+def _post_real(world: World, material: str, programs: list[tuple[dict[str, Any], bytes]]) -> None:
+    """Real bytes under made-up names: Mozaik's capitals, and the merging tool's lower case."""
+    for n, (entry, data) in enumerate(programs, start=1):
+        merged = entry["name"].endswith(".tap")
+        name = f"Tes{n}-{n + 1}.tap" if merged else f"TESS{n:02d}.TAP"
+        post(world, GUARD_JOB, material, name, data)
+
+
+@pytest.mark.fixtures
+def test_real_case_d_raises_do_not_cut_for_its_doubled_holes(make_world):
+    world = make_world()
+    installed(world)
+    world.run(minutes=1)
+    _post_real(world, CLASSIC_FOLDER, _real_programs(case="D", row="doubled"))
+    world.run_until(nest_is(world, "do_not_cut"), within=minutes(2))
+
+    assert len(nest_of(world).reasons) == 1 and "8 cam holes are doubled" in nest_of(world).reasons[0]
+    assert sheet_cards(world) == [] and len(to_george(world, "DO NOT CUT")) == 1
+    assert world.tray.colour == "red"
+
+
+@pytest.mark.fixtures
+def test_real_case_bs_hand_added_sheet_raises_its_card_and_a_click_clears_only_the_size(make_world):
+    world = make_world()
+    installed(world)
+    world.run(minutes=1)
+    _post_real(world, CLASSIC_FOLDER, _real_programs(case="B", row="hand_added",
+                                                     material=CLASSIC_FOLDER))
+    world.run_until(nest_is(world, "do_not_cut"), within=minutes(2))
+
+    assert any("is on 61x109 and this colour is 49x97" in r for r in nest_of(world).reasons)
+    card, = sheet_cards(world)
+    answer(world, card, templates.SHEET_SIZE_CHOICES[0])
+    world.run(minutes=3)
+
+    assert sheet_cards(world) == [] and len(list_clearances(world.store)) == 1
+    assert not any("this colour is" in r for r in nest_of(world).reasons)
+    assert nest_of(world).state == "not_checked"     # this folder holds no doubled holes
+    assert "1 cleared past 49x97" in nest_of(world).reasons[0]
+    assert len(to_george(world, "Cleared by Jim")) == 1
+
+
+@pytest.mark.fixtures
+def test_real_case_cs_quarter_on_61x109_is_nothing_past_its_size(make_world):
+    world = make_world()
+    installed(world)
+    world.run(minutes=1)
+    _post_real(world, "1-4 Egger Classic White", _real_programs(case="C", role="quarter"))
+    world.run_until(nest_is(world, "not_checked", material="1-4 Egger Classic White"),
+                    within=minutes(2))
+
+    assert "nothing past 61x109" in nest_of(world, material="1-4 Egger Classic White").reasons[0]
+    assert to_george(world) == [] and sheet_cards(world) == []
+
+
+@pytest.mark.fixtures
+def test_real_merged_program_of_several_sheets_says_its_holes_were_not_compared(make_world):
+    world = make_world()
+    installed(world)
+    world.run(minutes=1)
+    _post_real(world, CLASSIC_FOLDER, _real_programs(row="families", role="merged"))
+    world.run_until(nest_is(world, "not_checked"), within=minutes(2))
+
+    assert "outside 1 merged program" in nest_of(world).reasons[0]
+    assert to_george(world) == []

@@ -54,6 +54,9 @@ from ngrunner.cards import Command, card_prefix, parse_command
 from ngrunner.clock import Clock, fmt_clock, fmt_date, from_iso, next_at, pacific_day, to_iso
 from ngrunner.config import LAYOUTS, AppPaths, Settings
 from ngrunner.fab import ExportRow, RowChange, diff, install_date, read_edits, read_export
+from ngrunner.guards.kept import (
+    ask_for_redo, forget_question, note_declined, question_of, saved_preflights,
+)
 from ngrunner.intake.branch import branch_of
 from ngrunner.intake.fetch import (
     Agreement,
@@ -93,6 +96,7 @@ from ngrunner.store import (
     accept_envelope,
     add_alias,
     add_card,
+    add_clearance,
     add_fab_row,
     add_pending,
     add_render,
@@ -116,6 +120,7 @@ from ngrunner.store import (
     list_dev,
     list_fab_rows,
     list_jobs,
+    list_nests,
     list_outbox,
     list_pending,
     list_renders,
@@ -167,6 +172,7 @@ _LISTING = "notes.listing_items"        # jobs whose _NGRunner.json lists open c
 
 STREAM = "fab_export"
 BARBARA = "barbara"
+GEORGE = "george"
 
 # ----- Studio's proposal: what a project page read says, and the DEV lane's two codes for no read
 
@@ -257,10 +263,13 @@ class BackgroundFetches:
     """A couple of fetches at a time, each on a daemon thread, so a stop never waits for Studio.
     A fetch that dies with the process just leaves its pending row due. One that never comes back
     can't be stopped, so past overrun it gives up its place and whatever it brings back later is
-    dropped: a hung browser or socket must not take all filing down with it."""
+    dropped: a hung browser or socket must not take all filing down with it. The guards' reads of
+    NG Jobs run the same way, as one at a time under a name of their own."""
 
-    def __init__(self, limit: int = 2, *, overrun: timedelta = _FETCH_OVERRUN) -> None:
+    def __init__(self, limit: int = 2, *, overrun: timedelta = _FETCH_OVERRUN,
+                 name: str = "ngrunner-fetch") -> None:
         self._limit = limit
+        self._name = name
         self._overrun = overrun.total_seconds()
         self._lock = threading.Lock()
         self._running: dict[int, tuple[float, object]] = {}   # by key: when it began, and which run
@@ -280,7 +289,7 @@ class BackgroundFetches:
         with self._lock:
             self._running[key] = (monotonic(), run)
         threading.Thread(target=self._run, args=(key, run, work), daemon=True,
-                         name=f"ngrunner-fetch-{key}").start()
+                         name=f"{self._name}-{key}").start()
 
     def _run(self, key: int, run: object, work: Callable[[], Any]) -> None:
         result: Any = None
@@ -363,6 +372,7 @@ class Ctx:
     stop_requested  asked between steps; a tick stops there, leaving what is due still due.
     studio          intake.studio_designs.StudioSite, or None when no Studio login is set up: a
                     board item, never a crash. Jobs still file, marked "designs not cross-checked".
+    guard_reads     where the guards read NG Jobs (guards/watch.py): off this thread, one at a time.
     """
 
     store: Store
@@ -379,6 +389,8 @@ class Ctx:
     stop_requested: Callable[[], bool] = _never
     studio: Any = None
     failed_steps: set[str] = field(default_factory=set)   # this tick's, so only a clean pass closes
+    guard_reads: FetchRunner = field(
+        default_factory=lambda: BackgroundFetches(1, name="ngrunner-guards"))
 
     def commit(self, writes: list[FileWrite]) -> CommitResult:
         """The one way the pipeline writes: commit_recorded, with the P1a interlock."""
@@ -389,6 +401,7 @@ class Ctx:
 def stop_work(ctx: Ctx) -> None:
     """No new fetch starts. One under way dies with the process, and its pending row stays due."""
     ctx.fetches.stop()
+    ctx.guard_reads.stop()
 
 
 def _stopping(ctx: Ctx) -> bool:
@@ -1041,6 +1054,8 @@ def _act(tx: Transaction, card: CardRecord, now: datetime) -> None:
         _answer_remake(tx, card, now)
     elif card.kind == "design_mismatch":
         _answer_design_mismatch(tx, card, now)
+    elif card.kind == "sheet_size":
+        _answer_sheet_size(tx, card, now)
 
 
 def _choice_id(card: CardRecord) -> str | None:
@@ -1172,6 +1187,29 @@ def _answer_design_mismatch(tx: Transaction, card: CardRecord, now: datetime) ->
                                           proposal=told.get("proposal", 0))
     log_event(tx, at=now, kind="designs_differ_filed", lane="ACT", studio_id=sid,
               text=f"Jim chose to file it as it is. {spec.text}")
+
+
+def _answer_sheet_size(tx: Transaction, card: CardRecord, now: datetime) -> None:
+    """"I added this sheet on purpose": one clearance per program the card named, each bound to its
+    hash, and George told. "Re-nest it": it stays DO NOT CUT, and only a re-post asks again. Either
+    way the material is judged again at the guards' next pass, from the files, since no verdict can
+    be made here: this runs on the tick's thread, and the store holds only a count of near pairs."""
+    question = question_of(tx, card.id)
+    if question is None:
+        log_event(tx, at=now, kind="sheet_answer_late", lane="ACT", studio_id=card.studio_id,
+                  text=f"Card {card.id} no longer says what it asked, so nothing was cleared.")
+        return
+    forget_question(tx, card.id)
+    ask_for_redo(tx, question.folder, question.material)
+    if card.choices.index(card.answer) != 0:
+        note_declined(tx, question)
+        return
+    for program in question.programs:
+        add_clearance(tx, folder=question.folder, material=question.material,
+                      program_sha256=program.sha256, card_id=card.id, at=now)
+    queue_tell(tx, templates.sheet_cleared(question.folder, question.material,
+                                           programs=question.named(), at=now),
+               to=GEORGE, now=now, ref=f"sheet_cleared:{card.id}")
 
 
 def _wake_filing(tx: Transaction, studio_id: str | None, now: datetime) -> None:
@@ -2530,8 +2568,10 @@ def _ic_card_again(db: Db, job: JobRecord, question: dict[str, Any], now: dateti
 
 
 def _keep_notes_current(ctx: Ctx) -> None:
-    """_NGRunner.json lists the job's open cards, and Jim's chat reads it first, so it is rewritten
-    whenever a card opens or closes. While paused nothing is written; it catches up after."""
+    """_NGRunner.json lists the job's open cards, its materials' nest states and its lock
+    pre-flight, and Jim's chat reads it first, so it is rewritten whenever one of those changes. A
+    job that gets no writes keeps all of that on the board. While paused nothing is written; it
+    catches up after."""
     store = ctx.store
     if is_paused(store):
         ctx.failed_steps.add(_step_name("_keep_notes_current"))   # no look, so no clean pass
@@ -2542,6 +2582,7 @@ def _keep_notes_current(ctx: Ctx) -> None:
         if card.studio_id is not None:
             by_job.setdefault(card.studio_id, []).append(card)
     listing = set(json.loads(get_state(store, _LISTING) or "[]"))
+    guarded = _guards_said(store)
 
     def one(sid: str) -> None:
         facts = filed_facts(store, sid)
@@ -2552,15 +2593,45 @@ def _keep_notes_current(ctx: Ctx) -> None:
             return                                 # a filing under way writes the notes itself
         items = _items(by_job.get(sid, ()))
         retry_at = facts.get("retry_at")
-        if items == facts.get("items", []) or (retry_at and now < from_iso(retry_at)):
+        said = guarded.get(facts["folder"], {"nests": [], "preflight": None})
+        if ((items == facts.get("items", []) and _says_the_same(facts, said))
+                or (retry_at and now < from_iso(retry_at))):
             return
-        _rewrite_notes(ctx, sid, facts, items, now)
+        _rewrite_notes(ctx, sid, facts, items, now, new_facts=said)
 
-    _each(ctx, "keep_notes_current", sorted(listing | set(by_job)), one)
+    with_guards = {sid for sid, facts in all_filed_facts(store).items()
+                   if facts.get("folder") in guarded}
+    _each(ctx, "keep_notes_current", sorted(listing | set(by_job) | with_guards), one)
     still = sorted(sid for sid in listing | set(by_job)
                    if ((filed_facts(store, sid) or {}).get("items")))
     if still != sorted(listing):
         set_state(store, _LISTING, json.dumps(still))
+
+
+def _guards_said(db: Db) -> dict[str, dict[str, Any]]:
+    """By folder, what the notes file says of the guards: each material's state, and the lock
+    pre-flight. Machine-readable, and no address: what is in it passed the lint or is a name."""
+    said: dict[str, dict[str, Any]] = {}
+    for nest in list_nests(db):
+        if nest.state != "not_posted":
+            said.setdefault(nest.folder, {"nests": [], "preflight": None})["nests"].append({
+                "material": nest.material, "state": nest.state, "basis": nest.basis,
+                "programs": sorted(nest.manifest), "at": to_iso(nest.updated_at)})
+    for folder, preflight in saved_preflights(db).items():
+        said.setdefault(folder, {"nests": [], "preflight": None})["preflight"] = {
+            "at": preflight["at"], "items": preflight["items"]}
+    return said
+
+
+def _says_the_same(facts: dict[str, Any], said: dict[str, Any]) -> bool:
+    """Whether the file already says this. A time alone is no reason to write: the pre-flight reads
+    the tracker every 15 minutes, and a verdict is made afresh each time a material is read."""
+    def nests(record: Any) -> list[dict[str, Any]]:
+        return [{k: v for k, v in nest.items() if k != "at"} for nest in record or []]
+
+    before, now = facts.get("preflight") or {}, said.get("preflight") or {}
+    return (nests(facts.get("nests")) == nests(said.get("nests"))
+            and before.get("items") == now.get("items"))
 
 
 def _rewrite_notes(ctx: Ctx, sid: str, facts: dict[str, Any], items: list[dict[str, str]],
@@ -2610,15 +2681,16 @@ def _rewrite_notes(ctx: Ctx, sid: str, facts: dict[str, Any], items: list[dict[s
 
 
 def _notes_bytes(facts: dict[str, Any], items: list[dict[str, str]]) -> bytes:
-    """<folder>_NGRunner.json, schema 1: for machines (Jim's chat). It holds no address."""
+    """<folder>_NGRunner.json, schema 2: for machines (Jim's chat). It holds no address."""
     summary = {"file": f"{facts['folder']}_summary.pdf", "sha256": facts["sha256"],
                "layout": facts["layout"], "pages": facts["pages"], "fetched": facts["fetched"]}
     if facts.get("replaced_by_hand"):
         summary["replaced_by_hand"] = True
-    record = {"schema": 1, "job": facts["job"], "branch": facts["branch"], "summary": summary,
+    record = {"schema": 2, "job": facts["job"], "branch": facts["branch"], "summary": summary,
               "designs": facts.get("designs"),
               "designs_checked": bool(facts.get("designs_checked")),
-              "filed_at": facts["at"], "items": items, "note": _NOTE}
+              "filed_at": facts["at"], "items": items, "nests": facts.get("nests", []),
+              "preflight": facts.get("preflight"), "note": _NOTE}
     return (json.dumps(record, indent=1, ensure_ascii=False) + "\n").encode("utf-8")
 
 
@@ -2683,6 +2755,14 @@ def _queue_tell(tx: Transaction, kind: str, message: Message, *, to: str, ref: s
     set_state(tx, _tell_key(op.id), json.dumps({
         "to": to, "kind": message.kind, "title": message.title, "lines": list(message.lines),
         "urgent": message.urgent}, ensure_ascii=False))
+
+
+def queue_tell(tx: Transaction, message: Message, *, to: str, ref: str, now: datetime) -> None:
+    """A message about no Fab row: the guards', and a sheet size card's answer. A pending row of one
+    kind for one job and row is kept once, so each of these gets a kind of its own, by its ref: two
+    materials going DO NOT CUT in one pass must make two messages, and never one in the other's place.
+    """
+    _queue_tell(tx, f"{_TELL}{_sha(ref.encode())[:24]}", message, to=to, ref=ref, now=now)
 
 
 def _send_tells(ctx: Ctx) -> None:
@@ -3006,6 +3086,12 @@ def _gone_key(row_id: int) -> str:
 def _tell_key(op_id: int) -> str:
     return f"tell.{op_id}"
 
+
+# What the guards use of all this (guards/watch.py), since they run beside the pipeline's tick.
+send_tells = _send_tells
+add_guard_card = _add_card
+no_ng_jobs = _no_ng_jobs
+stopping = _stopping
 
 _STEPS = (_bring_shadow_jobs_home, _take_fetches, _watch_fetches, _send_tells, _read_fab,
           _refresh_list, _act_on_answers, _match_rows, _rematch_rows, _raise_deadline_cards,
