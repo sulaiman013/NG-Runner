@@ -47,6 +47,15 @@ NESTS = {
 }
 _FROM_BEFORE = Style("muted", "minus", "Not checked")
 
+# NG Runner's takeoff of a filed job (views.TakeoffView). An estimate, never a pass: info, not ok.
+TAKEOFFS = {
+    "made": Style("info", "file", "NG Runner's takeoff"),
+    "chat": Style("info", "file", "Chat's takeoff"),
+    "unverified": Style("warn", "alert", "Could not verify"),
+    "in_chat": Style("muted", "minus", "Takeoff in chat"),
+    "failed": Style("muted", "minus", "No takeoff"),
+}
+
 
 def nest_style(state: str, posted: datetime | None) -> Style:
     """A material's state. NOT CHECKED on what was there before NG Runner is no warning: nothing

@@ -17,7 +17,8 @@ they couldn't is marked ASSUMPTION, with what to check.
 
 What it doesn't do: judge. Whether the sheet is the right size for the colour is sheet_size_check's,
 and doubled housings br_cam_check's (rule 4: Jim's rules come from his toolkit). This only reads.
-It gives no part's data to anyone: counts and program names.
+It gives no part's data to anyone: counts and program names. The parts themselves are read by
+guards/design.py, through parsed_opt, for the nest-to-design match.
 
 A file that may be in use is read by read_opt_file: only once a listing has shown it unchanged for
 OPT_SETTLES_AFTER (guards/scan.py sees to that), hashing the same twice, and parsing (design 5, Reads).
@@ -90,6 +91,13 @@ def read_opt(data: bytes) -> OptFacts:
                      encoding=encoding, placed=placed, runs=tuple(runs), holes=holes, version=version)
     _refuse_what_doesnt_add_up(facts)
     return facts
+
+
+def parsed_opt(data: bytes) -> ET.Element:
+    """A nest's XML root, decoded and parsed as read_opt does it, for guards/design.py, which reads
+    its parts. Raises OptUnreadable for anything read_opt would refuse in the bytes themselves."""
+    text, _, _ = _decoded(data)
+    return _parsed(text)
 
 
 def read_opt_file(path: Path, *, read: Callable[[Path], bytes] = read_shared) -> OptFacts:

@@ -219,6 +219,7 @@ def _template_values() -> dict[str, object]:
         "tick_style": display.TICKS.__getitem__,
         "overlay_style": display.OVERLAYS.__getitem__,
         "nest_style": display.nest_style,
+        "takeoff_style": display.TAKEOFFS.__getitem__,
         "toasts_style": display.toasts_style,
         "path_style": display.path_style,
         "mode_style": display.mode_style,

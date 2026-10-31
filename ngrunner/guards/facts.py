@@ -24,6 +24,9 @@ COULD_NOT_VERIFY = "could_not_verify"
 # The one code that means the nest matches the saved design. guards/labels.py's fallback says
 # "all_found" at best, and that is not this: it can't see a missing part (5.9).
 DESIGN_MATCHES = "matches"
+# The nest is not the saved design (guards/design.py): it came from an unsaved state, or the design
+# changed after nesting. The design's "Not verified": a DO NOT CUT, red, to George (nest_state row 5).
+NOT_VERIFIED = "not_verified"
 
 
 @dataclass(frozen=True)
@@ -96,8 +99,12 @@ class ToolVerdict:
 
 @dataclass(frozen=True)
 class DesignMatch:
-    """Whether the nest is the saved design. code: DESIGN_MATCHES or anything else, which is no
-    match. checked: the files it compared, without which a match counts for nothing."""
+    """Whether the nest is the saved design (guards/design.py). code: DESIGN_MATCHES, NOT_VERIFIED,
+    COULD_NOT_VERIFY, or anything else, which is no match and no alarm. checked: the files it compared,
+    without which a match counts for nothing. parts: the tags of the parts that differ (R1C3), every
+    one. note: the one line a person reads, "" for a match."""
 
     code: str
     checked: CheckedFiles | None = None
+    parts: tuple[str, ...] = ()
+    note: str = ""

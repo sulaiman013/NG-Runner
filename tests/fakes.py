@@ -61,6 +61,10 @@ BACKUP_PUBLIC_KEY = new_keypair()[1]                        # no world has a "no
 GOOGLE = Path(__file__).resolve().parent.parent / "google"
 _FIVE_MINUTES = timedelta(minutes=5)
 _LOOPBACK = frozenset({"127.0.0.1", "localhost", "::1"})
+# A closet's PULLED list as Studio prints it, whose takeoff is complete: 8 parts of 3/4 white (2
+# sheets, 26 feet of tape), and shelf pins, which are no board.
+CLOSET_PARTS = (("VT-WH", 2, "VT 14x84x3/4 FD WH"), ("SH-WH", 6, "SH 14x24x3/4 FIX WH"),
+                ("400000155", 8, "Shelf Pin"))
 
 
 # ----- Studio: a report for each Studio ID, rendered afresh for every fetch
@@ -83,6 +87,8 @@ class StudioJob:
     page_status: the status of its project page, when it isn't there to read.
     page_changed: its project page no longer has the tabs NG Runner reads.
     real_slugs: the address Studio really has it at, when no derived one finds it.
+    parts: the PULLED list's rows (item, quantity, description), printed as Studio prints them so
+        the shared converter reads them; None prints the made-up list it can't read.
     """
 
     studio_id: str
@@ -99,6 +105,7 @@ class StudioJob:
     page_status: int = 200
     page_changed: bool = False
     real_slugs: tuple[str, str] | None = None
+    parts: tuple[tuple[str, int, str], ...] | None = CLOSET_PARTS
 
     def __post_init__(self) -> None:
         if not self.designs:
@@ -181,7 +188,7 @@ class Studio:
         created = (datetime(2026, 10, 1, tzinfo=timezone.utc) + timedelta(seconds=note))
         return summary_pdf(project_name=job.printed_name or job.name, layout=layout,
                            designs=job.designs, finished=finished,
-                           created=created.strftime("D:%Y%m%d%H%M%S-07'00'"))
+                           created=created.strftime("D:%Y%m%d%H%M%S-07'00'"), parts=job.parts)
 
     def reply(self, path: str) -> Reply | None:
         if self.down:
@@ -724,9 +731,10 @@ def wait_for_fetches(timeout: float = 90.0, *, guards: bool = True) -> None:
     """A tick never waits for a fetch, so the simulation does, before it moves the clock: a fetch
     stamped after the clock moved would read as later than it was. BackgroundFetches.start returns
     with its thread running, so every fetch a tick started is listed here. tests/test_e2e_day.py's
-    slow-fetch test fails if these threads ever stop being named so. guards: the guards' read of
-    NG Jobs too."""
-    names = ("ngrunner-fetch-", "ngrunner-guards-") if guards else ("ngrunner-fetch-",)
+    slow-fetch test fails if these threads ever stop being named so. The takeoff of a summary just
+    filed is waited for too. guards: the guards' read of NG Jobs too."""
+    names = ("ngrunner-fetch-", "ngrunner-takeoff-")
+    names += ("ngrunner-guards-",) if guards else ()
     for thread in threading.enumerate():
         if thread.name.startswith(names):
             thread.join(timeout)

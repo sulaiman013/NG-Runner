@@ -55,7 +55,7 @@ P1A_MODULES: tuple[str, ...] = (
     "ngrunner.selftest", "ngrunner.intake.pipeline", "ngrunner.interlock", "ngrunner.jobmodel",
     "ngrunner.messenger", "ngrunner.supervisor", "ngrunner.canary",
     "ngrunner.intake.studio_designs",
-    "ngrunner.guards.bak", "ngrunner.guards.facts", "ngrunner.guards.headsup",
+    "ngrunner.guards.bak", "ngrunner.guards.design", "ngrunner.guards.facts", "ngrunner.guards.headsup",
     "ngrunner.guards.kept", "ngrunner.guards.labels", "ngrunner.guards.lockcheck",
     "ngrunner.guards.nest_state",
     "ngrunner.guards.nestfiles", "ngrunner.guards.observer", "ngrunner.guards.opt",
@@ -77,6 +77,12 @@ _SMALL_NEST = b"\xff\xfe" + (
     '<OptimizeJob><OptimizeMaterial Width="1244.6" Length="2463.8"/><OptimizePart/>'
     '<OptimizeSheet Quan="1" Flipped="False"><OptimizeGCodeRun Filename="TESS01.TAP"/></OptimizeSheet>'
     '</OptimizeJob>').encode("utf-16-le")
+# What des_cutlist prints (measured on its real output, 2026-10-31), and a room as Mozaik writes one.
+_SMALL_CUTLIST = "1 | Made-up White | Top | 356.0 | 870.0\nTOTAL 1\n"
+_SMALL_ROOM = (b'15\r\n<?xml version="1.0" encoding="utf-8"?>\r\n<Room Quan="1"><Products>'
+               b'<Product CabNo="3" Count="1"><CabProdPart Name="Top" Quan="1" W="356" L="870"'
+               b' UsageType="0" Type="Top"><PartOpsXml><OperationHole X="9.525" X_Eq="PartL-1" />'
+               b'</PartOpsXml></CabProdPart></Product></Products></Room>')
 _SMALL_TOOL = (
     "import sys\n"
     "sys.stdout.buffer.write((sys.argv[1] + ' utf8=' + str(sys.flags.utf8_mode) + ' caf\\u00e9')"
@@ -430,6 +436,7 @@ def message_samples() -> list[object]:
         *(t.fixed(kind, day=day) for kind in (*t.FIXED, "any_other_kind")),
         *(Message("echo", "NG Runner", (line,)) for line in echoes),
         *_nest_samples(t, job),
+        *_takeoff_samples(t, job),
     ]
 
 
@@ -494,6 +501,40 @@ def _heads_up_samples(job: str) -> list[object]:
     return [heads_up(job, takeoff, flags, revised=False), heads_up(job, takeoff, (), revised=True)]
 
 
+def _takeoff_samples(t: Any, job: str) -> list[object]:
+    """NG Runner's own takeoff (P3's takeoff on intake): its heads-up, the one that replaces a
+    partial list, the chat's list sent in its place, and its lines on the board, in the digest and
+    in the history."""
+    from ngrunner.messages import Message
+
+    white = {"colour": "WH", "thk_in": 0.75, "parts": 8, "sqft": 30.33, "sheet_in": [49.0, 97.0],
+             "sheets_with_waste": 2, "calc_sheets_32": 0.9478, "tape_lf": 26.0}
+    inch = {**white, "thk_in": 1.0, "sheets_with_waste": 1, "tape_lf": 4.0}
+    tafisa = {**white, "colour": "AP", "parts": 4, "sheets_with_waste": 1, "tape_lf": 12.4}
+    chats = _heads_up_samples(job)[0]
+    return [
+        t.takeoff_heads_up(job, buckets=[white, tafisa], waste_percent=10, revised=False,
+                           flags=(f"Not all Classic White: {t.takeoff_material('AP')}",)),
+        t.takeoff_heads_up(job, buckets=[white, inch], flags=(), waste_percent=10, revised=True),
+        t.takeoff_unverified(job, lines=3, revised=False),
+        t.takeoff_unverified(job, lines=1, revised=True),
+        t.from_the_chats_takeoff(chats),
+        t.from_the_chats_takeoff(chats, could_not_verify=2),
+        *(Message("takeoff_line", "NG Runner", (f"1. {job}: {line}",)) for line in (
+            t.takeoff_made_words(state="made", complete=True, board_parts=8, buckets=1,
+                                 tape_lf=26.0),
+            t.takeoff_made_words(state="made", complete=False, could_not_verify=2),
+            t.takeoff_made_words(state="in_chat", branch="garage"),
+            t.takeoff_made_words(state="in_chat", branch="mixed"),
+            t.takeoff_made_words(state="failed"),
+            t.takeoff_digest([white], complete=True, could_not_verify=0),
+            t.takeoff_digest([white], complete=False, could_not_verify=2),
+            t.takeoff_digest([white], complete=False, could_not_verify=2, chat=True),
+            t.could_not_verify_lines(3), t.CHATS_TAKEOFF,
+            *t.takeoff_lines([white, inch, tafisa]))),
+    ]
+
+
 def _function(module: str, name: str) -> Callable[..., object]:
     found = getattr(importlib.import_module(module), name, None)
     if not callable(found):
@@ -543,6 +584,8 @@ _SMALL_SNAPSHOT = {
 
 def guard_reader_problems(work: Path) -> list[str]:
     """Each guard's reader once, on made-up files in work. Each must give what it should."""
+    from ngrunner.guards import design
+    from ngrunner.guards.facts import ToolRun
     from ngrunner.guards.labels import read_catalog, read_labels
     from ngrunner.guards.observer import mozaik_running, read_locks
     from ngrunner.guards.opt import read_opt
@@ -560,6 +603,10 @@ def guard_reader_problems(work: Path) -> list[str]:
         ("the parts catalog", lambda: read_catalog(b"Job,Part,Pieces,JobModified\n") == ()),
         ("a tracker snapshot", lambda: _snapshot_rows(work, read_tracker) == 0),
         ("a nest file", lambda: read_opt(_SMALL_NEST).physical_sheets == 1),
+        ("a cutlist", lambda: design.read_cutlist(ToolRun(0, _SMALL_CUTLIST, "", False)).total == 1),
+        ("a room's design", lambda: (
+            [(p.tag, len(p.ops)) for p in design.read_design({"Room1.des": _SMALL_ROOM})] == [("R1C3", 1)]
+            and bool(design.room_identity("Room1.des", _SMALL_ROOM)))),
         ("a lock file", lambda: _lock_owner(work, read_locks) == "TESTER"),
         ("the list of running programs", lambda: mozaik_running() is not None),
     ]

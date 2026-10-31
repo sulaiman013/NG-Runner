@@ -87,6 +87,10 @@ GARAGE = (("Testerson - Garage", "Garage"),)
 MIXED = (("Testerson - Primary Closet", "His and Her Master"), ("Testerson - Garage", "Garage"))
 BLANK = (("Testerson - Thing", ""),)
 FUTURE_INSTALL = ("Monday", " 11 /30")
+# A closet's PULLED list as Studio prints it (helpers_pdf), whose takeoff is complete: 8 board
+# parts of 3/4 white, and shelf pins, which are no board.
+CLOSET_PARTS = (("VT-WH", 2, "VT 14x84x3/4 FD WH"), ("SH-WH", 6, "SH 14x24x3/4 FIX WH"),
+                ("400000155", 8, "Shelf Pin"))
 
 
 def minutes(n: float) -> timedelta:
@@ -110,8 +114,9 @@ class _Reply:
 
 
 class _StudioJob:
-    def __init__(self, name: str, designs: Any = CLOSET, client: str = "") -> None:
-        self.name, self.designs, self.client = name, designs, client
+    def __init__(self, name: str, designs: Any = CLOSET, client: str = "",
+                 parts: Any = CLOSET_PARTS) -> None:
+        self.name, self.designs, self.client, self.parts = name, designs, client, parts
         self.printed: str | None = None
         self.early = 0
         self.reply: _Reply | None = None
@@ -168,7 +173,7 @@ class FakeStudio:
         job.early = max(0, job.early - 1)
         return _Reply(body=summary_pdf(
             project_name=job.printed or job.name, layout=layout, designs=job.designs,
-            finished=finished, created=f"D:20261014{job.served:06d}-07'00'"))
+            finished=finished, created=f"D:20261014{job.served:06d}-07'00'", parts=job.parts))
 
 
 class FakeSite:
@@ -426,9 +431,11 @@ def three_files(folder: str) -> set[str]:
 
 
 def pdf_of(name: str = "Testerson_101426", *, note: int = 99, designs: Any = CLOSET,
-           layout: str = "landscape") -> bytes:
+           layout: str = "landscape", parts: Any = CLOSET_PARTS) -> bytes:
+    """A summary as the fake Studio renders it, with its PULLED list: the same content as a fetch
+    of a job with these designs and parts."""
     return summary_pdf(project_name=name, designs=designs, layout=layout,
-                       created=f"D:20261001{note:06d}-07'00'")
+                       created=f"D:20261001{note:06d}-07'00'", parts=parts)
 
 
 # ----- step 1: the first export
@@ -1778,8 +1785,8 @@ def test_filing_writes_three_new_files_and_notes_what_it_filed(world):
         second.cache_path.read_bytes())
     record = world.notes(folder)
     assert list(record) == ["schema", "job", "branch", "summary", "designs", "designs_checked",
-                            "filed_at", "items", "nests", "preflight", "note"]
-    assert record["schema"] == 2 and record["job"] == folder and record["branch"] == "closet"
+                            "filed_at", "items", "nests", "preflight", "takeoff", "note"]
+    assert record["schema"] == 3 and record["job"] == folder and record["branch"] == "closet"
     assert record["nests"] == [] and record["preflight"] is None
     assert record["designs"] == 2 and record["designs_checked"] is True
     assert record["summary"] == {
@@ -1798,8 +1805,10 @@ def test_filing_writes_three_new_files_and_notes_what_it_filed(world):
     event, = world.events("filed")
     assert event.studio_id == "4242" and event.lane == "LOG"
     assert "Filed the IC summary" in event.text
-    written = [r for r in list_write_records(world.store) if r.ok]
-    assert len(written) == 1 and len(written[0].paths) == 3
+    filing, takeoff = [r for r in list_write_records(world.store) if r.ok]
+    assert len(filing.paths) == 3
+    assert [path.name for path in takeoff.paths] == [f"{folder}_NGRunner.json"]
+    assert record["takeoff"]["state"] == "made"           # the notes, rewritten for its takeoff
 
 
 def test_barbara_is_told_once_and_her_row_is_quoted(world):
@@ -3154,12 +3163,13 @@ def test_the_pipeline_commits_only_through_commit_recorded(world, monkeypatch):
     monkeypatch.setattr(pipeline, "commit_recorded", spy)
     world.installed(TESTERSON)
     world.filed("Testerson")
-    call, = calls
-    assert call["store"] is world.store and call["clock"] is world.clock
-    assert call["roots"] is world.roots and callable(call["interlock"])
+    assert len(calls) == 2              # the filing, then its notes once its takeoff is made
+    for call in calls:
+        assert call["store"] is world.store and call["clock"] is world.clock
+        assert call["roots"] is world.roots and callable(call["interlock"])
     assert not hasattr(pipeline, "commit_write")
     written = [r for r in list_write_records(world.store) if r.ok]
-    assert len(written) == 1
+    assert len(written) == 2
 
 
 def test_a_commits_row_that_cant_be_saved_never_changes_what_the_commit_did(world, monkeypatch):
@@ -3349,7 +3359,9 @@ def test_a_stop_between_the_renames_and_the_record_is_finished_at_restart(world,
     assert len(settled.adopted) == 3
     before = world.tree()
     world.run(2)
-    assert world.row("Testerson").state == "filed" and world.tree() == before
+    assert world.row("Testerson").state == "filed"
+    assert but_the_notes(world.tree()) == but_the_notes(before)    # nothing filed twice
+    assert world.notes("Testerson_101426")["takeoff"]["state"] == "made"   # the notes: its takeoff
     assert len(world.sent("barbara", "Filed as")) == 1
     assert len(world.events("filed")) == 1
 
@@ -3380,11 +3392,15 @@ def test_after_part_of_a_commit_was_adopted_only_the_missing_files_are_written(w
     set_state(world.store, PAUSED, "no")
     world.run(1)
     assert set(world.tree()) == three_files(folder)
-    for suffix in left:
-        if suffix != "_summary.pdf":
-            assert (place / f"{folder}{suffix}").read_bytes() == b"written before the crash"
+    filing, notes = [r for r in list_write_records(world.store) if r.ok]
+    every = {f"{folder}{suffix}" for suffix in ("_summary.pdf", "_NGRunner.json",
+                                                "_NGRunner_log.txt")}
+    assert {path.name for path in filing.paths} == every - {f"{folder}{s}" for s in left}
+    assert [path.name for path in notes.paths] == [f"{folder}_NGRunner.json"]   # its takeoff's
+    if "_NGRunner_log.txt" in left:
+        assert (place / f"{folder}_NGRunner_log.txt").read_bytes() == b"written before the crash"
+    assert world.notes(folder)["takeoff"]["state"] == "made"
     assert world.row("Testerson").state == "filed"
-    assert sum(r.ok for r in list_write_records(world.store)) == 1
 
 
 def test_after_a_crash_the_notes_describe_the_summary_that_is_there_not_a_later_pair(world):
@@ -4379,7 +4395,9 @@ def test_a_stop_after_file_the_new_ones_commit_writes_nothing_twice(world, monke
     made = {path for path in backups.rglob("*") if path.is_file()}
     world.run(1)
     assert world.ops(pipeline.FILE_NEW) == []
-    assert {path for path in backups.rglob("*") if path.is_file()} == made
+    now = {path for path in backups.rglob("*") if path.is_file()}
+    assert now >= made
+    assert [path.name for path in now - made] == ["Testerson_101426_NGRunner.json"]  # its takeoff
     log = world.folder("Testerson_101426") / "Testerson_101426_NGRunner_log.txt"
     assert log.read_text(encoding="utf-8").count("as Jim chose") == 1
     assert world.events("refiled")

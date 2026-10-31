@@ -210,6 +210,10 @@ code, .mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
 .material { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; font-size: 13px; }
 .material-name { font-weight: 600; overflow-wrap: anywhere; }
 .material-note { flex-basis: 100%; color: var(--ink-2); overflow-wrap: anywhere; }
+.takeoff { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin-top: 10px;
+  font-size: 13px; }
+.takeoff-label { color: var(--ink-2); }
+.takeoff-lines { flex-basis: 100%; margin: 0; padding-left: 18px; overflow-wrap: anywhere; }
 .next-note { display: flex; align-items: flex-start; gap: 5px; margin: 6px 0 0; color: var(--warn); }
 .next-note .i { flex: none; width: 15px; height: 15px; margin-top: 2px; }
 .lock { margin-top: 6px; }

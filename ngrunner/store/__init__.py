@@ -41,6 +41,8 @@ Phase 1b's guards:
     owner_log      owner_log: every UNS and LCK user string seen
     heads_ups      heads_ups: the takeoff each job's order heads-up last went out on
     snapshots      snapshots: each copy of Jim's toolkit, and what became of it
+Phase 2's converter, wired in for P3's takeoff on intake:
+    takeoffs       takeoffs: NG Runner's own takeoff of each summary it files, by rules version
 Store.backup_to(path) copies the whole database with SQLite's online backup API, for the
 supervisor's copy before an upgrade (backup.snapshot gives everything else its copy, as bytes).
 """
@@ -103,6 +105,9 @@ from ngrunner.store.sequences import (
 )
 from ngrunner.store.snapshots import (
     SnapshotRecord, add_snapshot, get_snapshot, list_snapshots, update_snapshot,
+)
+from ngrunner.store.takeoffs import (
+    TAKEOFF_BRANCHES, TAKEOFF_STATES, TakeoffRecord, add_takeoff, get_takeoff, list_takeoffs,
 )
 from ngrunner.store.state import (
     clear_state, get_state, get_state_time, set_state, set_state_time, states_under,
@@ -184,4 +189,7 @@ __all__ = [
     "HeadsUpRecord", "get_heads_up", "list_heads_ups", "record_heads_up",
     # snapshots
     "SnapshotRecord", "add_snapshot", "get_snapshot", "list_snapshots", "update_snapshot",
+    # takeoffs
+    "TAKEOFF_BRANCHES", "TAKEOFF_STATES", "TakeoffRecord", "add_takeoff", "get_takeoff",
+    "list_takeoffs",
 ]

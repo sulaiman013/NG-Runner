@@ -15,12 +15,15 @@ can say is "Nest checked", and until the toolkit is here it can't say even that.
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta
+from fractions import Fraction
+from typing import Any
 
 from ngrunner.cards import Card, CardSpec, Command
 from ngrunner.clock import fmt_clock, fmt_day, pacific_day
+from ngrunner.convert import rules as takeoff_rules
 from ngrunner.match import Opportunity
 from ngrunner.messages import Message
 from ngrunner.messages.lint import ABOUT_ITSELF, check_line, lint, redact, subject_line
@@ -558,6 +561,145 @@ def order_heads_up(job: str, *, sheets: Sequence[tuple[int, str]],
     items += [f"{job}: {_ended(flag)}" for flag in flags]
     kind = "Revised order heads-up" if revised else "Order heads-up"
     return Message("heads_up", f"{kind} · {job} · {basis}", _numbered(items))
+
+
+# ----- NG Runner's own takeoff (P3's takeoff on intake): its heads-up, and its lines elsewhere
+#
+# A bucket here is one entry of a stored takeoff's "buckets" (store/takeoffs.py): an IC colour
+# code, a built thickness, and numbers. A colour is named from rules.COLOUR_BRANDS, which mirrors
+# Jim's material_lookup: the brand when only one IC colour maps to it, else the brand and the IC
+# code, as NG Runner has no name for a Tafisa colour of its own. RULES makes a white room AMWH
+# when it holds anything 1in or thicker, and the takeoff can't tell rooms, so on such a job white
+# is named as both, never as one. Nothing else of a row is said.
+
+TAKEOFF_ESTIMATE = "takeoff estimate; the nest decides"     # guards/headsup.py's ESTIMATE too
+
+
+def takeoff_material(colour: str, *, thick_white: bool = False) -> str:
+    """Egger Classic White; Tafisa (IC AP) for a brand of many colours; IC colour ZZ for a code
+    the rules have no brand for. thick_white: the takeoff has a white part 1in or thicker."""
+    brand = takeoff_rules.COLOUR_BRANDS.get(colour)
+    if brand is None:
+        return f"IC colour {colour}"
+    if thick_white and colour == takeoff_rules.WHITE:
+        return f"AMWH or {brand} (IC {colour})"
+    many = sum(1 for other in takeoff_rules.COLOUR_BRANDS.values() if other == brand) > 1
+    return f"{brand} (IC {colour})" if many else brand
+
+
+def _thickness_words(inches: float) -> str:
+    """3/4, 1/4, 1\" or 1-1/8\": no mark on a plain fraction, as Jim's lines read."""
+    fraction = Fraction(inches).limit_denominator(16)
+    whole, rest = divmod(fraction, 1)
+    if not rest:
+        return f'{whole}"'
+    return f'{whole}-{rest}"' if whole else str(rest)
+
+
+def takeoff_lines(buckets: Iterable[Mapping[str, Any]]) -> tuple[str, ...]:
+    """A takeoff's lines as the board shows them: sheets by colour and thickness, then tape. A
+    bucket with no sheet count is left out, never guessed."""
+    buckets = list(buckets)
+    thick = thick_white(buckets)
+    sheets = [f"{_count(b['sheets_with_waste'], 'sheet')} {_bucket_words(b, thick)}"
+              for b in buckets if b.get("sheets_with_waste") is not None]
+    tape = [f"{_feet(b['tape_lf'])} of tape for {_bucket_words(b, thick)}" for b in buckets
+            if (b.get("tape_lf") or 0) > 0]
+    return (*sheets, *tape)
+
+
+def thick_white(buckets: Iterable[Mapping[str, Any]]) -> bool:
+    """Whether a takeoff holds a white part built 1in or thicker (RULES: that room is AMWH)."""
+    return any(b["colour"] == takeoff_rules.WHITE and b["thk_in"] >= takeoff_rules.ONE_INCH
+               for b in buckets)
+
+
+def could_not_verify_lines(count: int) -> str:
+    """How many lines of a takeoff could not be verified. Counted, never quoted: a row's text can
+    hold anything."""
+    return f"could not verify {_count(count, 'line')}"
+
+
+def takeoff_heads_up(job: str, *, buckets: Sequence[Mapping[str, Any]], flags: Sequence[str],
+                     waste_percent: int, revised: bool) -> Message:
+    """Barbara's and Will's heads-up from NG Runner's own complete takeoff, in the shape of P1b's
+    (guards/headsup.py) so they read one form whichever source made it. Every bucket must have its
+    sheet count: a takeoff that isn't complete goes out as takeoff_unverified, never as a list."""
+    if any(b.get("sheets_with_waste") is None for b in buckets):
+        raise ValueError("a bucket with no sheet count can't be listed: send takeoff_unverified")
+    title = f"{job}: {'revised ' if revised else ''}order heads-up {_ESTIMATE}"
+    first = (f"{'Revised t' if revised else 'T'}akeoff estimate; the nest decides. NG Runner's own"
+             f" takeoff of the IC summary, counted as sheets with {waste_percent}% waste.")
+    lines = takeoff_lines(buckets)
+    sheets = [line for line in lines if " of tape for " not in line]
+    items = [f"{job}: {', '.join(sheets)} {_ESTIMATE}."] if sheets else []
+    items += [f"{job}: {line} {_ESTIMATE}." for line in lines if " of tape for " in line]
+    items += [f"{job}: {_ended(flag)}" for flag in flags]
+    return Message("heads_up", title, (first, *_numbered(items)))
+
+
+def from_the_chats_takeoff(message: Message, *, could_not_verify: int | None = None) -> Message:
+    """A heads-up made from the chat's IC Conversion JSON (guards/headsup.py's), saying so on its
+    first line. could_not_verify: it went because NG Runner's own takeoff could not verify that
+    many lines (Sulaiman's ruling, 2026-10-31). The list itself is the chat's alone."""
+    source = "From the chat's takeoff"
+    if could_not_verify is not None:
+        source += (f", since NG Runner's own takeoff {could_not_verify_lines(could_not_verify)}")
+    first, *rest = message.lines
+    return replace(message, lines=(f"{_ended(first)} {source}.", *rest))
+
+
+# A filed job's line when its order heads-up is the chat's takeoff: the board says which source.
+CHATS_TAKEOFF = ("The order heads-up is the chat's takeoff, since NG Runner's own could not"
+                 " verify every line")
+
+
+def takeoff_unverified(job: str, *, lines: int, revised: bool) -> Message:
+    """What goes instead of a list when NG Runner's takeoff isn't complete: never a partial list,
+    and never a line's own text, only how many."""
+    title = f"{job}: {'revised ' if revised else ''}order heads-up: could not verify the takeoff"
+    return Message("heads_up", title, _numbered((
+        f"{job}: {could_not_verify_lines(lines)} of its takeoff, so no order list is sent. Check"
+        " the IC summary before ordering.",)))
+
+
+_IN_CHAT_BRANCH = {"garage": "a garage job", "mixed": "a closet and garage job",
+                   "unclear": "a job whose designs don't say closet or garage"}
+
+
+def takeoff_made_words(*, state: str, complete: bool = False, could_not_verify: int = 0,
+                       board_parts: int = 0, buckets: int = 0, tape_lf: float = 0.0,
+                       branch: str = "") -> str:
+    """The job's history line when its takeoff is made, or isn't."""
+    if state == "in_chat":
+        why = _IN_CHAT_BRANCH.get(branch, "not a closet")
+        return f"Its takeoff stays in chat: {why}, until BUILD's garage rule is ported."
+    if state != "made":
+        return ("NG Runner could not read the IC summary for its takeoff, so the chat's takeoff is"
+                " used.")
+    if not complete:
+        unverified = could_not_verify_lines(could_not_verify)
+        return (f"Made its takeoff from the IC summary, but {unverified}, so no order list goes"
+                " out from it.")
+    return (f"Made its takeoff from the IC summary: {_count(board_parts, 'board part')} in"
+            f" {_count(buckets, 'bucket')} and {_feet(tape_lf)} of tape {_ESTIMATE}.")
+
+
+def takeoff_digest(buckets: Sequence[Mapping[str, Any]], *, complete: bool,
+                   could_not_verify: int, chat: bool = False) -> str:
+    """The clause a filed job's digest line adds: its sheets and tape, or how many lines could
+    not be verified, and then whether the chat's takeoff went as the order heads-up instead."""
+    if not complete:
+        instead = ", so the order heads-up is the chat's takeoff" if chat else ""
+        return f"takeoff: {could_not_verify_lines(could_not_verify)}{instead}"
+    sheets = [line for line in takeoff_lines(buckets) if " of tape for " not in line]
+    tape = sum(b.get("tape_lf") or 0 for b in buckets)
+    return f"takeoff: {', '.join(sheets)} and {_feet(tape)} of tape {_ESTIMATE}"
+
+
+def _bucket_words(bucket: Mapping[str, Any], thick: bool) -> str:
+    material = takeoff_material(bucket["colour"], thick_white=thick)
+    return f"{_thickness_words(bucket['thk_in'])} {material}"
 
 
 def before_you_lock(job: str, *, items: Sequence[str]) -> Message:

@@ -504,6 +504,18 @@ def test_a_reader_that_cant_run_in_this_build_is_named_in_plain_words(tmp_path, 
                         " 'something_lazy')."]
 
 
+@pytest.mark.parametrize("reader, what", [("read_cutlist", "a cutlist"), ("read_design", "a room's design")])
+def test_the_design_matchs_readers_run_in_this_build(tmp_path, monkeypatch, reader, what):
+    import ngrunner.guards.design as design
+
+    def missing(*args, **kwargs):
+        raise ModuleNotFoundError("No module named 'something_lazy'")
+
+    monkeypatch.setattr(design, reader, missing)
+    problems = selftest.guard_reader_problems(tmp_path / "guards")
+    assert problems == [f"The guards can't read {what} in this build (No module named 'something_lazy')."]
+
+
 def test_the_self_test_runs_the_guards_readers(tmp_path, monkeypatch):
     monkeypatch.setattr(selftest, "guard_reader_problems", lambda work: ["The guards broke."])
     problems = selftest.run_self_test(AppPaths(tmp_path), modules=(), migrate=lambda path: None,

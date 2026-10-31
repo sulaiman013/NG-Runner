@@ -31,6 +31,9 @@ Commands:
                                        would: the build has no Python (toolkit.py starts this, in
                                        its Job Object). Its exit code is the script's own, and it
                                        prints nothing of its own, so all of the output is the script's
+    SCRIPT.py [ARGS...]                the same as run-tool (ruling R7): crosscheck.py starts each
+                                       checker as sys.executable <checker>.py, and in a build that is
+                                       NGRunner.exe
 
 Modules are imported inside each command, so a module that fails to load breaks only the
 commands that need it, and --self-test can still name it.
@@ -87,8 +90,11 @@ def main(
 ) -> int:
     say = _Say(out if out is not None else sys.stdout)
     environ = os.environ if environ is None else environ
+    argv = sys.argv[1:] if argv is None else argv
+    if argv and argv[0].casefold().endswith(".py"):     # ruling R7: python <script>.py, in a build
+        return _run_tool(argv[0], list(argv[1:]))
     try:
-        args = _parser().parse_args(sys.argv[1:] if argv is None else argv)
+        args = _parser().parse_args(argv)
         _check(args)
     except _UsageError as exc:
         say(str(exc))
@@ -265,6 +271,7 @@ def _run_tool(script: str, args: list[str]) -> int:
 
     sys.argv = [script, *args]
     sys.path.insert(0, str(Path(script).parent))
+    sys.dont_write_bytecode = True      # a build may read no PYTHONDONTWRITEBYTECODE: no .pyc in a copy
     try:
         runpy.run_path(script, run_name="__main__")
     except SystemExit as exc:

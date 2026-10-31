@@ -137,6 +137,38 @@ def test_a_room_that_cant_be_read_can_never_be_part_of_a_pass(tmp_path: Path) ->
     assert got.opt is not None and got.rooms == ()
 
 
+def _read_rooms(folder: Path, room1: bytes) -> tuple[tuple[str, str], ...]:
+    from helpers_opt import NESTED
+
+    folder.mkdir(parents=True)
+    nest = folder / f"{MATERIAL}.opt"
+    nest.write_bytes(NESTED)
+    (folder / "Room1.des").write_bytes(room1)
+    files = JobFiles(path=folder, opts={MATERIAL: NestListed(nest, ONE)}, rooms={"Room1.des": ONE})
+    return read_nest(files.opts[MATERIAL], files, said()["opts"][MATERIAL], NOW,
+                     read=lambda path: path.read_bytes()).rooms
+
+
+def test_a_room_is_known_by_its_design_so_a_resave_of_the_same_design_reads_the_same(tmp_path: Path) -> None:
+    # Measured on the 10 real jobs (2026-10-31): 20 of 30 rooms' .bak differ from their .des in bytes, and
+    # des_cutlist prints the same cutlist from every one. A pass rests on the design, not the file.
+    from helpers_design import part, product, room
+    from ngrunner.guards.design import room_identity
+
+    saved = room(product(3, part("Top", 356, 870)))
+    resaved = room(product(3, part("Top", 356, 870)), annotation='<AnnotationSet X="2" />', dirty="True")
+    changed = room(product(3, part("Top", 356, 871)))
+
+    first = _read_rooms(tmp_path / "a", saved)
+    assert first == (("Room1.des", room_identity("Room1.des", saved)),)
+    assert _read_rooms(tmp_path / "b", resaved) == first
+    assert _read_rooms(tmp_path / "c", changed) != first
+
+
+def test_a_room_that_isnt_a_mozaik_design_can_never_be_part_of_a_pass(tmp_path: Path) -> None:
+    assert _read_rooms(tmp_path / "a", b"<Room/>") == ()
+
+
 # ----- what is due
 
 

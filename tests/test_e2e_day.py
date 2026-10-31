@@ -26,6 +26,7 @@ from typing import Any
 import pytest
 
 from fakes import (
+    CLOSET_PARTS,
     EXPORT_KEY,
     GOOGLE,
     KEY,
@@ -54,8 +55,9 @@ from test_guards_headsup import takeoff_json
 from test_guards_labels import label_page, pdf
 from test_guards_tracker import write_snapshot
 from ngrunner import fab, heartbeat, jobmodel, single, toasts
-from ngrunner.clock import at_pacific, from_iso, to_iso
+from ngrunner.clock import PACIFIC, at_pacific, from_iso, to_iso
 from ngrunner.config import load_settings
+from ngrunner.intake import pipeline as intake_pipeline
 from ngrunner.intake.fetch import FetchTarget, Render, agree, fetch_render, report_urls
 from ngrunner.intake.summary_check import check_summary, content_fingerprint
 from ngrunner.joblist import JobListError, RenderClient
@@ -65,6 +67,7 @@ from ngrunner.messages.lint import lint
 from ngrunner.messages.outbox import outbox_file, read_receipt
 from ngrunner.signing import open_envelope
 from ngrunner.guards import headsup, watch
+from ngrunner.guards.design import room_identity
 from ngrunner.guards.facts import (
     BR_CAM_NEST, COULD_NOT_VERIFY, DESIGN_MATCHES, FAILED, PASSED, SHEET_SIZE, DesignMatch, ToolVerdict,
 )
@@ -76,7 +79,7 @@ from ngrunner.guards.scan import scan as guard_scan
 from ngrunner.store import (
     LATEST, MIGRATIONS, ProgramRecord, Store, add_card, add_snapshot, answer_card, ensure_job,
     get_heads_up, get_list_state, get_nest, get_outbox, get_program, get_state, list_clearances,
-    list_events, list_nests, list_owner_log, list_programs, migrate, set_state,
+    list_events, list_nests, list_owner_log, list_programs, list_takeoffs, migrate, set_state,
 )
 from ngrunner.tray import COLOURS, draw_icon
 
@@ -441,7 +444,7 @@ def test_scenario_02_a_bare_surname_row_is_filed_told_and_listed(make_world, tmp
     summary = (world.ng_jobs / "Testerson_101426" / "Testerson_101426_summary.pdf").read_bytes()
     assert check_summary(summary).project_name == "Testerson_101426"
     record = record_of(world, "Testerson_101426")
-    assert record["schema"] == 2 and record["job"] == "Testerson_101426"
+    assert record["schema"] == 3 and record["job"] == "Testerson_101426"
     assert record["branch"] == "closet" and record["items"] == []
     assert record["summary"]["file"] == "Testerson_101426_summary.pdf"
     assert record["summary"]["sha256"] == tree(world.ng_jobs)[
@@ -785,6 +788,7 @@ def test_scenario_10_changed_content_confirmed_twice_raises_the_card_and_refiles
     installed(world, TESTERSON)
     world.script.add_row("Testerson", "PE")
     world.run_until(is_filed(world, "Testerson_101426"), within=minutes(45))
+    world.run(minutes=2)                     # its takeoff, made and in its notes
     filed = tree(world.ng_jobs)
     summary_sha = filed["Testerson_101426/Testerson_101426_summary.pdf"]
     fetches_at_filing = world.studio.fetches("4242")
@@ -2318,7 +2322,7 @@ def test_scenario_55_a_takeoff_that_wont_read_is_one_dev_item_a_board_note_and_n
     assert world.board().jobs == ()
 
 
-# ----- <folder>_NGRunner.json, schema 2, and the pre-flight
+# ----- <folder>_NGRunner.json (schema 2 brought the nests and the pre-flight; 3 the takeoff)
 
 
 def test_scenario_56_a_filed_jobs_notes_carry_its_nests_and_pre_flight(make_world):
@@ -2332,7 +2336,7 @@ def test_scenario_56_a_filed_jobs_notes_carry_its_nests_and_pre_flight(make_worl
     world.run(minutes=16)
 
     record = record_of(world, "Testerson_101426")
-    assert record["schema"] == 2
+    assert record["schema"] == 3
     nest, = record["nests"]
     assert (nest["material"], nest["state"], nest["basis"], nest["programs"]) == (
         CLASSIC_FOLDER, "do_not_cut", "programs", ["TESS01.TAP"])
@@ -2466,7 +2470,16 @@ def _post_real(world: World, material: str, programs: list[tuple[dict[str, Any],
 # Jim's checks (Checks) is the only way any test here reaches a pass.
 
 
-ROOM = b"<Room/>"
+def room_file(*, width: int = 356, note: str = "") -> bytes:
+    """A room as Mozaik writes one (version line 15, then the XML). note: an annotation, which a
+    re-save of the same design may change (guards/design.py, room_identity)."""
+    return (b'15\r\n<?xml version="1.0" encoding="utf-8"?>\r\n<Room Quan="1" RoomNosDirty="False"><Products>'
+            b'<Product CabNo="1" Count="1"><CabProdPart Name="Top" Quan="1" W="%d" L="870" UsageType="0"'
+            b' Type="Top" /></Product></Products><Annotations>%s</Annotations></Room>'
+            % (width, note.encode("utf-8")))
+
+
+ROOM = room_file()
 SAVED_NEST = utf16(nest_text(sheets=(sheet(),), runs=("TESS01.TAP",)))
 NOT_SAVED = NOT_NESTED
 OPEN_MINUTES = 4                        # two polls and the two minutes a nest must stay unchanged
@@ -2848,7 +2861,7 @@ def test_scenario_66_every_check_passing_is_nest_checked_bound_to_its_files(make
     assert nest.state == "nest_checked" and nest.basis == "nest"
     assert nest.opt_sha256 == hashlib.sha256(SAVED_NEST).hexdigest()
     assert nest.manifest == {"TESS01.TAP": hashlib.sha256(CLEAN).hexdigest()}
-    assert nest.room_hashes == {"Room1.des": hashlib.sha256(ROOM).hexdigest()}
+    assert nest.room_hashes == {"Room1.des": room_identity("Room1.des", ROOM)}
     assert nest.checked_at is not None
     assert nest.reasons[0].startswith("Nest checked") and "TESS01" in nest.reasons[0]
     assert {t.key: t.state for t in world.board().jobs[0].ticks}["nest"] == "done"
@@ -2873,7 +2886,7 @@ def _not_checked_at_once(world: World) -> None:
                  id="the nest"),
     pytest.param(lambda w: post(w, GUARD_JOB, CLASSIC_FOLDER, "TESS01.TAP", program(mark=9)),
                  id="a program"),
-    pytest.param(lambda w: (job_folder(w) / "Room1.des").write_bytes(ROOM + b"changed"), id="a room"),
+    pytest.param(lambda w: (job_folder(w) / "Room1.des").write_bytes(room_file(width=357)), id="a room"),
     pytest.param(lambda w: (job_folder(w) / "Room2.des").write_bytes(ROOM), id="a room added"),
     pytest.param(lambda w: post(w, GUARD_JOB, CLASSIC_FOLDER, "TESS02.TAP", program(mark=8)),
                  id="a program added"),
@@ -2989,6 +3002,25 @@ def test_scenario_67d_the_same_bytes_saved_again_stand_as_they_were_and_tell_nob
 
     assert nest_of(world).checked_at == at
     assert len(checks.ran_on) == 1              # no new run: the hashes are what the pass names
+    assert len(world.outbox(to="george")) == told
+
+
+def test_scenario_67j_a_room_saved_again_with_the_same_design_keeps_its_pass_and_tells_nobody(
+        make_world, checks):
+    # Measured on the 30 real .des/.bak pairs: 20 differ in bytes from a re-save, and not one in its
+    # cutlist. A pass rests on the design (design.room_identity), so Mozaik saving on close drops nothing.
+    world = make_world()
+    passed(world, checks)
+    told, at = len(world.outbox(to="george")), nest_of(world).checked_at
+    resaved = room_file(note='<AnnotationSet X="2" />')
+    assert resaved != ROOM
+    (job_folder(world) / "Room1.des").write_bytes(resaved)
+
+    _not_checked_at_once(world)                 # moving, so no pass stands for a moment
+    world.run_until(nest_is(world, "nest_checked"), within=minutes(OPEN_MINUTES))
+
+    assert nest_of(world).checked_at == at
+    assert len(checks.ran_on) == 1
     assert len(world.outbox(to="george")) == told
 
 
@@ -3297,3 +3329,208 @@ def test_real_merged_program_of_several_sheets_says_its_holes_were_not_compared(
 
     assert "outside 1 merged program" in nest_of(world).reasons[0]
     assert to_george(world) == []
+
+
+# ----- the takeoff on intake (P3): NG Runner's takeoff of what it files, and the heads-up from it
+
+
+GARAGE_FOLDER = f"{GUARD_JOB}_Gar"
+UNPLACED_PARTS = (*CLOSET_PARTS, ("CK", 2, "CK DBack 3.6x22.2x0.6 NN WH"))
+MORE_SHELVES = (("VT-WH", 2, "VT 14x84x3/4 FD WH"), ("SH-WH", 10, "SH 14x24x3/4 FIX WH"),
+                ("400000155", 8, "Shelf Pin"))
+
+
+def filed_aside(world: World, folder: str = GUARD_JOB) -> Path:
+    return world.control / "shadow" / folder
+
+
+def at_or_after_six(when: datetime) -> bool:
+    """Sent in the day: quiet hours end at 6 AM Pacific."""
+    return 6 <= when.astimezone(PACIFIC).hour < 22
+
+
+def takeoffs_of(world: World, studio_id: str = "4242") -> list[Any]:
+    return list_takeoffs(world.store, studio_id)
+
+
+def text_of(message: Any) -> str:
+    return "\n".join((message.subject, *message.lines))
+
+
+def test_scenario_70_a_closet_filed_aside_gets_its_takeoff_and_sulaiman_one_heads_up_from_it(
+        make_world):
+    world = make_world(mode="shadow")
+    installed(world, TESTERSON)
+    world.script.add_row("Testerson", "PE")
+    aside = filed_aside(world)
+    world.run_until(lambda: (aside / f"{GUARD_JOB}_summary.pdf").exists(), within=minutes(45))
+    world.run(minutes=3)
+
+    record, = takeoffs_of(world)
+    assert (record.state, record.complete, record.could_not_verify) == ("made", True, 0)
+    told = heads_ups(world, "sulaiman")
+    assert len(told) == 1 and told[0].subject == (
+        f"SHADOW {GUARD_JOB}: order heads-up (takeoff estimate; the nest decides)")
+    assert f"1. {GUARD_JOB}: 2 sheets 3/4 Egger Classic White (takeoff estimate; the nest" \
+           " decides)." in told[0].lines
+    assert world.outbox(to="barbara") == [] and world.outbox(to="will") == []
+    notes = json.loads((aside / f"{GUARD_JOB}_NGRunner.json").read_text(encoding="utf-8"))
+    assert notes["schema"] == 3 and notes["takeoff"]["state"] == "made"
+    assert notes["takeoff"]["summary_sha256"] == notes["summary"]["sha256"]
+    row = world.board_row(GUARD_JOB)
+    assert row.takeoff.state == "made" and row.takeoff.label == headsup.ESTIMATE
+    assert "2 sheets 3/4 Egger Classic White" in row.takeoff.lines
+
+    # The chat's JSON, arriving later in NG Jobs, sends nothing: NG Runner's takeoff is the source.
+    post_takeoff(world, GUARD_JOB, takeoff_json(estimate={"total": 30000.0}))
+    world.run(minutes=3)
+    assert len(heads_ups(world, "sulaiman")) == 1
+
+    # Nor do a restart and the night's re-fetch of the same content.
+    world.restart()
+    world.run_to(pacific_at(10, 28, 2, 30), step=600)
+    assert len(heads_ups(world, "sulaiman")) == 1 and len(takeoffs_of(world)) == 1
+    assert guards_dev(world) == set()
+
+
+def test_scenario_70b_live_and_turned_on_barbara_and_will_get_it_and_jims_digest_says_it(
+        make_world):
+    world = make_world(order_flags_on=True)
+    installed(world, TESTERSON)
+    world.script.add_row("Testerson", "PE")
+    world.run_until(is_filed(world, GUARD_JOB), within=minutes(45))
+    world.run(minutes=3)
+
+    assert [len(heads_ups(world, who)) for who in ("barbara", "will")] == [1, 1]
+    assert all("NG Runner's own takeoff of the IC summary" in text_of(m) for m in heads_ups(world))
+    assert to_george(world) == [] and heads_ups(world, "jim") == []
+    assert record_of(world, GUARD_JOB)["takeoff"]["board_parts"] == 8
+
+    world.run_to(pacific_at(10, 28, 6, 25), step=3600)
+    world.run_to(pacific_at(10, 28, 6, 32))
+    digest, = [m for m in world.outbox(to="jim") if m.ref == "digest:2026-10-28"]
+    line, = [line for line in digest.lines if GUARD_JOB in line]
+    assert ("takeoff: 2 sheets 3/4 Egger Classic White and 26 feet of tape (takeoff estimate;"
+            " the nest decides)") in line
+    assert lint(Message("digest", digest.subject, digest.lines)) == []
+
+
+def test_scenario_71_lines_the_rules_dont_place_send_could_not_verify_then_the_chats_list(
+        make_world):
+    world = make_world(mode="shadow")
+    installed(world, TESTERSON)
+    world.studio.jobs["4242"].parts = UNPLACED_PARTS
+    world.script.add_row("Testerson", "PE")
+    world.run_until(lambda: (filed_aside(world) / f"{GUARD_JOB}_summary.pdf").exists(),
+                    within=minutes(45))
+    world.run(minutes=3)
+
+    record, = takeoffs_of(world)
+    assert (record.state, record.complete, record.could_not_verify) == ("made", False, 1)
+    told, = heads_ups(world, "sulaiman")
+    assert "could not verify the takeoff" in told.subject
+    assert "could not verify 1 line" in text_of(told)
+    assert "sheet" not in text_of(told) and "CK" not in text_of(told)
+    row = world.board_row(GUARD_JOB)
+    assert row.takeoff.state == "unverified" and row.takeoff.lines == ()
+    assert "could not verify 1 line" in row.notes
+
+    # The chat's JSON, once it arrives and reads, is the fallback: its whole list, revised, and
+    # saying it is the chat's (Sulaiman's ruling, 2026-10-31). Never a mix of the two.
+    post_takeoff(world, GUARD_JOB, takeoff_json())
+    world.run(minutes=3)
+    first, revised = heads_ups(world, "sulaiman")
+    assert "revised" in revised.subject and "could not verify" not in revised.subject
+    assert "From the chat's takeoff, since NG Runner's own takeoff could not verify 1 line." in (
+        revised.lines[0])
+    assert "12 sheets" in text_of(revised) and "Testerson Lane" not in text_of(revised)
+    row = world.board_row(GUARD_JOB)
+    assert row.takeoff.state == "chat" and "could not verify 1 line" in row.notes
+    world.run(minutes=5)
+    assert len(heads_ups(world, "sulaiman")) == 2
+
+
+def test_scenario_72_a_garage_stays_in_chat_and_the_chats_json_is_its_heads_up(make_world):
+    world = make_world(mode="shadow")
+    installed(world, TESTERSON)
+    world.studio.jobs["4242"].designs = GARAGE_ONLY
+    world.script.add_row(GUARD_JOB, "PE")
+    world.run_until(lambda: (filed_aside(world, GARAGE_FOLDER)
+                             / f"{GARAGE_FOLDER}_summary.pdf").exists(), within=minutes(45))
+    world.run(minutes=3)
+
+    record, = takeoffs_of(world)
+    assert (record.state, record.branch, record.result) == ("in_chat", "garage", None)
+    assert heads_ups(world) == []
+    row = world.board_row(GUARD_JOB)
+    assert row.takeoff.state == "in_chat" and "stays in chat" in row.takeoff.lines[0]
+    notes = json.loads((filed_aside(world, GARAGE_FOLDER) / f"{GARAGE_FOLDER}_NGRunner.json")
+                       .read_text(encoding="utf-8"))
+    assert notes["takeoff"]["state"] == "in_chat" and "buckets" not in notes["takeoff"]
+
+    post_takeoff(world, GARAGE_FOLDER, takeoff_json())
+    world.run(minutes=3)
+    told, = heads_ups(world, "sulaiman")
+    assert told.subject.startswith(f"SHADOW {GARAGE_FOLDER}: order heads-up")
+    assert "NG Runner's own" not in text_of(told) and "Testerson Lane" not in text_of(told)
+
+
+def test_scenario_73_a_changed_summary_jim_files_gets_a_new_takeoff_and_a_revised_heads_up(
+        make_world):
+    world = make_world(order_flags_on=True)
+    installed(world, TESTERSON)
+    world.script.add_row("Testerson", "PE")
+    world.run_until(is_filed(world, GUARD_JOB), within=minutes(45))
+    world.run(minutes=3)
+    assert len(heads_ups(world, "barbara")) == 1
+
+    world.studio.jobs["4242"].parts = MORE_SHELVES
+    world.run_to(pacific_at(10, 28, 1, 15), step=3600)
+    world.run_until(lambda: world.cards("ic_changed"), within=hours(24), step=300)
+    card, = world.cards("ic_changed")
+    world.actions.answer(card.id, "File the new one")
+    world.run_until(lambda: len(takeoffs_of(world)) == 2, within=minutes(10))
+    # Made in the night, it waits out quiet hours, as Barbara's and Will's email does (P1b).
+    world.run_until(lambda: len(heads_ups(world, "will")) == 2, within=hours(12), step=600)
+    assert all(at_or_after_six(m.created_at) for m in heads_ups(world))
+
+    first, second = takeoffs_of(world)
+    assert (first.result["board_parts"], second.result["board_parts"]) == (8, 12)
+    assert second.render_sha256 == tree(world.ng_jobs)[f"{GUARD_JOB}/{GUARD_JOB}_summary.pdf"]
+    for who in ("barbara", "will"):
+        told = heads_ups(world, who)
+        assert len(told) == 2 and "revised" in told[1].subject and "revised" not in told[0].subject
+        assert "2 sheets 3/4 Egger Classic White" in text_of(told[1])
+    assert record_of(world, GUARD_JOB)["takeoff"]["board_parts"] == 12
+
+
+def test_scenario_74_a_converter_that_crashes_stops_no_filing_and_the_chats_takeoff_is_used(
+        make_world, monkeypatch):
+    world = make_world(order_flags_on=True)
+    installed(world, TESTERSON)
+
+    def crash(data: bytes, *, branch: str) -> Any:
+        raise RuntimeError("the converter fell over at C:\\some\\path")
+
+    monkeypatch.setattr(intake_pipeline, "convert", crash)
+    world.script.add_row("Testerson", "PE")
+    world.run_until(is_filed(world, GUARD_JOB), within=minutes(45))
+    world.run(minutes=3)
+
+    assert_one_commit(world, GUARD_JOB)
+    assert len(world.outbox(to="barbara", subject=f"Filed as {GUARD_JOB}")) == 1
+    record, = takeoffs_of(world)
+    assert record.state == "failed"
+    assert guards_dev(world) == {"takeoff_failed"}
+    assert "path" not in " ".join(d.text for d in world.dev())
+    assert heads_ups(world) == []
+    assert world.board_row(GUARD_JOB).takeoff.state == "failed"
+
+    post_takeoff(world, GUARD_JOB, takeoff_json())
+    world.run(minutes=3)
+    assert [len(heads_ups(world, who)) for who in ("barbara", "will")] == [1, 1]
+    assert all("NG Runner's own" not in text_of(m) for m in heads_ups(world))
+
+    # Two days on, it is still Sulaiman's alone: the night never tells Jim the job is stuck.
+    world.run(minutes=50 * 60, step=3600)
+    assert not any(e.kind == "dev_told_jim" for e in world.events())

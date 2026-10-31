@@ -27,6 +27,7 @@ Lane = Literal["ACT", "LOG", "DEV"]
 OVERLAYS = ("WAITING", "BLOCKED", "NOT_RUN", "HELD", "OBSERVED", "PAUSED")
 SHADOW = "SHADOW"  # what the board and the tray say in shadow mode (integration spec 7)
 NEST_STATES = ("not_posted", "not_checked", "save_nest", "do_not_cut", "nest_checked")
+TAKEOFF_STATES = ("made", "chat", "unverified", "in_chat", "failed")
 
 
 def _one_of(value: object, allowed: Sequence[object], what: str) -> None:
@@ -75,13 +76,30 @@ class MaterialRow:
 
 
 @dataclass(frozen=True)
+class TakeoffView:
+    """NG Runner's takeoff of a filed job, on its line. state: "made" (complete: lines are its
+    sheets by colour and thickness, then its tape, and label the words every list carries),
+    "chat" (lines it could not verify, and the chat's takeoff went as the order heads-up instead),
+    "unverified" (lines it could not verify, which its row's notes count: no list), "in_chat" (a
+    garage or mixed job) or "failed" (the chat's takeoff is used), each with its one line."""
+
+    state: str
+    lines: tuple[str, ...] = ()
+    label: str = ""
+
+    def __post_init__(self) -> None:
+        _one_of(self.state, TAKEOFF_STATES, "a takeoff's state")
+
+
+@dataclass(frozen=True)
 class JobRow:
     """One row per job, and one for a Fab row with no job yet: its studio_id is None and its
     name is the row as Barbara typed it. A folder in NG Jobs with no Fab row gets one too, once the
     guard has something to say about it. install: a date, the text to show when it isn't one
     (the job model's words, such as "could not verify"), or None when the Fab row has no
     install date. materials: the nest guard's lines. notes: anything else a guard can't verify. lock:
-    what the pre-flight would have him look at before he locks."""
+    what the pre-flight would have him look at before he locks. takeoff: NG Runner's takeoff of
+    the summary it filed, once it has one."""
 
     studio_id: str | None
     name: str
@@ -92,6 +110,7 @@ class JobRow:
     materials: tuple[MaterialRow, ...] = ()
     notes: tuple[str, ...] = ()
     lock: tuple[str, ...] = ()
+    takeoff: TakeoffView | None = None
 
     def __post_init__(self) -> None:
         if self.overlay is not None:

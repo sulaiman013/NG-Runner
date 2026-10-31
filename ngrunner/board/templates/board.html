@@ -54,6 +54,13 @@
           {% endfor %}
           </ul>
           {% endif %}
+          {% if job.takeoff %}
+          <div class="takeoff">
+            {{ m.tag(takeoff_style(job.takeoff.state)) }}
+            {% if job.takeoff.label %}<span class="takeoff-label">{{ job.takeoff.label }}</span>{% endif %}
+            {% if job.takeoff.lines %}<ul class="takeoff-lines">{% for line in job.takeoff.lines %}<li>{{ line }}</li>{% endfor %}</ul>{% endif %}
+          </div>
+          {% endif %}
         </td>
         <td class="next" data-label="Next step">
           {{ job.next_step }}

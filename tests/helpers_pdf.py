@@ -8,6 +8,10 @@ coordinates were read off real renders): page 1's PROJECT NAME and design list, 
 WALL/AREA page and one elevation drawing, a PULLED list, and "Page k of N" on every page. It
 also makes the early renders Studio hands back before it has finished: every design listed on
 page 1, only the first few drawn.
+
+Given parts, the PULLED page lists those rows instead, and ends every cell's line as Studio's own
+renders do (T* after each Tj), so pypdf reads one cell per line, as on a real render, and the
+shared converter (ngrunner/convert) can read the list. The default page is left as it always was.
 """
 from __future__ import annotations
 
@@ -25,6 +29,7 @@ class _Page:
     height: float
     texts: list[tuple[float, float, float, str]] = field(default_factory=list)  # x, y, size, text
     pictures: list[tuple[str, float, float, float, float]] = field(default_factory=list)  # name, x, y, w, h
+    ends_lines: bool = False  # each text ends its line (T*), as on Studio's renders
 
     def text(self, x: float, y: float, size: float, text: str) -> None:
         self.texts.append((x, y, size, text))
@@ -50,7 +55,9 @@ def _write_pdf(pages: Sequence[_Page], info: dict[str, str]) -> bytes:
     pictures: dict[str, int] = {}
     kids: list[int] = []
     for page in pages:
-        ops = [f"BT /F1 {size:g} Tf 1 0 0 1 {x:g} {y:g} Tm ({_escaped(t)}) Tj ET"
+        ends = " T*" if page.ends_lines else ""
+        leading = f" {_leading(page)} TL" if page.ends_lines else ""
+        ops = [f"BT /F1 {size:g} Tf{leading} 1 0 0 1 {x:g} {y:g} Tm ({_escaped(t)}) Tj{ends} ET"
                for x, y, size, t in page.texts]
         for name, x, y, w, h in page.pictures:
             if name not in pictures:  # 2 x 2 grey pixels
@@ -119,7 +126,8 @@ _LAYOUTS = {
 
 def summary_pdf(*, project_name: str | None = "Testerson_101426", layout: str = "landscape",
                 designs: Sequence[tuple[str, str]] = DEFAULT_DESIGNS, finished: int | None = None,
-                created: str = "D:20261014120000-07'00'") -> bytes:
+                created: str = "D:20261014120000-07'00'",
+                parts: Sequence[tuple[str, int, str]] | None = None) -> bytes:
     """
     An IC summary for made-up job `project_name`, in `layout` ("landscape" or "portrait").
 
@@ -127,7 +135,8 @@ def summary_pdf(*, project_name: str | None = "Testerson_101426", layout: str = 
     first, have their pages yet (None: all), so an early render lists every design while only the
     first few are drawn. project_name None leaves the PROJECT NAME label off page 1; "" prints the
     label with nothing beside it. created is the PDF's CreationDate: renders that differ only in
-    it hold the same text in different bytes.
+    it hold the same text in different bytes. parts: the PULLED list's rows as (item, quantity,
+    description), printed as Studio prints them (see the module notes); None keeps the old page.
     """
     g = _LAYOUTS[layout]
     w, h = g.size
@@ -164,7 +173,9 @@ def summary_pdf(*, project_name: str | None = "Testerson_101426", layout: str = 
     pulled = new_page()
     for word, x in g.pulled_header:
         pulled.text(x, g.pulled_y, 10, word)
-    for i in range(3):
+    if parts is not None:
+        _studio_rows(pulled, g, layout, parts)
+    for i in range(0 if parts is not None else 3):
         qty_x, item_x, desc_x = g.pulled_cells[i % len(g.pulled_cells)]
         row_y = g.pulled_y - 36 - 18 * (i // len(g.pulled_cells))
         pulled.text(item_x, row_y, 10, "SH-WH")
@@ -176,3 +187,26 @@ def summary_pdf(*, project_name: str | None = "Testerson_101426", layout: str = 
     title = project_name or "Untitled"
     return _write_pdf(pages, {"Producer": "test", "Title": f"{title} Install Summary",
                               "CreationDate": created, "ModDate": created})
+
+
+def _leading(page: _Page) -> float:
+    """The line height T* moves by: 1.2 times the page's largest text, as Studio's own pages set."""
+    return max((size for _, _, size, _ in page.texts), default=10) * 1.2
+
+
+def _studio_rows(page: _Page, g: _Geometry, layout: str,
+                 parts: Sequence[tuple[str, int, str]]) -> None:
+    """The rows as Studio draws them: row by row, the left list's row before the right's, each
+    cell in its reading order (quantity first in the landscape layout, item first in the portrait
+    one), and every line ended, so pypdf reads one cell per line."""
+    page.ends_lines = True
+    lists = len(g.pulled_cells)
+    if len(parts) > 25 * lists:
+        raise ValueError("more parts than one PULLED page holds")
+    for i, (item, qty, description) in enumerate(parts):
+        qty_x, item_x, desc_x = g.pulled_cells[i % lists]
+        row_y = g.pulled_y - 36 - 18 * (i // lists)
+        cells = ((qty_x, str(qty)), (item_x, item)) if layout == "landscape" else (
+            (item_x, item), (qty_x, str(qty)))
+        for x, text in (*cells, (desc_x, description)):
+            page.text(x, row_y, 10, text)

@@ -183,7 +183,9 @@ SHIPPED = {
     1: "f325fd0fa849d8ec5fbfc3de1d0fc1b196d6490ee46aa509240fb8722bb5bb5f",
     2: "05b016f42d28a460810997b6bce62d62322762831b670cfd43684aa06a988167",
     3: "ea9d620982fd9c3b7b961d1cae07bed9f8b1b0866f8adfcfc0b334f0a8ff0e78",
+    4: "8e00178507be9ec2e723c5a6b1b8617390023606021199ed6c80a5b4339d6ea3",   # the guards'
 }
+TAKEOFF_TABLES = {"takeoffs"}   # version 5 (tests/test_store_takeoffs.py)
 FOLDER, MATERIAL, PROGRAM = "Testerson_101426", "3-4 Classic White", "TESS01.TAP"
 SHA = "a" * 64
 
@@ -240,9 +242,9 @@ def test_a_database_from_before_the_guards_upgrades_with_every_row_intact(db_pat
 
     after = every_row(db_path)
     assert store.schema_version() == LATEST
-    assert set(after) - set(before) == GUARD_TABLES
+    assert set(after) - set(before) == GUARD_TABLES | TAKEOFF_TABLES
     assert {table: after[table] for table in before} == before     # nothing old changed at all
-    assert all(after[table] == [] for table in GUARD_TABLES)       # and the new ones start empty
+    assert all(after[table] == [] for table in GUARD_TABLES | TAKEOFF_TABLES)   # new ones empty
 
 
 @pytest.mark.parametrize("version", [2, 3])

@@ -35,6 +35,13 @@ difference never files: one card, and a look every 30 minutes, until they agree 
 out of reach, or a login that is missing or refused, still files, since a login problem must not
 stop all filing, and what was filed says "designs not cross-checked". A filed summary is "checked",
 never "complete".
+
+Every summary NG Runner files gets its takeoff (P3's "takeoff on intake"): the shared converter
+(ngrunner/convert) reads the filed bytes off the tick's thread, as a fetch runs, and the result is
+kept in the store's takeoffs table, with the job's notes rewritten to carry it. The takeoff comes
+after the filing and apart from it, so a converter that fails or hangs costs only the takeoff, and
+the chat's takeoff is used as before. A garage or mixed job stays in chat (ruling R4).
+guards/takeoffs.py sends the order heads-up from it.
 """
 from __future__ import annotations
 
@@ -53,6 +60,10 @@ from typing import Any, Protocol
 from ngrunner.cards import Command, card_prefix, parse_command
 from ngrunner.clock import Clock, fmt_clock, fmt_date, from_iso, next_at, pacific_day, to_iso
 from ngrunner.config import LAYOUTS, AppPaths, Settings
+from ngrunner.convert import convert, takeoff_branch
+from ngrunner.convert import rules as takeoff_rules
+from ngrunner.convert.summary_lines import SummaryUnreadable
+from ngrunner.convert.takeoff import Takeoff
 from ngrunner.fab import ExportRow, RowChange, diff, install_date, read_edits, read_export
 from ngrunner.guards.kept import (
     ask_for_redo, forget_question, note_declined, question_of, saved_preflights,
@@ -83,6 +94,7 @@ from ngrunner.match import (
 from ngrunner.messages import Message, templates
 from ngrunner.signing import EnvelopeError, key_from_text
 from ngrunner.store import (
+    KEEP,
     CardRecord,
     Db,
     FabRowRecord,
@@ -92,6 +104,7 @@ from ngrunner.store import (
     PendingRecord,
     RenderRecord,
     Store,
+    TakeoffRecord,
     Transaction,
     accept_envelope,
     add_alias,
@@ -100,6 +113,7 @@ from ngrunner.store import (
     add_fab_row,
     add_pending,
     add_render,
+    add_takeoff,
     clear_state,
     close_dev,
     ensure_job,
@@ -124,6 +138,7 @@ from ngrunner.store import (
     list_outbox,
     list_pending,
     list_renders,
+    list_takeoffs,
     log_event,
     open_dev,
     owned_sha,
@@ -150,6 +165,7 @@ LIST_REMATCH = "list_rematch"  # a matched or filed row's text changed: match ag
 FETCH_1, FETCH_2 = "fetch_1", "fetch_2"
 REFETCH, REFETCH_2 = "refetch", "refetch_2"   # the nightly re-fetch of a filed job, and its check
 FILE, FILE_NEW = "file", "file_new"           # with a note: refused, so the job is BLOCKED
+TAKEOFF = "takeoff"            # a filed summary waits for its takeoff (note: the summary's sha)
 TELL_WHICH_JOB, TELL_FILED = "tell_which_job", "tell_filed"
 _TELL = "tell_"
 _FETCHES = frozenset({FETCH_1, FETCH_2, REFETCH, REFETCH_2})
@@ -190,6 +206,8 @@ CLOSED_BY_FILING = ("too_big", "layouts_differ", "same_bytes", "wrong_job", "fil
                     FETCH_STUCK, SAME_FOLDER)
 
 TRIAL_ONLY_EVENT = "trial_only"   # filed only aside in the trial run: not in NG Jobs, and said so
+TAKEOFF_EVENT = "takeoff"         # a filed summary's takeoff was made, or stays in chat, or failed
+TAKEOFF_FAILED = "takeoff_failed"   # DEV: no takeoff could be made, so the chat's is used
 _GO_LIVE = "mode.go_live"          # the switch to live was made: go_live
 _TRIAL_ONLY = "Filed in the trial run only, so it is not in NG Jobs. It is being filed for real."
 _LEFT_ASIDE = ("Filed in the trial run only, so it is not in NG Jobs, and its row has left the"
@@ -218,6 +236,8 @@ _NIGHT = time(1, 30)
 _REFETCH_FOR = timedelta(days=30)
 _WATCH_EVERY = timedelta(minutes=10)
 _CONFIRM_TRIES = 6                      # a nightly confirmation gives up until the next night
+_TAKEOFF_AGAIN = timedelta(minutes=5)   # a takeoff not taken by then is made again
+_TAKEOFF_TRIES = 6                      # then, with no filed bytes to read, it has failed
 _HELD_AT_LEAST = 5                      # hold an export when more than this many rows, or
 _HELD_SHARE = 0.10                      # this share of them, are gone or new
 
@@ -236,6 +256,11 @@ _FETCH_OVERRAN = "A fetch ran for over 15 minutes, so NG Runner gave up on it an
 _UNTRIED = "NG Runner has not been able to start fetching it"
 _SAME_FOLDER = "Another sale with this name is filed in this folder, so nothing was written"
 _ALREADY_THERE = "The new IC summary is already in its NG Jobs folder, so nothing was written."
+_TAKEOFF_SUPERSEDED = "Another summary was filed before this one's takeoff was made"
+_TAKEOFF_GONE = "the filed summary could not be read"
+_TAKEOFF_UNREAD = "its parts list could not be read"
+_TAKEOFF_ERROR = "the converter stopped with an error, which is in NG Runner's log"
+_TAKEOFF_HUNG = "it ran for over 15 minutes"
 
 
 # ----- running fetches off the tick's thread
@@ -373,6 +398,8 @@ class Ctx:
     studio          intake.studio_designs.StudioSite, or None when no Studio login is set up: a
                     board item, never a crash. Jobs still file, marked "designs not cross-checked".
     guard_reads     where the guards read NG Jobs (guards/watch.py): off this thread, one at a time.
+    converts        where a filed summary's takeoff is made: off this thread, one at a time, unless
+                    the fetches run inline, as in tests, when it runs inline too.
     """
 
     store: Store
@@ -391,6 +418,12 @@ class Ctx:
     failed_steps: set[str] = field(default_factory=set)   # this tick's, so only a clean pass closes
     guard_reads: FetchRunner = field(
         default_factory=lambda: BackgroundFetches(1, name="ngrunner-guards"))
+    converts: FetchRunner | None = None
+
+    def __post_init__(self) -> None:
+        if self.converts is None:
+            self.converts = (InlineFetches() if isinstance(self.fetches, InlineFetches)
+                             else BackgroundFetches(1, name="ngrunner-takeoff"))
 
     def commit(self, writes: list[FileWrite]) -> CommitResult:
         """The one way the pipeline writes: commit_recorded, with the P1a interlock."""
@@ -402,6 +435,8 @@ def stop_work(ctx: Ctx) -> None:
     """No new fetch starts. One under way dies with the process, and its pending row stays due."""
     ctx.fetches.stop()
     ctx.guard_reads.stop()
+    if ctx.converts is not None:
+        ctx.converts.stop()
 
 
 def _stopping(ctx: Ctx) -> bool:
@@ -2356,6 +2391,7 @@ def _mark_filed(tx: Transaction, job: JobRecord, facts: dict[str, Any], now: dat
     update_job(tx, sid, now=now, folder=facts["folder"], branch=facts["branch"])
     frozen = freeze_name(tx, sid, now=now)
     set_state(tx, _filed_key(sid), json.dumps(facts))
+    _queue_takeoff(tx, job, facts, now)
     clear_state(tx, _ready_key(sid))
     clear_state(tx, _first_key(sid))
     clear_state(tx, _ic_key(sid))
@@ -2467,6 +2503,7 @@ def _file_new_one(ctx: Ctx, op: PendingRecord, now: datetime) -> None:
             _mark_filed(tx, job, facts, now, no_write=False)
         else:
             set_state(tx, _filed_key(sid), json.dumps(facts))
+            _queue_takeoff(tx, job, facts, now)
             log_event(tx, at=now, kind="refiled", lane="ACT", studio_id=sid,
                       text="Filed the new IC summary, as Jim chose.")
 
@@ -2511,6 +2548,7 @@ def _new_one_is_there(ctx: Ctx, op: PendingRecord, job: JobRecord, render: Rende
             _mark_filed(tx, job, facts, now, no_write=True)
         else:
             set_state(tx, _filed_key(sid), json.dumps(facts))
+            _queue_takeoff(tx, job, facts, now)
             log_event(tx, at=now, kind="refiled", lane="ACT", studio_id=sid, text=_ALREADY_THERE)
 
 
@@ -2564,6 +2602,200 @@ def _ic_card_again(db: Db, job: JobRecord, question: dict[str, Any], now: dateti
                                      changed=question.get("changed", ""))
 
 
+# ----- the takeoff on intake: each filed summary's takeoff, off the tick's thread
+
+
+@dataclass(frozen=True)
+class _Converted:
+    """A takeoff made off the tick's thread, for the next tick. state: "made" (takeoff holds it),
+    "in_chat" (a garage, mixed or unclear job), "failed" (reason: fixed words, never the error's
+    text, which can quote a path or a row) or "gone" (the filed bytes couldn't be read)."""
+
+    op_id: int
+    studio_id: str
+    sha256: str
+    state: str
+    branch: str = ""
+    takeoff: Takeoff | None = None
+    reason: str = ""
+
+
+def _queue_takeoff(tx: Transaction, job: JobRecord, facts: dict[str, Any], now: datetime) -> None:
+    """The summary just filed gets its takeoff, in the transaction that files it, so a crash can't
+    lose it. One at a time per job: a newer filing takes the place of one not made yet. A job found
+    at install, or in NG Jobs' Old folder, is worked in chat as before, so it gets none."""
+    for op in list_pending(tx, kind=TAKEOFF, studio_id=job.studio_id):
+        finish_pending(tx, op.id, "done", note=_TAKEOFF_SUPERSEDED)
+    if job.mode == "observed" or facts.get("where") == "old" or not facts.get("sha256"):
+        return
+    add_pending(tx, TAKEOFF, due_at=now, studio_id=job.studio_id, note=facts["sha256"])
+
+
+def _start_takeoffs(ctx: Ctx) -> None:
+    """Start what is due, one at a time. Each is put off a few minutes first, so a takeoff whose
+    result can't be taken is not made again every minute, and one whose bytes can't be read now
+    is tried again; past its tries it has failed, and the chat's takeoff is used."""
+    now, store, runner = ctx.clock.now(), ctx.store, ctx.converts
+    assert runner is not None    # Ctx.__post_init__ sets it
+    busy = runner.busy()
+    due = [op for op in list_pending(store, kind=TAKEOFF) if op.due_at <= now and op.id not in busy]
+
+    def one(op: PendingRecord) -> None:
+        if runner.free() <= 0:
+            return
+        job = None if op.studio_id is None else get_job(store, op.studio_id)
+        facts = None if job is None else filed_facts(store, job.studio_id)
+        if job is None or facts is None or facts.get("sha256") != op.note:
+            finish_pending(store, op.id, "done", note=_TAKEOFF_SUPERSEDED)
+            return
+        if op.attempts >= _TAKEOFF_TRIES:
+            _after_takeoff(ctx, _Converted(op.id, job.studio_id, op.note or "", "failed",
+                                           reason=_TAKEOFF_GONE))
+            return
+        sources = _filed_sources(ctx, job.studio_id, facts)
+        retry_pending(store, op.id, due_at=now + _TAKEOFF_AGAIN, note=KEEP)
+        runner.start(op.id, lambda: _make_takeoff(op.id, job.studio_id, job.branch,
+                                                  facts["sha256"], sources))
+
+    _each(ctx, "start_takeoffs", due, one)
+
+
+def _filed_sources(ctx: Ctx, studio_id: str, facts: dict[str, Any]) -> tuple[Path, ...]:
+    """Where the filed bytes are: the render cache first, which is local, then the filed file."""
+    cached = [r.cache_path for r in reversed(list_renders(ctx.store, studio_id))
+              if r.sha256 == facts["sha256"] and r.cache_path is not None]
+    filed = _dir_of(ctx, facts["where"], facts["folder"]) / f"{facts['folder']}_summary.pdf"
+    return (*cached, filed)
+
+
+def _make_takeoff(op_id: int, studio_id: str, job_branch: str | None, sha256: str,
+                  sources: Sequence[Path]) -> _Converted:
+    """Runs off the tick's thread and touches the store for nothing. The converter is told the
+    branch by P1a's check of the same bytes (takeoff_branch), and a job filed as a garage is one.
+    Whatever goes wrong comes back as a failed takeoff, since the filing is done already."""
+    try:
+        data = _bytes_with(sources, sha256)
+        if data is None:
+            return _Converted(op_id, studio_id, sha256, "gone")
+        branch = "garage" if job_branch == "garage" else takeoff_branch(check_summary(data))
+        if branch != "closet":
+            return _Converted(op_id, studio_id, sha256, "in_chat", branch)
+        return _Converted(op_id, studio_id, sha256, "made", branch, convert(data, branch=branch))
+    except SummaryUnreadable:
+        return _Converted(op_id, studio_id, sha256, "failed", reason=_TAKEOFF_UNREAD)
+    except Exception:  # noqa: BLE001 - a converter that fails costs the takeoff, never a filing
+        _log.exception("A takeoff could not be made")
+        return _Converted(op_id, studio_id, sha256, "failed", reason=_TAKEOFF_ERROR)
+
+
+def _bytes_with(sources: Sequence[Path], sha256: str) -> bytes | None:
+    for path in sources:
+        data = _read_or_none(path)
+        if data is not None and _sha(data) == sha256:
+            return data
+    return None
+
+
+def _take_takeoffs(ctx: Ctx) -> None:
+    assert ctx.converts is not None
+    _each(ctx, "take_takeoffs", ctx.converts.finished(), lambda done: _after_takeoff(ctx, done))
+
+
+def _watch_takeoffs(ctx: Ctx) -> None:
+    """A takeoff past its time gives up its place, and has failed: the chat's is used."""
+    assert ctx.converts is not None
+    store = ctx.store
+
+    def one(key: int) -> None:
+        op = get_pending(store, key)
+        if op is not None and op.state == "open" and op.studio_id is not None:
+            _after_takeoff(ctx, _Converted(op.id, op.studio_id, op.note or "", "failed",
+                                           reason=_TAKEOFF_HUNG))
+
+    _each(ctx, "watch_takeoffs", ctx.converts.overran(), one)
+
+
+def _after_takeoff(ctx: Ctx, done: _Converted) -> None:
+    """Keep the takeoff of the summary the job is still filed on, with its history line. One that
+    failed opens a DEV item for Sulaiman, named by the job's name and not tied to its ID, so the
+    night never tells Jim the job is stuck: nothing waits on NG Runner, and the chat's takeoff is
+    used."""
+    store, now = ctx.store, ctx.clock.now()
+    op = get_pending(store, done.op_id)
+    if op is None or op.state != "open":
+        return
+    job = get_job(store, done.studio_id)
+    facts = filed_facts(store, done.studio_id)
+    if job is None or facts is None or facts.get("sha256") != done.sha256:
+        finish_pending(store, op.id, "done", note=_TAKEOFF_SUPERSEDED)
+        return
+    if done.state == "gone":
+        return                                    # due again at _TAKEOFF_AGAIN, while it has tries
+    takeoff = done.takeoff
+    with store.transaction() as tx:
+        record = add_takeoff(
+            tx, studio_id=done.studio_id, render_sha256=done.sha256,
+            rules_sha256=takeoff_rules.fingerprint(), state=done.state, branch=done.branch,
+            complete=takeoff is not None and takeoff.complete,
+            could_not_verify=0 if takeoff is None else len(takeoff.could_not_verify),
+            result=None if takeoff is None else _takeoff_result(takeoff), at=now)
+        finish_pending(tx, op.id, "done")
+        _close_takeoff_failed(tx, job.name)
+        if record.state == "failed":
+            open_dev(tx, at=now, code=TAKEOFF_FAILED,
+                     text=f"{job.name}: the takeoff could not be made ({done.reason}).")
+        log_event(tx, at=now, kind=TAKEOFF_EVENT, studio_id=done.studio_id,
+                  text=_takeoff_words(record))
+
+
+def _takeoff_result(takeoff: Takeoff) -> dict[str, Any]:
+    """What the store keeps of a takeoff: codes and numbers only. A line that couldn't be placed is
+    where it is and how many, never its text or its reason, which can quote a row."""
+    return {
+        "buckets": [{"colour": b.colour, "thk_in": b.thk_in, "parts": b.parts, "sqft": b.sqft,
+                     "sheet_in": None if b.sheet_in is None else list(b.sheet_in),
+                     "sheets_with_waste": b.sheets_with_waste,
+                     "calc_sheets_32": b.calc_sheets_32, "tape_lf": b.tape_lf}
+                    for b in takeoff.buckets],
+        "board_parts": takeoff.board_parts, "tape_lf": takeoff.tape_lf,
+        "estimate_total": takeoff.estimate_total,
+        "gate_pulled_equals_designs": takeoff.gate_pulled_equals_designs,
+        "unplaced": [{"page": u.line.page + 1, "qty": u.line.qty} for u in takeoff.unplaced],
+    }
+
+
+def _takeoff_words(record: TakeoffRecord) -> str:
+    result = record.result or {}
+    return templates.takeoff_made_words(
+        state=record.state, complete=record.complete, could_not_verify=record.could_not_verify,
+        board_parts=result.get("board_parts", 0), buckets=len(result.get("buckets", ())),
+        tape_lf=result.get("tape_lf", 0.0), branch=record.branch)
+
+
+def _close_takeoff_failed(db: Db, job: str) -> None:
+    for item in list_dev(db):
+        if item.code == TAKEOFF_FAILED and item.text.startswith(f"{job}: "):
+            close_dev(db, item.id)
+
+
+def _takeoff_block(record: TakeoffRecord | None) -> dict[str, Any] | None:
+    """The takeoff as <folder>_NGRunner.json carries it for Jim's chat: codes and numbers, and
+    which summary and rules made it. None while it has none."""
+    if record is None:
+        return None
+    block: dict[str, Any] = {
+        "state": record.state, "branch": record.branch, "complete": record.complete,
+        "could_not_verify": record.could_not_verify, "rules": record.rules_sha256,
+        "summary_sha256": record.render_sha256, "made_at": to_iso(record.at)}
+    if record.state == "made" and record.result is not None:
+        block["basis"] = templates.TAKEOFF_ESTIMATE
+        block |= {key: record.result[key] for key in (
+            "board_parts", "tape_lf", "estimate_total", "buckets", "unplaced")}
+    else:
+        block["note"] = _takeoff_words(record)
+    return block
+
+
 # ----- section 4: keeping the notes in the job folder current
 
 
@@ -2583,6 +2815,8 @@ def _keep_notes_current(ctx: Ctx) -> None:
             by_job.setdefault(card.studio_id, []).append(card)
     listing = set(json.loads(get_state(store, _LISTING) or "[]"))
     guarded = _guards_said(store)
+    filed = all_filed_facts(store)
+    blocks = {sid: _takeoff_block(record) for sid, record in job_takeoffs(store, filed).items()}
 
     def one(sid: str) -> None:
         facts = filed_facts(store, sid)
@@ -2594,14 +2828,17 @@ def _keep_notes_current(ctx: Ctx) -> None:
         items = _items(by_job.get(sid, ()))
         retry_at = facts.get("retry_at")
         said = guarded.get(facts["folder"], {"nests": [], "preflight": None})
-        if ((items == facts.get("items", []) and _says_the_same(facts, said))
-                or (retry_at and now < from_iso(retry_at))):
+        block = blocks.get(sid)
+        if ((items == facts.get("items", []) and _says_the_same(facts, said)
+             and block == facts.get("takeoff")) or (retry_at and now < from_iso(retry_at))):
             return
-        _rewrite_notes(ctx, sid, facts, items, now, new_facts=said)
+        _rewrite_notes(ctx, sid, facts, items, now, new_facts={**said, "takeoff": block})
 
-    with_guards = {sid for sid, facts in all_filed_facts(store).items()
-                   if facts.get("folder") in guarded}
-    _each(ctx, "keep_notes_current", sorted(listing | set(by_job) | with_guards), one)
+    with_guards = {sid for sid, facts in filed.items() if facts.get("folder") in guarded}
+    with_takeoffs = {sid for sid, facts in filed.items()
+                     if blocks.get(sid) != facts.get("takeoff")}
+    _each(ctx, "keep_notes_current",
+          sorted(listing | set(by_job) | with_guards | with_takeoffs), one)
     still = sorted(sid for sid in listing | set(by_job)
                    if ((filed_facts(store, sid) or {}).get("items")))
     if still != sorted(listing):
@@ -2681,16 +2918,18 @@ def _rewrite_notes(ctx: Ctx, sid: str, facts: dict[str, Any], items: list[dict[s
 
 
 def _notes_bytes(facts: dict[str, Any], items: list[dict[str, str]]) -> bytes:
-    """<folder>_NGRunner.json, schema 2: for machines (Jim's chat). It holds no address."""
+    """<folder>_NGRunner.json, schema 3: for machines (Jim's chat). It holds no address. Schema 3
+    adds the takeoff, null until NG Runner has made it (_takeoff_block)."""
     summary = {"file": f"{facts['folder']}_summary.pdf", "sha256": facts["sha256"],
                "layout": facts["layout"], "pages": facts["pages"], "fetched": facts["fetched"]}
     if facts.get("replaced_by_hand"):
         summary["replaced_by_hand"] = True
-    record = {"schema": 2, "job": facts["job"], "branch": facts["branch"], "summary": summary,
+    record = {"schema": 3, "job": facts["job"], "branch": facts["branch"], "summary": summary,
               "designs": facts.get("designs"),
               "designs_checked": bool(facts.get("designs_checked")),
               "filed_at": facts["at"], "items": items, "nests": facts.get("nests", []),
-              "preflight": facts.get("preflight"), "note": _NOTE}
+              "preflight": facts.get("preflight"), "takeoff": facts.get("takeoff"),
+              "note": _NOTE}
     return (json.dumps(record, indent=1, ensure_ascii=False) + "\n").encode("utf-8")
 
 
@@ -2839,7 +3078,7 @@ def _file_for_real(tx: Transaction, sid: str, now: datetime) -> None:
     """Not filed any more, as far as all that follows goes: a fresh pair, a filing and an email,
     whose ref is new as the trial run's copy to Sulaiman holds the old one. A question about what
     the trial run filed goes with it; what is in control\\shadow stays there."""
-    for kind in (FETCH_1, FETCH_2, FILE, FILE_NEW, REFETCH, REFETCH_2):
+    for kind in (FETCH_1, FETCH_2, FILE, FILE_NEW, REFETCH, REFETCH_2, TAKEOFF):
         _finish_ops(tx, kind, "done", studio_id=sid)
     for key in (_filed_key, _ready_key, _first_key, _ic_key, _designs_key, _declined_key):
         clear_state(tx, key(sid))
@@ -2922,6 +3161,17 @@ def all_filed_facts(db: Db) -> dict[str, dict[str, Any]]:
     prefix = _filed_key("")
     return {key.removeprefix(prefix): json.loads(value)
             for key, value in states_under(db, prefix).items()}
+
+
+def job_takeoffs(db: Db, filed: dict[str, dict[str, Any]] | None = None
+                 ) -> dict[str, TakeoffRecord]:
+    """By Studio ID, each filed job's takeoff of the summary it is filed on now, newest rules
+    first: one read for every job. A job with none (not made yet, a hand-replaced summary, a job
+    from before the takeoff on intake) is left out, and the chat's takeoff is its source."""
+    filed = all_filed_facts(db) if filed is None else filed
+    newest = {(r.studio_id, r.render_sha256): r for r in list_takeoffs(db)}   # oldest first
+    return {sid: newest[(sid, facts["sha256"])] for sid, facts in filed.items()
+            if (sid, facts.get("sha256")) in newest}
 
 
 def filed_note(db: Db, studio_id: str) -> str:
@@ -3093,7 +3343,7 @@ add_guard_card = _add_card
 no_ng_jobs = _no_ng_jobs
 stopping = _stopping
 
-_STEPS = (_bring_shadow_jobs_home, _take_fetches, _watch_fetches, _send_tells, _read_fab,
-          _refresh_list, _act_on_answers, _match_rows, _rematch_rows, _raise_deadline_cards,
-          _start_fetches, _take_fetches, _file_ready, _keep_notes_current, _watch_filed,
-          _send_tells)
+_STEPS = (_bring_shadow_jobs_home, _take_fetches, _watch_fetches, _take_takeoffs,
+          _watch_takeoffs, _send_tells, _read_fab, _refresh_list, _act_on_answers, _match_rows,
+          _rematch_rows, _raise_deadline_cards, _start_fetches, _take_fetches, _file_ready,
+          _start_takeoffs, _take_takeoffs, _keep_notes_current, _watch_filed, _send_tells)

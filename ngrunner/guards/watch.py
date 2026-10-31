@@ -29,11 +29,13 @@ and the rooms' hashes, and decide compares those with what is on disk whenever i
 stored pass goes through the same table as a new one and has no way around it. It falls back to NOT
 CHECKED the moment a listing shows any of them moved, before they can be read, since a pass must never
 stand on files that are changing. Once they settle they are read: the same bytes stand as they were
-and tell nobody, as Mozaik re-saves a .opt on close. Anything else loses the pass, and George, who was
-told it was checked, is told it no longer is.
+and tell nobody, as Mozaik re-saves a .opt on close. A room is known by its design and not its bytes
+(design.room_identity), so the same design saved again stands too. Anything else loses the pass, and
+George, who was told it was checked, is told it no longer is.
 
-With no toolkit there is no pass: nest_checks is None until Jim's checks can run and their output be
-read (group 3), and only they can say a nest is checked, however good it looks.
+With no toolkit there is no pass: nest_checks is None until a copy of Jim's toolkit is adopted, and only
+his two checks and the nest-to-design match (guards/design.py, his des_cutlist) can say a nest is
+checked, however good it looks. A nest that isn't the saved design is "Not verified": a DO NOT CUT.
 """
 from __future__ import annotations
 
@@ -60,8 +62,9 @@ from ngrunner.guards.nest_state import (
     MaterialEvidence, NestState, Verdict, decide, doubled_programs, expected_sheet,
     past_size_programs, sheet_of,
 )
+from ngrunner.guards.design import design_checks_from
 from ngrunner.guards.nestfiles import (
-    JOBS_FOLDER, NestChecks, NestRead, nest_moved_since_read, next_said,
+    JOBS_FOLDER, NestChecks, NestRead, ToCheck, nest_moved_since_read, next_said,
 )
 from ngrunner.guards.observer import note_owners
 from ngrunner.guards.opt import OPT_SETTLES_AFTER, reconcile
@@ -153,12 +156,21 @@ def _pass(plan: Plan) -> tuple[Plan, Scan]:
 
 
 def nest_checks(ctx: Any) -> NestChecks | None:
-    """What runs Jim's two checks: from the adopted toolkit copy, on staged copies, through
-    toolkit.run_tool and guards/tool_checks.py, which fail closed. None with no copy adopted, which is
-    today: adopting one needs his regression (group 3). No design match comes of it, as des_cutlist has
-    no reader, so no material can reach NEST_CHECKED yet: that is the guard doing its job."""
+    """What runs Jim's two checks and the nest-to-design match: from the adopted toolkit copy, on
+    staged copies, through toolkit.run_tool, guards/tool_checks.py and guards/design.py, which all fail
+    closed. None with no copy adopted, and then no material can reach NEST_CHECKED: only his own checks
+    and his des_cutlist, from a copy that passed his regression, can stand behind a pass."""
     snapshot = adopted_snapshot(ctx.store, ctx.paths.toolkit)
-    return None if snapshot is None else nest_checks_from(snapshot, ctx.paths.staging)
+    if snapshot is None:
+        return None
+    checks = nest_checks_from(snapshot, ctx.paths.staging)
+    against_design = design_checks_from(snapshot, ctx.paths.staging)
+
+    def run(job: ToCheck) -> tuple[tuple[ToolVerdict, ...], DesignMatch]:
+        tools, _ = checks(job)
+        return tools, against_design(job)
+
+    return run
 
 
 def _plan(ctx: Any) -> Plan:

@@ -12,9 +12,10 @@ what isn't known is never a pass:
 3. A new program with near pairs: DO_NOT_CUT. Nothing can clear this.
 4. A new program past its size that Jim hasn't cleared: DO_NOT_CUT. A clearance names one program's
    hash, so a re-post asks again, and it clears only this row (docs/decisions.md, Q3a).
-5. A check that says it failed: DO_NOT_CUT. Rows 3, 4 and 5 give one state, and a verdict lists every
-   fault of the three, doubled holes first, so Jim re-nests once and not once per fault. Clearing a
-   size only takes that fault off the list.
+5. A check that says it failed, or a nest that is not the saved design (the design's "Not verified",
+   guards/design.py): DO_NOT_CUT, as the design has it red, to George and in the way of Finish lock.
+   Rows 3, 4 and 5 give one state, and a verdict lists every fault of the three, doubled holes first,
+   so Jim re-nests once and not once per fault. Clearing a size only takes that fault off the list.
 6. A nest with parts and no sheets: SAVE_NEST.
 7. A nest, both checks passing, the design matching, every program it names in the folder, and all of
    it on the files on disk right now: NEST_CHECKED. With no toolkit nothing reaches this, however
@@ -24,15 +25,18 @@ what isn't known is never a pass:
 
 A clean read of the programs can never say more than row 8 does: a program check can raise DO NOT
 CUT, and only Jim's own checks can say "Nest checked". No verdict means it may be cut, and the lint
-refuses any line that says so. Nothing read from a .opt raises DO NOT CUT by itself: no real one has
-been read yet, and a doubt about reading a file must cost a NOT CHECKED, never a false alarm.
+refuses any line that says so. Nothing read from a .opt raises DO NOT CUT by itself, and a doubt about
+reading a file must cost a NOT CHECKED, never a false alarm. The one way a nest's contents can raise one
+is the design match, which reads both the nest and the saved design cleanly and finds them different;
+one it couldn't make is could_not_verify, a NOT CHECKED with its note.
 
 The words are in messages.templates, since a DO NOT CUT says the same on the board and in its
 message. Which programs a row found are in doubled_programs() and past_size_programs(), for the card
 a verdict opens.
 
 Two facts can look alike and must never be taken for each other. design is the real match, the nest
-against the design's cutlist (facts.DesignMatch), which needs files that can't be read yet. labels is
+against the saved design's cutlist (facts.DesignMatch, guards/design.py), which runs only from an
+adopted toolkit copy. labels is
 the fallback (guards.labels.LabelsMatch), which can only add "could not verify": decide reads nothing
 else from it, so no reading of it can reach NEST_CHECKED, whichever field it lands in.
 """
@@ -45,8 +49,8 @@ from typing import TYPE_CHECKING
 
 from ngrunner.guards import sheets
 from ngrunner.guards.facts import (
-    BR_CAM_NEST, COULD_NOT_VERIFY, DESIGN_MATCHES, FAILED, PASSED, SHEET_SIZE, CheckedFiles,
-    DesignMatch, OptFacts, ToolVerdict,
+    BR_CAM_NEST, COULD_NOT_VERIFY, DESIGN_MATCHES, FAILED, NOT_VERIFIED, PASSED, SHEET_SIZE,
+    CheckedFiles, DesignMatch, OptFacts, ToolVerdict,
 )
 from ngrunner.guards.opt import reconcile
 from ngrunner.guards.tap import Tap
@@ -63,6 +67,7 @@ _BOTH_TOOLS = frozenset({SHEET_SIZE, BR_CAM_NEST})
 _KNOWN_SHEETS = ((49.0, 97.0), (61.0, 109.0), (49.0, 121.0))
 _LABELS_DID_NOT_FIT = ("some_missing", "could_not_read")     # guards.labels' codes
 _A_CHECK_FAILED = "A check of the nest failed"
+_NOT_THE_DESIGN = "Not verified: the nest is not the saved design"      # as guards/design.py says it
 
 
 class NestState(StrEnum):
@@ -149,6 +154,8 @@ def _faults(ev: MaterialEvidence) -> tuple[str, ...]:
     if past:
         notes += _past_size_notes(ev.material, past)
     notes += [tool.line.strip() or _A_CHECK_FAILED for tool in ev.tools if tool.code == FAILED]
+    if ev.design is not None and ev.design.code == NOT_VERIFIED:
+        notes.append(ev.design.note.strip() or _NOT_THE_DESIGN)
     return tuple(notes)
 
 
@@ -257,6 +264,8 @@ def _not_checked_notes(ev: MaterialEvidence) -> tuple[str, ...]:
         notes.append(words.nest_names_missing(missing))     # none at all: not posted yet, row 8 says
     notes += [tool.line.strip() for tool in ev.tools
               if tool.code == COULD_NOT_VERIFY and tool.line.strip()]
+    if ev.design is not None and ev.design.code == COULD_NOT_VERIFY and ev.design.note.strip():
+        notes.append(ev.design.note.strip())
     if ev.labels is not None and ev.labels.code in _LABELS_DID_NOT_FIT:
         notes.append(ev.labels.note)
     return tuple(notes)

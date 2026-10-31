@@ -20,7 +20,8 @@ What each fact means here, which is the contract with whoever writes it:
                is a new time for a filed job. A "trial_only" event says it was filed only aside in
                the shadow run, so it is not in NG Jobs, whatever came before, until the next "filed".
     pending    "list..." waits on the job list; "fetch_2" is the second fetch; other "fetch..."
-               kinds are the first or a retry; "refetch..." (filed jobs) doesn't show. A "file..."
+               kinds are the first or a retry; "refetch..." (filed jobs) doesn't show, nor does
+               "takeoff" (a filed summary's takeoff, made in a moment). A "file..."
                operation with a note is a refused filing: BLOCKED, with the refusal as its note,
                unless the note says "Old folder": then there is nothing to fix, so OBSERVED. One
                that ended "failed" or "expired", with nothing else open, is NOT_RUN.
@@ -39,6 +40,12 @@ What each fact means here, which is the contract with whoever writes it:
                pipeline.CLOSED_BY_FILING says nothing of a job that has filed.
     outbox     ref "digest:<day>" marks a digest, whose time is what "since the last digest"
                means. Written over 5 minutes ago with no receipt turns the tray red.
+    takeoffs   pipeline.job_takeoffs: a filed job's takeoff of the summary it is filed on now.
+               Made and complete, its sheets and tape go on its line and in the digest, labelled
+               an estimate; made and not complete, a "could not verify N lines" note and no list,
+               since a partial list is worse than none, and when guards/takeoffs.py sent the
+               chat's list instead (the guards' takeoffs state says "source": "chat"), that it
+               did; "in_chat" and "failed" say why there is none, and the chat's takeoff is used.
     state      "paused", as interlock.is_paused reads it, so the digest and the filing never
                disagree. "fab_exported_at" (a time) and "toast_setting" ("on" or "off"), when
                set, decide their alarms whatever the DEV lane says.
@@ -53,8 +60,8 @@ from pathlib import Path
 from typing import Any
 
 from ngrunner.board.views import (
-    BoardView, CardView, EventView, HealthView, JobRow, ListItem, MaterialRow, Tick, TrayState,
-    tray_tooltip,
+    BoardView, CardView, EventView, HealthView, JobRow, ListItem, MaterialRow, TakeoffView, Tick,
+    TrayState, tray_tooltip,
 )
 from ngrunner.cards import Card, age_days, card_from_record, reminder_due
 from ngrunner.clock import Clock, fmt_clock, fmt_date, fmt_day, from_iso, pacific_day
@@ -67,12 +74,14 @@ from ngrunner.guards.observer import OPTIMIZER_LOCK
 from ngrunner.interlock import GARAGE_SUFFIX
 from ngrunner.intake.pipeline import (
     CLOSED_BY_FILING, FETCH_STUCK, TRIAL_ONLY_EVENT, all_filed_facts, filed_facts, filed_note_of,
+    job_takeoffs,
 )
 from ngrunner.interlock import is_paused
 from ngrunner.messages import Message, templates
 from ngrunner.messages.lint import ABOUT_ITSELF, check_line, lint
 from ngrunner.store import (
     CardRecord, DevRecord, EventRecord, FabRowRecord, JobRecord, NestRecord, PendingRecord, Store,
+    TakeoffRecord,
     get_list_state, get_state, get_state_time, governing_render, list_cards, list_dev, list_events,
     list_fab_rows, list_jobs, list_nests, list_outbox, list_pending, list_renders, list_snapshots,
     outbox_without_receipt,
@@ -155,6 +164,8 @@ class _JobFacts:
     trial_only: bool = False
     nests: tuple[NestRecord, ...] = ()      # its materials, as the guard last read them
     folders: tuple[str, ...] = ()           # the names its NG Jobs folder can go by
+    takeoff: TakeoffRecord | None = None    # NG Runner's takeoff of the summary filed now
+    chats_list: bool = False                # its order heads-up is the chat's takeoff instead
 
 
 @dataclass(frozen=True)
@@ -238,6 +249,9 @@ def _job_facts(
             filed.pop(event.studio_id, None)
             trial_only.add(event.studio_id)
     facts_of = all_filed_facts(store)
+    takeoffs_of = job_takeoffs(store, facts_of)
+    chats = {folder.casefold() for folder, said in takeoffs_said(store).items()
+             if said.get("source") == "chat"}
     rows_of, cards_of, dev_of = _by_job(rows), _by_job(cards), _by_job(dev)
     refusals_of = _by_job(e for e in events
                           if e.kind in (FILED_EVENT, BLOCKED_EVENT) and e.lane != "DEV")
@@ -260,6 +274,8 @@ def _job_facts(
             trial_only=job.studio_id in trial_only,
             nests=tuple(n for n in nests if _folder_is_this_jobs(n, job)),
             folders=_folders_of(job),
+            takeoff=takeoffs_of.get(job.studio_id),
+            chats_list=any(name.casefold() in chats for name in _folders_of(job)),
         )
         for job in jobs
     )
@@ -423,9 +439,34 @@ def _job_row(store: Store, j: _JobFacts, facts: _Facts, *, paused: bool) -> JobR
         next_step=_next_step(store, j, overlay, facts.now),
         overlay=overlay,
         materials=_material_rows(j.nests, facts),
-        notes=_notes(j.folders, facts),
+        notes=(*_notes(j.folders, facts), *_takeoff_notes(j)),
         lock=_lock_lines(j.folders, facts),
+        takeoff=_takeoff_view(j),
     )
+
+
+def _takeoff_view(j: _JobFacts) -> TakeoffView | None:
+    """A filed job's takeoff on its line: the list only when it is complete, as no one orders from
+    a partial list; otherwise its state, and why, in one line."""
+    record = j.takeoff
+    if record is None:
+        return None
+    if record.state == "made":
+        if not record.complete or record.result is None:
+            return (TakeoffView("chat", (templates.CHATS_TAKEOFF,)) if j.chats_list
+                    else TakeoffView("unverified"))
+        return TakeoffView("made", templates.takeoff_lines(record.result["buckets"]),
+                           templates.TAKEOFF_ESTIMATE)
+    return TakeoffView(record.state, (templates.takeoff_made_words(state=record.state,
+                                                                   branch=record.branch),))
+
+
+def _takeoff_notes(j: _JobFacts) -> tuple[str, ...]:
+    """How many lines the takeoff could not verify: counted, never quoted."""
+    record = j.takeoff
+    if record is None or record.state != "made" or record.complete:
+        return ()
+    return (templates.could_not_verify_lines(record.could_not_verify),)
 
 
 def _free_row(row: FabRowRecord, cards: tuple[CardRecord, ...], *, paused: bool,
@@ -1015,11 +1056,22 @@ def _since(when: datetime, since: datetime | None) -> bool:
 
 
 def _job_line(store: Store, j: _JobFacts, now: datetime, *, paused: bool, day: date) -> JobLine:
-    return _fit_line(j.job.name,
-                     _digest_text(_next_step(store, j, _overlay(j, paused=paused), now)), day=day)
+    """What happened, and for a filed job its takeoff. A takeoff clause the lint would stop costs
+    only itself: the line goes out without it."""
+    text = _digest_text(_next_step(store, j, _overlay(j, paused=paused), now))
+    record = j.takeoff
+    if j.filed_at and record is not None and record.state == "made" and record.result is not None:
+        clause = templates.takeoff_digest(record.result["buckets"], complete=record.complete,
+                                          could_not_verify=record.could_not_verify,
+                                          chat=j.chats_list)
+        line = _fit_line(j.job.name, f"{text.rstrip('.')}, {clause}", day=day)
+        if line.job == j.job.name and line.text != _CHANGED:
+            return line
+    return _fit_line(j.job.name, text, day=day)
 
 
 _CARD_STEP = re.compile(r"Card (?P<id>\S+): (?P<question>.*)")
+_CHANGED = "changed; see the board"     # a job's line that didn't pass the lint
 
 
 def _digest_text(step: str) -> str:
@@ -1037,7 +1089,7 @@ def _card_digest(card: Card) -> str:
 def _fit_line(job: str, text: str, *, day: date) -> JobLine:
     """A digest line that passes the lint on its own, so one odd job name or reason costs only its
     own line and not the whole digest: its fixed words, then a line about NG Runner itself."""
-    for line in (JobLine(job, text), JobLine(job, "changed; see the board")):
+    for line in (JobLine(job, text), JobLine(job, _CHANGED)):
         item = f"1. {line.job}: {_ended(line.text)}"
         message = Message("digest", templates.digest_title(day), (item,))
         if not lint(message):

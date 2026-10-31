@@ -177,6 +177,17 @@ def diff_designs(design: bytes, backup: bytes) -> RoomDiff:
     )
 
 
+def parse_room(data: bytes) -> ElementTree.Element:
+    """A room file's XML, as measured: version line 15, CRLF, then <Room>. Raises DesignUnreadable.
+    For guards/design.py, which reads its parts by the same rules."""
+    return _parse(data, "design")
+
+
+def canonical(element: ElementTree.Element, skip: frozenset[str] = ANNOTATIONS) -> tuple:
+    """An element as it compares here: numbers as numbers, the annotation elements left out."""
+    return _canon(element, skip)
+
+
 def _parse(data: bytes, side: str) -> ElementTree.Element:
     head, sep, rest = data.partition(b"\r\n")
     if not sep or not head.isdigit():

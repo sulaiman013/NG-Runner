@@ -17,8 +17,8 @@ import pytest
 
 from ngrunner.guards import nest_state
 from ngrunner.guards.facts import (
-    BR_CAM_NEST, DESIGN_MATCHES, SHEET_SIZE, CheckedFiles, DesignMatch, OptFacts, OptSheet,
-    ToolVerdict,
+    BR_CAM_NEST, COULD_NOT_VERIFY, DESIGN_MATCHES, NOT_VERIFIED, SHEET_SIZE, CheckedFiles, DesignMatch,
+    OptFacts, OptSheet, ToolVerdict,
 )
 from ngrunner.guards.nest_state import (
     MaterialEvidence, NestState, Verdict, decide, doubled_programs, expected_sheet,
@@ -552,6 +552,8 @@ NOT_A_PASS = {
     "a design match on another program": dict(design=DesignMatch(DESIGN_MATCHES,
                                                                  checked=OTHER_PROGRAM)),
     "a design match on another room": dict(design=DesignMatch(DESIGN_MATCHES, checked=OTHER_ROOM)),
+    "a design that could not be compared": dict(design=DesignMatch(
+        COULD_NOT_VERIFY, checked=ON, note="Could not compare the nest with the saved design")),
     "a nest naming no program": dict(opt=nested_opt(runs=())),
     "a nest naming a program not in the folder": dict(opt=nested_opt(runs=("TESS01.TAP", "TESS02.TAP"))),
     "only flip passes, with no board": dict(opt=nested_opt(sheets=(
@@ -577,6 +579,42 @@ def test_row_7_takes_all_of_it_and_any_one_thing_short_is_not_a_pass(fields) -> 
 
     assert verdict.state == NestState.NOT_CHECKED
     assert "not checked" in verdict.reasons[0]
+
+
+NOT_THE_DESIGN = "Not verified: the nest is not the saved design at R1C9 and R1C11"
+
+
+def test_a_nest_that_is_not_the_saved_design_is_do_not_cut_with_the_parts_named() -> None:
+    # Design, "Nest guard and nest-to-design match": "Not verified" shows red, goes to George and blocks
+    # Finish lock, which is what DO NOT CUT does. Both of Jim's checks passing doesn't change it.
+    verdict = decide(a_pass(ONE, design=DesignMatch(NOT_VERIFIED, checked=ON, parts=("R1C9", "R1C11"),
+                                                    note=NOT_THE_DESIGN)))
+
+    assert verdict.state == NestState.DO_NOT_CUT
+    assert verdict.reasons == (NOT_THE_DESIGN,) and verdict.basis == "nest"
+
+
+def test_a_nest_not_the_design_stands_beside_the_programs_own_faults() -> None:
+    verdict = decide(a_pass(tap(pairs=2), design=DesignMatch(NOT_VERIFIED, checked=ON, note=NOT_THE_DESIGN)))
+
+    assert verdict.state == NestState.DO_NOT_CUT
+    assert verdict.reasons[1:] == (NOT_THE_DESIGN,) and verdict.basis == "programs"
+
+
+def test_a_nest_not_the_design_says_so_in_words_of_its_own_when_it_has_none() -> None:
+    verdict = decide(a_pass(ONE, design=DesignMatch(NOT_VERIFIED, checked=ON)))
+
+    assert verdict.state == NestState.DO_NOT_CUT
+    assert verdict.reasons == ("Not verified: the nest is not the saved design",)
+    assert check_line(verdict.reasons[0]) == []
+
+
+def test_a_design_that_could_not_be_compared_is_not_checked_and_says_why() -> None:
+    note = "Could not compare the nest with the saved design"
+    verdict = decide(a_pass(ONE, design=DesignMatch(COULD_NOT_VERIFY, checked=ON, note=note)))
+
+    assert verdict.state == NestState.NOT_CHECKED
+    assert verdict.reasons[1:] == (note,)
 
 
 def test_row_7_stands_on_its_own_and_doesnt_lean_on_row_6_having_come_first() -> None:
@@ -700,7 +738,9 @@ DESIGNS = {"absent": None, "matches": MATCH,
            "all_found": DesignMatch("all_found", checked=ON),
            "some_missing": DesignMatch("some_missing", checked=ON),
            "could_not_read": DesignMatch("could_not_read", checked=ON),
-           "garbled": DesignMatch("yes", checked=ON)}
+           "garbled": DesignMatch("yes", checked=ON),
+           "not_verified": DesignMatch(NOT_VERIFIED, checked=ON, parts=("R1C3",), note=NOT_THE_DESIGN),
+           "could_not_verify": DesignMatch(COULD_NOT_VERIFY, checked=ON)}
 PROGRAMS = {"none": (), "clean": (ONE,), "doubled": (tap(pairs=2),), "past": (tap(reach=FITS_61),),
             "half written": (tap(complete=False),)}
 ROOM_SETS = {"none": (), "current": ROOMS, "changed": (("Room1.des", sha(2001)),)}
@@ -726,8 +766,14 @@ def test_nest_checked_is_reached_by_exactly_one_combination_of_all_of_them() -> 
         if decide(ev).state == NestState.NEST_CHECKED:
             checked.append(labels)
 
-    assert total == 7 * 7 * 7 * 8 * 5 * 3
+    assert total == 7 * 7 * 7 * 10 * 5 * 3
     assert checked == [("nested", "passed", "passed", "matches", "clean", "current")]
+
+
+def test_a_nest_not_the_saved_design_is_never_a_pass_and_always_an_alarm_once_posted() -> None:
+    for labels, ev in every_evidence():
+        if labels[3] == "not_verified":
+            assert decide(ev).state in (NestState.DO_NOT_CUT, NestState.NOT_POSTED), labels
 
 
 def test_with_todays_data_nothing_can_reach_nest_checked() -> None:
@@ -768,14 +814,15 @@ def test_a_real_reading_of_a_good_nest_is_not_a_pass_with_no_tools(tmp_path: Pat
 def test_a_pass_never_comes_with_a_fault_standing() -> None:
     for labels, ev in every_evidence():
         verdict = decide(ev)
-        if labels[4] in ("doubled", "past") or "failed" in labels[1:3]:
+        if labels[4] in ("doubled", "past") or "failed" in labels[1:3] or labels[3] == "not_verified":
             assert verdict.state not in (NestState.NEST_CHECKED, NestState.SAVE_NEST), labels
 
 
 def test_unknown_evidence_is_never_a_pass_and_never_an_alarm_on_its_own() -> None:
     for labels, ev in every_evidence():
-        unknown = "garbled" in labels or "unsure" in labels[1:3]
-        no_fault = labels[4] == "clean" and "failed" not in labels[1:3]
+        unknown = "garbled" in labels or "unsure" in labels[1:3] or labels[3] == "could_not_verify"
+        no_fault = (labels[4] == "clean" and "failed" not in labels[1:3]
+                    and labels[3] != "not_verified")
         if unknown and no_fault and labels[0] != "unsaved":
             assert decide(ev).state == NestState.NOT_CHECKED, labels
 

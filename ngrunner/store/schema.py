@@ -306,7 +306,25 @@ _V4 = (
     ) STRICT""",
 )
 
-MIGRATIONS: tuple[tuple[str, ...], ...] = (_V1, _V2, _V3, _V4)
+# Version 5: NG Runner's own takeoff of each summary it files (docs/p2/build-spec.md, section 4).
+# A new table only, so nothing an older row holds changes. One row per filed summary and rules
+# version; result is NULL unless the takeoff was made.
+_V5 = (
+    """CREATE TABLE IF NOT EXISTS takeoffs (
+        studio_id        TEXT NOT NULL REFERENCES jobs (studio_id),
+        render_sha256    TEXT NOT NULL,
+        rules_sha256     TEXT NOT NULL,
+        state            TEXT NOT NULL,
+        branch           TEXT NOT NULL,
+        complete         INTEGER NOT NULL,
+        could_not_verify INTEGER NOT NULL,
+        result           TEXT,
+        at               TEXT NOT NULL,
+        PRIMARY KEY (studio_id, render_sha256, rules_sha256)
+    ) STRICT""",
+)
+
+MIGRATIONS: tuple[tuple[str, ...], ...] = (_V1, _V2, _V3, _V4, _V5)
 LATEST = len(MIGRATIONS)
 
 

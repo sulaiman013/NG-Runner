@@ -46,7 +46,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-from ngrunner import backup, config, digest, heartbeat, launcher, single, support, toasts
+from ngrunner import backup, config, digest, heartbeat, launcher, single, support, toasts, toolkit
 from ngrunner.board import BoardServer, create_board, new_token
 from ngrunner.board.views import (
     BoardView,
@@ -99,6 +99,7 @@ from ngrunner.store import (
     list_jobs,
     list_outbox,
     list_pending,
+    list_snapshots,
     list_write_records,
     log_event,
     mark_dev_told_jim,
@@ -132,6 +133,7 @@ HALF_SYNCED = timedelta(minutes=10)   # build-spec 3: a file still unreadable af
 TOLD_JIM_AFTER = timedelta(hours=48)  # a DEV item about a job this old is Jim's to know about
 KEEP_RENDERS = timedelta(days=7)      # store.prune_renders: a week-old pair is no longer in use
 KEEP_WRITES = timedelta(days=90)      # the writes rows; owned is never pruned
+TOOLKIT_OVERRUN = timedelta(hours=1)  # a copy and its regression take seconds; past this it is stuck
 _LOOP_WAIT_S = 1.0
 _STOP_WAIT_S = 30.0
 
@@ -199,6 +201,18 @@ def night_key(now: datetime) -> date:
     date, so the hour the autumn change repeats is still one night (at_pacific takes the first)."""
     day = pacific_day(now)
     return day if utc(now) >= at_pacific(day, NIGHT_FROM) else day - timedelta(days=1)
+
+
+def _try_toolkit(source: Path, folder: Path, adopted: list[str], clock: Clock) -> toolkit.Adoption:
+    """On the toolkit's worker: whatever goes wrong comes back as a fact, never as a dead thread.
+    adopted: the shas adopted, newest first; the newest is what the copy is compared with, and the
+    two newest are kept, as a pass of the guards may still be running on the older."""
+    try:
+        return toolkit.try_adoption(source, folder, adopted=adopted[0] if adopted else None,
+                                    keep=adopted[:2], clock=clock)
+    except Exception as exc:  # noqa: BLE001 - on a worker, the failure must reach the DEV lane
+        _log.exception("trying a copy of Jim's toolkit failed")
+        return toolkit.Adoption(toolkit.NOT_COPIED, f"Trying a copy of Jim's toolkit failed ({type(exc).__name__}).")
 
 
 def scan_leftover_temps(folders: Iterable[Path], *, limit: int = 200) -> list[str]:
@@ -288,8 +302,10 @@ class Supervisor:
         confirm: Callable[[str], bool] | None = None,
         browser: Callable[[str], object] = webbrowser.open,
         opener: Callable[[str], None] | None = None,
+        toolkit_runs: Any = None,
     ) -> None:
         self._paths = paths
+        self._toolkit_runs = toolkit_runs      # where the night's toolkit copy is tried (a FetchRunner)
         self._clock = clock or SystemClock()
         self._secrets = secrets if secrets is not None else CredentialSecrets()
         self._http = http
@@ -344,6 +360,7 @@ class Supervisor:
             _Task("heartbeat", HEARTBEAT_EVERY, self._heartbeat),
             _Task("write settling", SETTLE_EVERY, self._settle),
             _Task("night work", MINUTE, self._night),
+            _Task("toolkit copy", MINUTE, self._take_toolkit),
             _Task("digest", MINUTE, self._digest),
             _Task("toasts", MINUTE, self._show_toasts),
             _Task("health check", MINUTE, self._refresh_health),
@@ -360,6 +377,7 @@ class Supervisor:
             ("ran", self._night_ran),
             ("dev_lines", self._night_dev_lines),
             ("tell_jim", self._night_tell_jim),
+            ("toolkit", self._night_toolkit),
         )
 
     # ----- starting and stopping
@@ -406,6 +424,8 @@ class Supervisor:
             self._thread.join(_STOP_WAIT_S)
         if self._ctx is not None:
             self._quietly("the pipeline's stop", lambda: self._seams.pipeline.stop_work(self._ctx))
+        if self._toolkit_runs is not None:      # a try under way dies with the process, and its job
+            self._quietly("the toolkit copy's stop", self._toolkit_runs.stop)
         if self._server is not None:
             self._quietly("the board's stop", self._server.stop)
         if self._tray is not None:
@@ -1110,6 +1130,68 @@ class Supervisor:
                               text=templates.stuck(job.name), studio_id=item.studio_id)
                     mark_dev_told_jim(self._store, item.id, at=now)
         return True
+
+    # ----- the night's toolkit copy (design 6, Updates; RULES section 8)
+
+    def _night_toolkit(self, now: datetime) -> bool:
+        """Tonight's copy of Jim's _NG_Automation, tried on a worker of its own: adopted only once his
+        regression is clean on that copy (toolkit.try_adoption), and recorded here by _take_toolkit.
+        Done once started, so a regression that takes minutes holds up no other step. With no toolkit
+        in Mozaik Shared there is nothing to copy: Health shows the folder."""
+        source = self._settings.mozaik_shared / toolkit.TOOLKIT_FOLDER
+        runs = self._toolkit_work()
+        if runs.busy() or runs.free() <= 0 or not source.is_dir():
+            return True
+        adopted = list(dict.fromkeys(record.sha256 for record in reversed(list_snapshots(self._store))
+                                     if record.adopted))      # newest first, each once
+        folder, clock = self._paths.toolkit, self._clock
+        runs.start(0, lambda: _try_toolkit(source, folder, adopted[:2], clock))
+        self._take_toolkit(now)          # a runner that works at once has it already
+        return True
+
+    def _toolkit_work(self) -> Any:
+        if self._toolkit_runs is None:
+            from ngrunner.intake.pipeline import BackgroundFetches
+
+            self._toolkit_runs = BackgroundFetches(1, overrun=TOOLKIT_OVERRUN, name="ngrunner-toolkit")
+        return self._toolkit_runs
+
+    def _take_toolkit(self, now: datetime) -> None:
+        """What the night's try came to, on this thread: the store is written here only."""
+        if self._toolkit_runs is None or self._store is None or self._store_problem:
+            return
+        for _key in self._toolkit_runs.overran():
+            self._dev(now, "toolkit_stuck", "Tonight's copy of Jim's toolkit ran for over an hour and"
+                                            " was given up. The checks go on with the copy adopted before.")
+        for tried in self._toolkit_runs.finished():
+            self._record_toolkit(tried, now)
+
+    def _record_toolkit(self, tried: toolkit.Adoption, now: datetime) -> None:
+        toolkit.record_adoption(self._store, tried)
+        if tried.outcome in (toolkit.ADOPTED, toolkit.UNCHANGED):
+            for code in ("toolkit_refused", "toolkit_failed", "toolkit_stuck"):
+                self._close_dev(code)
+        if tried.outcome == toolkit.ADOPTED:
+            log_event(self._store, at=now, kind="toolkit_adopted",
+                      text=f"Adopted a new copy of Jim's toolkit. {tried.words}")
+        elif tried.outcome == toolkit.REFUSED:
+            self._one_dev(now, "toolkit_refused", f"Jim's toolkit changed, and NG Runner did not adopt"
+                                                  f" the copy. {tried.words} {self._checks_go_on()}")
+        elif tried.outcome == toolkit.NOT_COPIED:
+            self._one_dev(now, "toolkit_failed", f"{tried.words} {self._checks_go_on()}")
+
+    def _checks_go_on(self) -> str:
+        adopted = [record for record in list_snapshots(self._store) if record.adopted]
+        if not adopted:
+            return "No copy is adopted yet, so no nest can be checked."
+        return f"The checks go on with the copy adopted {fmt_date(adopted[-1].taken_at)}."
+
+    def _one_dev(self, now: datetime, code: str, text: str) -> None:
+        """One open item of this code: the same words leave it standing, new words replace it."""
+        for item in list_dev(self._store):
+            if item.code == code and item.text != text:
+                close_dev(self._store, item.id)
+        self._dev(now, code, text)
 
     # ----- the support bundle
 

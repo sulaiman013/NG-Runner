@@ -22,9 +22,13 @@ NG Jobs\<Job>\<Material>, the same name: 19 of 19 with programs on G:. ASSUMPTIO
 compare the same; none of the 10 is one. One that doesn't match reads as its own material with no
 programs, which is NOT CHECKED, and never a pass.
 Measured: rooms are Room0.des to Room#.des (FAILURES 12, SCHEMA 41), each with a version line too.
-ASSUMPTION: Mozaik re-saves annotations on close, which changes a .des with no change to the design
-(BUILD 809-812), so a pass may drop to NOT CHECKED on a close. Check it in the lab (build spec 8,
-step 2): that may want a hash of the parts, not the file.
+Settled on the 30 real .des/.bak pairs (2026-10-31): a re-save of the same design changes the file
+(20 of 30 differ in bytes: annotations, Room 0's renumbered products, two counters) and not the
+cutlist (des_cutlist printed the same from all 30). So a room is known by its design
+(design.room_identity), not its bytes, and a pass stands through Mozaik re-saving it on close. The one
+pair whose identity differs (Case G's Room 1) differs in groove flags, which the nest's own operations
+show: a real change, and the pass goes. A room that doesn't read as a design has no identity, and then
+no pass can stand on it.
 """
 from __future__ import annotations
 
@@ -38,6 +42,8 @@ from pathlib import Path
 from typing import Any
 
 from ngrunner.clock import from_iso, to_iso
+from ngrunner.guards.bak import DesignUnreadable
+from ngrunner.guards.design import room_identity
 from ngrunner.guards.facts import CheckedFiles, DesignMatch, OptFacts, ToolVerdict
 from ngrunner.guards.observer import LOCK_FILE, LOCK_FILES, OPTIMIZER_LOCK, Locks
 from ngrunner.guards.opt import OPT_SETTLES_AFTER, OptUnreadable, read_opt_file
@@ -231,10 +237,11 @@ def read_nest(nest: NestListed, job: JobFiles, said: Mapping[str, Any] | None, n
 
 
 def _room_hashes(job: JobFiles, read: Callable[[Path], bytes]) -> tuple[tuple[str, str], ...]:
+    """Each room as (name, its design's identity): what a pass rests on, and the same through a
+    re-save of the same design. Empty when any room can't be read or isn't a design: no pass then."""
     try:
-        return tuple((name, hashlib.sha256(read(job.path / name)).hexdigest())
-                     for name in sorted(job.rooms))
-    except Unreadable:
+        return tuple((name, room_identity(name, read(job.path / name))) for name in sorted(job.rooms))
+    except (Unreadable, DesignUnreadable):
         return ()
 
 
