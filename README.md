@@ -6,7 +6,7 @@ That is Phase 1a, the first step of a staircase. Later phases add read-only guar
 
 Built and supported by Sulaiman Ahmed, for Jim Delany, owner of Inspired Closets LA.
 
-> **Status, 2026-10-30, 3:25 PM Pacific.** Phase 1a is about 97% built. **The built `.exe` has run the whole path for real** on Sulaiman's PC: a shadow run that wrote nothing to NG Jobs, then the real go-live switch, then 13 of 13 jobs filed for real into a stand-in NG Jobs folder, through real Studio, the real job list and real Drive. The three independent reviews' problems are fixed and pushed. **Nothing is installed on Jim's PC, and the real NG Jobs has not been touched.** What's left needs Jim's PC or a real night. Everything so far has been built and tested on Sulaiman's PC. See [Where it stands](#where-it-stands) and the [timeline](#timeline).
+> **Status, 2026-10-30, 9:50 PM Pacific.** Phase 1a is about 97% built, and **Phase 1b's guards now run in the built app**: it reads each new CNC program, and on doubled cam holes or a wrong sheet it raises DO NOT CUT. **The built `.exe` has also run the whole Phase 1a path for real** on Sulaiman's PC: a shadow run that wrote nothing to NG Jobs, then the real go-live switch, then 13 of 13 jobs filed for real into a stand-in NG Jobs folder, through real Studio, the real job list and real Drive. The three independent reviews' problems are fixed and pushed. **Nothing is installed on Jim's PC, and the real NG Jobs has not been touched.** What's left needs Jim's PC or a real night. Everything so far has been built and tested on Sulaiman's PC. See [Where it stands](#where-it-stands) and the [timeline](#timeline).
 
 ## Contents
 
@@ -320,7 +320,13 @@ Kickoff call with Jim, Mary, Nicole and Sulaiman. Jim hands over his IC-to-Mozai
 | 2:50 PM | **The fixes, broken on purpose, one line at a time** | 15 of 24 made a test fail. The other 9 ran against too few tests or had none, so tests were added: now 24 of 24 |
 | 2:58 PM | **The real go-live switch** on the real Health page | It asks first, then all 13 trial-filed jobs go back for fresh fetches, logged as "being filed for real" |
 | 3:15 PM | **13 of 13 filed for real** into the stand-in NG Jobs, with Barbara's "Filed as" queued for each | Right job on page 1 of all 13 by a separate audit. 0 of 68 fetches failed the check, 71 of 71 writes succeeded, no errors in the log |
-| 3:25 PM | **Now:** a shadow run on Sulaiman's PC against the real control folder, so a real morning digest reaches his email and real new rows are measured as they arrive, while Jim is away | Starting |
+| 3:25 PM | **A shadow run starts on Sulaiman's PC** against the real control folder, so a real morning digest reaches his email and real new rows are measured as they arrive, while Jim is away | Running |
+| 4:43 PM | **Phase 1b's build spec,** measured on the real files on Drive | 1,663 of 1,663 CNC programs read. They show both nest defects, so the guard can start without Jim's toolkit. Nest files can't be read on this PC |
+| 6:56 PM | Pushed: [`e9721a0`](https://github.com/sulaiman013/NG-Runner/commit/e9721a0) | Phase 1b's parts: program reader, sheet size, tracker pre-flight, order heads-up, per-material state. **5,428 tests on a clean checkout** |
+| 9:30 PM | **The guards on the built `.exe`,** with real faulty programs posted under made-up names to a stand-in folder | DO NOT CUT within 2.5 minutes on both, a real card, and the app's own emails sent through the real Apps Script with receipts read back |
+| 9:37 PM | **Clearing a fault, for real** | A click on the real board cleared only the sheet size. Doubled holes stayed red until a clean program was posted |
+| 9:45 PM | Pushed: [`b8f57e8`](https://github.com/sulaiman013/NG-Runner/commit/b8f57e8) | The guards wired into the app. **5,602 tests on a clean checkout** |
+| 9:50 PM | **Now:** the rest of Phase 1b that can be built without Jim's files, and the shadow run on this PC | Running |
 
 ## Measured so far
 
@@ -355,6 +361,10 @@ Real files were read only, and nothing here required touching Jim's PC.
 | The built `.exe`: those jobs filed for real after the go-live switch | 13 of 13, right job on page 1 of all 13 by a separate audit | 10-30 |
 | Fetches in that run failing the summary check | 0 of 68 | 10-30 |
 | Deliberate breaks of the final safety fixes that make a test fail | 24 of 24 | 10-30 |
+| Real CNC programs read by the guard's reader | 1,663 of 1,663 | 10-30 |
+| Programs with doubled cam holes, before and after Jim's 10-20 fix | 278 of 1,368 before, 0 of 67 after (a small sample) | 10-30 |
+| The guards on the built `.exe`: real faulty programs caught | 2 of 2, within 2.5 minutes, with a false alarm on neither clean re-post | 10-30 |
+| Deliberate breaks of Phase 1b's safety lines that make a test fail | All of them, across 4 builders, each after closing what the first round missed | 10-30 |
 | Matching: deliberately broken copies of the code that the tests catch | 50 of 50 | 10-30 |
 | Build size and time | 74 MB, 45 seconds | 10-30 |
 
@@ -400,7 +410,7 @@ From the design. Phases P0 to P3 are the committed scope. Each phase stands by i
 |---|---|---|---|
 | **P0 Prepare** | 3 | Setup Check, baseline, default decisions | Done, apart from running the Setup Check on Jim's PC |
 | **P1a File it** | 10 | Summaries filed by themselves, the board, the digest, the heartbeat | **In progress** |
-| **P1b Guards** | 11 | Read-only guards: the nest guard with DO NOT CUT, a lock pre-flight, an order heads-up | Group 1 wired, not committed; groups 2 and 3 wait |
+| **P1b Guards** | 11 | Read-only guards: the nest guard with DO NOT CUT, a lock pre-flight, an order heads-up | **In progress.** What can run from Drive's programs and tracker is built, wired and pushed, and proven on the built app. The parts that read Mozaik's own files wait for Jim's toolkit zip |
 | **P2 One toolkit** | 18 | Shared tools go into Jim's chat, so it stops writing per-job scripts. A test on past jobs decides P5 | Not started |
 | **P3 Checks and takeoff** | 18 | Checks run on "sections done", and the takeoff is done on intake | Not started |
 | **P4 Lock and fixes** | 16 | Lock, tracker and fixes run from NG Runner | Not started |

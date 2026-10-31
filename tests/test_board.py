@@ -1013,3 +1013,11 @@ def test_a_job_with_no_materials_shows_no_empty_list(browser, views):
 def test_a_material_in_a_state_the_guard_doesnt_have_is_refused_where_it_is_made():
     with pytest.raises(ValueError):
         MaterialRow("3-4 Classic White", "ok_to_cut")
+
+
+def test_the_ticks_may_wrap_so_no_column_is_pushed_off_the_table():
+    """Measured in a real browser on 2026-10-30: forced onto one line above 1200px, the sixth tick
+    pushed the job table 23px past its edge at 1280px and cut off Status. A table's columns take a
+    wrapping list's full width when there is room, so the ticks still sit on one line then."""
+    css = (Path(__file__).parents[1] / "ngrunner" / "board" / "static" / "board.css").read_text(encoding="utf-8")
+    assert "flex-wrap: nowrap" not in css

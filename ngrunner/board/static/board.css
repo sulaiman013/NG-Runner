@@ -204,9 +204,6 @@ code, .mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
 .jobs .job-name { white-space: nowrap; }
 .num { font-variant-numeric: tabular-nums; white-space: nowrap; }
 .jobs .next { color: var(--ink-2); min-width: 220px; }
-@media (min-width: 1200px) {
-  .jobs .ticks { flex-wrap: nowrap; }  /* one line of ticks per job where the width allows */
-}
 
 /* ------------------------------------------------------------------ the nest guard's lines */
 .materials { display: grid; gap: 6px; margin: 10px 0 0; padding: 0; list-style: none; }
