@@ -28,6 +28,14 @@ The life of a fix:
    open across the write: "Mozaik undid", urgent, with one redo offered. Back, or changed, in a session
    after it: "You changed it in Mozaik", logged. Anything that can't be read: could not verify.
 
+Which fixer: any of Jim's that writes a room and has a check that can confirm it (the Fixer protocol
+below; lock/fixers.py names each, and docs/decisions.md says which of his scripts qualify). Each says
+what its script changed by its own reading of the room (lock/des.py), whether its check flagged exactly
+those parts before and none after (cleared), and whether its check still names one (names). Where a
+check names parts by what they show rather than by CabNo, as top_line's, eb_tops' and notch_check's
+banding lines do, what it said is a Said: how many lines name each identity, and each part's identity,
+so a line that names a part the fix didn't touch, or a touched part no line names, refuses the plan.
+
 P4's build writes shadow copies only (lock.P4_SHADOW): the real Mozaik Shared is never written here.
 """
 from __future__ import annotations
@@ -35,11 +43,12 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any, Protocol
 
 from ngrunner.clock import Clock
 from ngrunner.guards.opt import OptUnreadable, parsed_opt
@@ -51,9 +60,6 @@ from ngrunner.store import Store
 from ngrunner.store.locks import FixRecord, add_fix, get_fix, mark_fix_undone, record_survival
 from ngrunner.toolkit import Snapshot, run_tool
 from ngrunner.writes import FileWrite, Roots, commit_recorded
-
-if TYPE_CHECKING:
-    from ngrunner.lock.notch import NotchFace
 
 _ROOM = re.compile(r"Room([0-9]+)\.des", re.IGNORECASE)
 
@@ -71,6 +77,80 @@ class Element:
     attribute: str
     before: str
     after: str
+
+
+@dataclass(frozen=True)
+class Said:
+    """What a fix's own check said of one room, where its lines name a part by what it shows (a name, a
+    size) rather than its CabNo. flagged: how many lines name each identity. keys: each part of the room,
+    by the key a fix's elements know it by (the fixer's key), and the identity a line would name it by."""
+
+    flagged: Mapping[str, int]
+    keys: Mapping[str, str]
+
+
+def said_of(lines: Sequence[str], keys: Mapping[str, str]) -> Said | None:
+    """A Said, or None when a line names nothing in the room: a check that speaks of a part the room
+    doesn't hold can't be read."""
+    there = set(keys.values())
+    return None if any(line not in there for line in lines) else Said(Counter(lines), keys)
+
+
+def said_cleared(before: Said, after: Said, keys: Sequence[str] | set[str]) -> bool:
+    """The check named exactly the touched parts before, each as often as there are of them, and after,
+    neither a touched part nor anything it named before: a line for a part the fix didn't touch, a touched
+    part no line names, or a line that is still there, is no fix. Two parts that look alike to the check
+    are told apart by the after: the one it still names is the one the fix didn't fix."""
+    touched = set(keys)
+    if not touched or any(k not in before.keys or k not in after.keys for k in touched):
+        return False
+    named = Counter({k: v for k, v in before.flagged.items() if v})
+    return (Counter(before.keys[k] for k in touched) == named and not said_names(after, touched)
+            and not any(after.flagged.get(identity) for identity in named))
+
+
+def said_names(said: Said, keys: Sequence[str] | set[str]) -> bool:
+    """The check names one of these parts, or one of them can't be found to ask about."""
+    return any(k not in said.keys or said.flagged.get(said.keys[k]) for k in keys)
+
+
+class Fixer(Protocol):
+    """One of Jim's fixers, run from the adopted copy on a staged room (lock/notch.py was the first).
+    finding: the P3 finding it fixes, (checker, what), as checks/findings.py names it."""
+
+    name: str
+    finding: tuple[str, str]
+
+    def draft(self, snapshot: Snapshot, base: bytes, *, room_name: str, work: Path, run: Callable[..., Any],
+              python: Path | None = None) -> bytes: ...
+
+    def elements(self, base: bytes, result: bytes) -> tuple[Element, ...]: ...
+
+    def locate(self, data: bytes, element: Element) -> tuple[int, int] | None: ...
+
+    def flags(self, snapshot: Snapshot, data: bytes, *, room_name: str, work: Path, run: Callable[..., Any],
+              python: Path | None = None) -> Any | None: ...
+
+    def cleared(self, before: Any, after: Any, elements: Sequence[Element]) -> bool: ...
+
+    def names(self, said: Any, elements: Sequence[Element]) -> bool: ...
+
+    def tag(self, number: int, element: Element) -> str: ...
+
+    def short(self, element: Element) -> str: ...
+
+    def words(self, room_name: str, tags: tuple[str, ...], elements: Sequence[Element] = (),
+              data: bytes = b"") -> str: ...
+
+
+class CabFixer:
+    """What a fixer whose elements are on products says of them: R1C3 on the card, C3 after a save."""
+
+    def tag(self, number: int, element: Element) -> str:
+        return f"R{number}C{element.cab}"
+
+    def short(self, element: Element) -> str:
+        return f"C{element.cab}"
 
 
 @dataclass(frozen=True)
@@ -106,7 +186,7 @@ class Survival:
 # ----- planning
 
 
-def plan_fix(fixer: NotchFace, snapshot: Snapshot, room_path: Path, *, folder: str, work: Path,
+def plan_fix(fixer: Fixer, snapshot: Snapshot, room_path: Path, *, folder: str, work: Path,
              nests: Mapping[str, bytes], run: Callable[..., Any] = run_tool, python: Path | None = None,
              read: Callable[[Path], bytes] = read_shared) -> FixPlan | None:
     """The fix fixer would make to room_path, as a plan for Jim, or None when there is nothing to fix.
@@ -129,16 +209,14 @@ def plan_fix(fixer: NotchFace, snapshot: Snapshot, room_path: Path, *, folder: s
         raise FixRefused("Jim's fixer changed more than the values it fixes, so no fix is planned.")
     before = fixer.flags(snapshot, base, room_name=room, work=work, run=run, python=python)
     after = fixer.flags(snapshot, result, room_name=room, work=work, run=run, python=python)
-    cabs = {e.cab for e in elements}
-    if (before is None or after is None or any(before.get(c) != "wrong" for c in cabs)
-            or any(c in after for c in cabs)):
+    if before is None or after is None or not fixer.cleared(before, after, elements):
         raise FixRefused("The fix's own check doesn't show it fixed, so no fix is planned.")
     number = int(_ROOM.fullmatch(room)[1])
-    tags = tuple(f"R{number}C{cab}" for cab in sorted(cabs, key=_cab_order))
+    tags = tuple(dict.fromkeys(fixer.tag(number, e) for e in _in_cab_order(elements)))
     flipped, renest = hand_flips(nests, tags)
     fingerprint = _fingerprint(fixer.name, folder, room, elements, flipped)
     return FixPlan(fixer.name, folder, room, diff(base, result), elements, tags, flipped, renest,
-                   snapshot.sha256, fingerprint, _words(fixer, room, tags, flipped, renest))
+                   snapshot.sha256, fingerprint, _words(fixer, room, tags, flipped, renest, elements, base))
 
 
 def hand_flips(nests: Mapping[str, bytes], tags: Sequence[str]) -> tuple[tuple[str, ...], tuple[str, ...]]:
@@ -210,7 +288,7 @@ def apply_fix(plan: FixPlan, *, approved: str, programs: Mapping[str, Sequence[s
 # ----- Undo
 
 
-def undo_fix(record: FixRecord, fixer: NotchFace, *, programs: Mapping[str, Sequence[str]], store: Store,
+def undo_fix(record: FixRecord, fixer: Fixer, *, programs: Mapping[str, Sequence[str]], store: Store,
              roots: Roots, interlock: Callable[[list[Path]], str | None], clock: Clock,
              read: Callable[[Path], bytes] = read_shared) -> FixResult:
     """Put the room back as the fix found it, through the same door it was written by."""
@@ -243,7 +321,7 @@ def undo_fix(record: FixRecord, fixer: NotchFace, *, programs: Mapping[str, Sequ
     return FixResult(True, get_fix(store, record.id))
 
 
-def _put_back(fixer: NotchFace, current: bytes, elements: Sequence[Element]) -> bytes:
+def _put_back(fixer: Fixer, current: bytes, elements: Sequence[Element]) -> bytes:
     for e in elements:
         span = fixer.locate(current, e)
         if span is None or current[span[0]:span[1]].decode("utf-8", "replace") != e.after:
@@ -260,7 +338,7 @@ def _put_back(fixer: NotchFace, current: bytes, elements: Sequence[Element]) -> 
 # ----- survival
 
 
-def survival(record: FixRecord, fixer: NotchFace, snapshot: Snapshot, *, room_bytes: bytes, room_name: str,
+def survival(record: FixRecord, fixer: Fixer, snapshot: Snapshot, *, room_bytes: bytes, room_name: str,
              work: Path, sessions: Sequence[tuple[datetime, datetime | None]], store: Store, at: datetime,
              run: Callable[..., Any] = run_tool, python: Path | None = None, keep: bool = True) -> Survival:
     """Whether the fix survived Jim's next save of its room, room_bytes as the room is now. sessions:
@@ -269,18 +347,18 @@ def survival(record: FixRecord, fixer: NotchFace, snapshot: Snapshot, *, room_by
     thread (store.locks.record_survival)."""
     if sha256(room_bytes) == record.result_sha256:
         return Survival("waiting", "The room hasn't been saved since the fix")
-    tags = ", ".join(sorted({f"C{e['cab']}" for e in record.elements}, key=lambda t: _cab_order(t[1:])))
+    elements = [Element(**e) for e in record.elements]
+    tags = ", ".join(dict.fromkeys(fixer.short(e) for e in _in_cab_order(elements)))
     values = []
-    for e in (Element(**e) for e in record.elements):
+    for e in elements:
         span = fixer.locate(room_bytes, e)
         values.append(None if span is None else room_bytes[span[0]:span[1]].decode("utf-8", "replace"))
     flags = fixer.flags(snapshot, room_bytes, room_name=room_name, work=work, run=run, python=python)
-    elements = [Element(**e) for e in record.elements]
     if None in values or flags is None:
         found = Survival("could_not_verify", f"Could not verify the fix on {tags} after the save")
     elif all(v == e.after for v, e in zip(values, elements)):
         found = Survival("held", f"The fix on {tags} held after the save") \
-            if not any(e.cab in flags for e in elements) else \
+            if not fixer.names(flags, elements) else \
             Survival("could_not_verify", f"Could not verify the fix on {tags}: its own check still names it")
     elif all(v == e.before for v, e in zip(values, elements)):
         overlapped = any(start <= record.applied_at and (end is None or end >= record.applied_at)
@@ -298,7 +376,7 @@ def survival(record: FixRecord, fixer: NotchFace, snapshot: Snapshot, *, room_by
 # ----- helpers
 
 
-def _substituted(fixer: NotchFace, data: bytes, elements: Sequence[Element]) -> bytes:
+def _substituted(fixer: Fixer, data: bytes, elements: Sequence[Element]) -> bytes:
     spans = []
     for e in elements:
         span = fixer.locate(data, e)
@@ -319,9 +397,9 @@ def _fingerprint(fixer: str, folder: str, room: str, elements: Sequence[Element]
     return hashlib.sha256(json.dumps(body, sort_keys=True).encode("utf-8")).hexdigest()
 
 
-def _words(fixer: NotchFace, room: str, tags: tuple[str, ...], flipped: tuple[str, ...],
-           renest: tuple[str, ...]) -> tuple[str, ...]:
-    lines = [fixer.words(room, tags)]
+def _words(fixer: Fixer, room: str, tags: tuple[str, ...], flipped: tuple[str, ...],
+           renest: tuple[str, ...], elements: Sequence[Element], base: bytes) -> tuple[str, ...]:
+    lines = [fixer.words(room, tags, elements, base)]
     if renest:
         names = ", ".join(plain_material(m) for m in renest)
         lines.append(f"Fix and re-nest {names}: the fix changes parts its nest holds, so it reads NOT"
@@ -344,3 +422,7 @@ def _note_own(interlock: object, path: Path) -> None:
 
 def _cab_order(cab: str) -> tuple[int, str]:
     return (int(cab), cab) if cab.isdecimal() else (1 << 30, cab)
+
+
+def _in_cab_order(elements: Sequence[Element]) -> list[Element]:
+    return sorted(elements, key=lambda e: _cab_order(e.cab))

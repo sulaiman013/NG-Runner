@@ -40,6 +40,10 @@ that never finished, a reader that breaks or a code it doesn't know are all coul
 watch.nest_checks runs both from the adopted copy once there is one; NEST_CHECKED also needs the design
 match, which is built in guards/. crosscheck and its checkers are read in ngrunner/checks/.
 
+A fixer of Jim's with no command line of its own (wm_eb.enforce_room, which BUILD has his chat call on a
+staged room) is called the same way by run_room_call: one function of a script of the copy, given the
+room's text and its text written back, in binary, under the same Job Object, Python and hash checks.
+
 Checks run on staged copies (stage_files) in a folder of their own, and never in place. Only ever read:
 the toolkit's own folder and what is staged. Everything written is in NG Runner's data folder.
 """
@@ -92,6 +96,15 @@ _LOCAL_FILE_SYSTEMS = ("NTFS", "REFS")
 _START = ("import os, runpy, sys; s = sys.argv[1]; sys.argv = sys.argv[1:]; "
           "sys.path.insert(0, os.path.dirname(os.path.abspath(s))); runpy.run_path(s, run_name='__main__')")
 _CHILD_VARIABLES = {"PYTHONUTF8": "1", "PYTHONDONTWRITEBYTECODE": "1", "PYTHONNOUSERSITE": "1"}
+# run_room_call's start in the tools' Python (call_room_function is the same in this process): the script's
+# folder first on the path, its function given the room's text, the text it gives back written new.
+_CALL = ("import os, sys; s, f, a, b = sys.argv[1:5]; sys.argv = [s]; "
+         "sys.path.insert(0, os.path.dirname(os.path.abspath(s))); "
+         "m = __import__(os.path.splitext(os.path.basename(s))[0]); "
+         "r = getattr(m, f)(open(a, 'rb').read().decode('utf-8')); r = r[0] if isinstance(r, tuple) else r; "
+         "r if isinstance(r, str) else sys.exit('the function gave no room text'); "
+         "open(b, 'xb').write(r.encode('utf-8'))")
+_PUBLIC_NAME = re.compile(r"[A-Za-z][A-Za-z0-9_]*")
 
 ToolReader = Callable[[ToolRun], tuple[str, str]]       # a run: (code, its fixed line)
 
@@ -219,13 +232,32 @@ def run_tool(snapshot: Snapshot, script: str, args: Sequence[str], *, timeout_s:
     tools' Python, or NG Runner's own (tools_python). Raises ToolkitError when it can't be started in
     its job at all, or the copy changed while it ran: either way, no result."""
     path = _script_in(snapshot, script)
+    return _run(snapshot, lambda py: tool_command(str(path), _expanded(args), python=py), timeout_s, python)
+
+
+def run_room_call(snapshot: Snapshot, script: str, function: str, room: Path, out: Path, *,
+                  timeout_s: int = 120, python: Path | None = None) -> ToolRun:
+    """One room function of a script of the copy, as BUILD has Jim's chat run wm_eb.enforce_room() on a
+    staged Room#.des, where the script has no command line for it: function(the room's text) gives the
+    new text, or a tuple whose first item is it. The room is read and out written in binary (RULES
+    section 6), and out must not be there yet. The same Job Object, Python and checks as run_tool; a
+    function that breaks or gives no text is a run that failed, with nothing written."""
+    if not _PUBLIC_NAME.fullmatch(function):
+        raise ToolkitError("Only a plain function of a script is called, so nothing was run.")
+    path = _script_in(snapshot, script)
+    return _run(snapshot, lambda py: call_command(str(path), function, str(room), str(out), python=py),
+                timeout_s, python)
+
+
+def _run(snapshot: Snapshot, command_for: Callable[[Path | None], list[str]], timeout_s: int,
+         python: Path | None) -> ToolRun:
     refuse_unless_local(snapshot.path, "The toolkit copy")
     if hash_of_tree(snapshot.path) != snapshot.sha256:
         raise ToolkitError("The toolkit copy has changed since it was taken, so nothing was run.")
     python = python if python is not None else tools_python()
     if python is not None and not python.is_file():
         raise ToolkitError("The Python that runs Jim's scripts isn't there, so nothing was run.")
-    command = tool_command(str(path), _expanded(args), python=python)
+    command = command_for(python)
     work = Path(tempfile.mkdtemp(prefix="run-", dir=snapshot.path.parent))
     try:
         said = _run_in_a_job(command, work, timeout_s, isolated=python is not None)
@@ -244,6 +276,32 @@ def tool_command(script: str, args: Sequence[str], *, python: Path | None = None
     if getattr(sys, "frozen", False):
         return [sys.executable, "run-tool", script, *args]
     return [sys.executable, "-X", "utf8", "-m", "ngrunner", "run-tool", script, *args]
+
+
+def call_command(script: str, function: str, room: str, out: str, *, python: Path | None = None) -> list[str]:
+    """What runs a room function (run_room_call): as tool_command, with a start of its own in the tools'
+    Python and the run-call command in the build's exe or from the repo."""
+    args = [script, function, room, out]
+    if python is not None:
+        return [str(python), "-I", "-B", "-X", "utf8", "-c", _CALL, *args]
+    if getattr(sys, "frozen", False):
+        return [sys.executable, "run-call", *args]
+    return [sys.executable, "-X", "utf8", "-m", "ngrunner", "run-call", *args]
+
+
+def call_room_function(script: str, function: str, room: str, out: str) -> None:
+    """run-call in this process: what _CALL does in the tools' Python, for the build, which has none."""
+    folder = os.path.dirname(os.path.abspath(script))
+    sys.argv = [script]
+    sys.path.insert(0, folder)
+    module = __import__(os.path.splitext(os.path.basename(script))[0])
+    with open(room, "rb") as source:
+        said = getattr(module, function)(source.read().decode("utf-8"))
+    text = said[0] if isinstance(said, tuple) else said
+    if not isinstance(text, str):
+        raise SystemExit("the function gave no room text")
+    with open(out, "xb") as written:
+        written.write(text.encode("utf-8"))
 
 
 def tools_python(environ: Mapping[str, str] = os.environ) -> Path | None:

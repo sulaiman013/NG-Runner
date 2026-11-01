@@ -32,7 +32,7 @@ Each uses the questionnaire's recommended answer. Where Jim's docs disagree (Q1�
 - **P1b (guards):** order flags (any colour but Classic White, substitutions, totals above a set amount), George's emails, the push channel, the team tab (only if Ron, Will or Mary ask).
 - **P2 (one toolkit):** the drawing reader's consent and provider; Q6 and Q17.
 - **P3 (checks):** Q1 (tested live in Mozaik first), Q19 (the `.bak` rule).
-- **P4 (lock):** decisions 4, 7a–7f, 8 and 9; leases.
+- **P4 (lock):** decisions 4, 7a–7f, 8 and 9; leases; which of Jim's fixers NG Runner plans with ("P4's fixers").
 - **P5 (overnight build):** the night setup (questionnaire 5, 6), garage builds (Q8).
 
 ## Sulaiman's own calls
@@ -719,6 +719,62 @@ Measured 2026-11-01 (`tests/test_build_written_real.py` pins it). Each frozen ro
 - **Nothing was committed:** X and Z are refused at the commit by gate 6. No room reached even the shadow copy.
 - **The first 26 walls (Jobs A to J), Claude's cached readings, no plan, no colour:** 18 rooms, none written. Every one waits for its plan (each wall's position, angle and start, and the joints) and its colour (the material run and the drawer front). Six of them (in Jobs C, D, E and G) wait for nothing else; the other 12 also for a panel value: the run start (8 rooms), FM 84 or FM 90 (5), a wall of the room the reader didn't read (3), the reading's own doubt of x (3), the top line (1, Job F).
 - **Left for Jim or Sulaiman:** how `elev_panels.py` gets a renderer (a pinned poppler `pdftoppm.exe` beside the tools' Python, or a stand-in built on PyMuPDF, which changes what his measurement sees), and its wall-box finder on portrait pages like X's; where a room's colour comes from (SCHEMA 75-76's known-good job per colour, and the GV code for the drawer front); FM 84 from the template room or from `templates\FM_84.xml` (their `SourceLib` and `MaxH` differ); and whether a WM Elev must be on 32k when T isn't 2132 (RULES 319 or regression.py 100).
+
+## P4's fixers (2026-11-01)
+
+Phase 4 had one fixer, the notch's face. Every finding P3 raises (`checks/findings.py`) was set against Jim's toolkit of 2026-10-31 for a general fixer of his that writes a room's `.des` and has a check that can confirm it, read from each script's own docs and RULES and BUILD. Three more qualify and are built the way the notch is (`lock/topline.py`, `lock/banding.py`, listed in `lock/fixers.py`): planned on a staged copy by his script run from the adopted copy, made a byte patch, refused unless RULES section 6's byte gate passes, every byte changed is one of the elements' values and the fix's own check named exactly the touched parts before and none after; applied only on Jim's approval of that fingerprint, undone by the inverse patch, judged after his next save. All in shadow (`config.shadow_roots`), wired into the board's fix cards as the notch is. Nothing of his code is in the repo.
+
+### Which of Jim's scripts fix which finding
+
+| Finding (checker, what) | Jim's fixer | How it is run | What it writes | Its own check | Built? |
+|---|---|---|---|---|---|
+| `notch_check`, `notch_face` | `notch_side.py` | `notch_side.py <room> <out>` | `Hide` on each WM panel's two notch grooves | `notch_check.py` | Yes, since P4's first round (`notch_face`) |
+| `notch_check`, `wm_banding` | `wm_eb.enforce_room()`, which has no command line | Called on the room's text, as BUILD 8c has the chat do, through `toolkit.run_room_call` (the `run-call` command in a build) | `EBand`, `EBandLock` on the points of WM panels' part outlines | `notch_check.py`'s banding lines, "the gate on the two BUILD 8c fixes" (INDEX) | Yes (`wm_banding`) |
+| `top_line`, `top_line` | `top_line.py` | `top_line.py <room>`, which rewrites the room it is given | `Elev` on WM panels | `top_line.py --check` | Yes (`top_line`) |
+| `eb_tops`, `banding` | `eb_tops.py` | `eb_tops.py <second colour> <room>`, in place, with the colour crosscheck checks with (read from its `CHECKS` by `ast`) | `EBand`, `EBandLock` on countertop outline points (rule 1); on parts in the second colour, and slot 6's texture (rule 2); a countertop with no points gets four new lines each | `eb_tops.py --check` | Yes for countertops (`countertop_banding`). Rule 2 is refused, saying so: it never changed a real room here. A new outline is refused by the byte gate (line count) |
+| `br_cam_check`, `bridge_cams` and `doubled_holes` | `br_cams.py` | `br_cams.py <room>` | Strips every user hole on a bridge's verticals and inserts a new pair: elements, not values | `br_cam_check.py` | No. Of the 71 real rooms its check flags, it changed 21, 20 of them by a different line count (the byte gate), cleared the check on 2 and left 50 as they were (their findings are doubled housings and the switch, which it doesn't touch) |
+| `outset_check`, `outset` | None: "FLAG it, never auto-fix" (RULES section 5) | | | | No |
+| `section_align` `off_grid`, `top_off`, `bore_pitch`, `faces_off` | `apply_fix.py` | A hand-written JSON of cabinets and values | `Elev`, cam holes | | No: a list someone writes, not a fixer of a finding |
+| `drill_depth_check` `bore_depth`, `bores_stripped` | `br_through.py` | | Its write path is removed ("use apply_fix.py") | | No |
+| `wm_variant_check`, `part_geom_check`, `section_span` | `swap_rea.py`, `wm_panel.py`, `rea_panel.py` | | Whole products from the library, at a Linux path (`swap_rea`'s `LIB`) | | No: structural, and the library isn't there |
+| `parm_check`, `op_schema_check`, `panel_xcheck`, `ic_code_check`, `room_files`, `stale_rows`, `bore_off_panel` | None | | | | No ("existing jobs are not retro-fixed"; Mozaik's; a build matter; advisory) |
+
+One-offs are never wrapped: `fix_<client>_*` (6), `swap_rea_<job>`, the `build_*` scripts, and `eb_fix2.py`, a revert of his own earlier Top banding that no check flags.
+
+### Measured on real rooms (`tests/test_lock_fixers_real.py`)
+
+Every fixer on every product room of Jobs A to J (20), the 40 P5 jobs (86) and the 6 jobs of Jim's answers (8), 114 rooms, each planned, written into a shadow copy through `commit_write` and undone. Each fixer's check flags exactly the rooms it plans; none was refused; every plan passed the byte gate, changed only its elements' values (read by the fixer on both sides) and was undone to the exact original bytes, with the backup equal to the room. The notch's plans on Jobs A to J are its first round's two.
+
+| Fixer | Rooms its check flags (A–J, P, answers) | Plans | Refused | Values changed | Plans naming a hand flip | Undo exact |
+|---|---|---|---|---|---|---|
+| `notch_face` | 36 (2, 30, 4) | 36 | 0 | 146 | 30 | 36 of 36 |
+| `top_line` | 19 (1, 14, 4) | 19 | 0 | 73 | 15 | 19 of 19 |
+| `wm_banding` | 36 (1, 29, 6) | 36 | 0 | 437 | 28 | 36 of 36 |
+| `countertop_banding` | 20 (4, 14, 2) | 20 | 0 | 112 | 0 | 20 of 20 |
+
+One room per new fixer (Case J) went through the whole life: the P4 interlock refusing until a closed marker and two quiet polls, the fix written, "waiting" and then "Mozaik undid" from its own check on real bytes, Undo to the exact bytes, and the real file only ever read. In the day simulation (scenario 97, `tests/test_e2e_fixers.py`) a top line fix goes from the command box's check to its card, Jim's approval, the write into NG Runner's own copy and Undo, as scenario 84 does for the notch; the worker's planning, Undo and survival by each fixer's name are in `tests/test_lock_work_fixers.py`. Each safety rule broken on purpose (`tests/test_lock_fixers_breaks.py`, and 12 guards removed from the code one at a time): a test failed every time.
+
+### Rulings (defaults, for Sulaiman to overrule)
+
+| Question | Ruling | Why |
+|---|---|---|
+| A check that names parts by what they show | top_line's lines name a panel by name, height and Elev, eb_tops' a countertop by its size, notch_check's banding line a panel by its name's first 24 letters, never a CabNo. So what such a check says is counted by identity (`fixes.Said`): before the fix its lines must name exactly the touched parts, as many of each as were touched; after, none of them and nothing it named before. A line that names nothing in the room means the check can't be read | Never guess which panel a line meant. Two panels alike to the check are told apart by the after: the one still named is the one not fixed |
+| wm_eb with no command line | Called as BUILD 8c calls it, on the room's text, by `toolkit.run_room_call`: the same Job Object, Python and hash checks as a script, the room read and the result written in binary, nothing written when the function breaks. A build runs it in-process (`NGRunner.exe run-call`) | RULES 4: call his code, never re-type it |
+| eb_tops' second colour | Whatever crosscheck passes eb_tops besides `--check`, read from its `CHECKS` by `ast` (3763 today). Unreadable: no plan | The fix must be what his check checks |
+| eb_tops' rule 2 and slot 6 | Refused, saying so, until a real room shows one | Every real room it changes here is countertops only |
+| Where a countertop is, and its nest | By its `IDTag`; on the card by its size. A nest names every countertop of a room `R<room>N0` (49 of 49 real countertop parts), so a countertop fix names every nest holding one of that room's countertops to re-nest, and a hand flip of any of them | A banding change changes what the nest cuts (decision 7b) |
+| A point whose name another point has | Refused only when it is a changed point. One real room (P34 Room 1) has three CabNos used twice and a countertop fix that names its own point once | A duplicate elsewhere can't move what the fix touched |
+| The card's words | The top line: the panels, the line they go to and the furthest move. WM banding: the panels, and any tape taken off an edge against the wall. Countertops: their sizes, the slot every edge is taped in, and any tape moved from another slot | Jim approves what he is shown |
+| The notch's planned key | As it was (`<run>|<room>`); each other fixer's adds its name | A run planned before these fixers came isn't planned again |
+| Undo and survival | By the fixer named in the fix; a name NG Runner no longer has gives the Undo up as a DEV item, and its survival is never judged | |
+| Two fixes on one room in shadow | The second waits until Jim's next save judges the first, as before; in shadow nothing saves the copy, so after 8 hours it is given up. Live, it is planned again on the fixed room | Staging the room again would read as his save |
+| Approving each fixer | Still Jim's, through RULES section 8 (build spec: "each fixer (P4)") | |
+
+### For Jim
+
+- eb_tops re-tapes a countertop edge Jim had in another slot: P02 Room 3 (slots 2 and 3 to 1), P30 Rooms 6 and 7 (3 to 1, 6 to 1), Ans4 Room 2 (1 to 6, an Ore top). The card says so; whether that is wanted is his. Case H's Room 1 has a countertop 0 in long that eb_tops tapes.
+- The top line moves are often fractions of a millimetre (1127.1 to 1126.7): his `room_top` takes the commonest WM top when no FM panel sets it.
+- On 30 of the 36 rooms with a notch on the wrong face, the nest already has parts flipped by hand (the 10-20 case): each card names them.
 
 ## Matching (settled)
 

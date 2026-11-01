@@ -70,6 +70,7 @@ P1A_MODULES: tuple[str, ...] = (
     "ngrunner.lock.clicks", "ngrunner.lock.job_sheet", "ngrunner.lock.patch", "ngrunner.lock.fixes",
     "ngrunner.lock.notch", "ngrunner.store.locks", "ngrunner.lock.names", "ngrunner.lock.kept",
     "ngrunner.lock.work", "ngrunner.lock.view", "ngrunner.lock.shadow", "ngrunner.convert.tracker_names",
+    "ngrunner.lock.des", "ngrunner.lock.topline", "ngrunner.lock.banding", "ngrunner.lock.fixers",
     "flask", "waitress", "requests", "pystray", "PIL", "psutil", "win32api", "pywintypes",
     "pythoncom", "win32com", "win32com.shell", "win32com.propsys", "win32cred", "win32timezone",
     "win32job", "runpy", "pkgutil", "windows_toasts",

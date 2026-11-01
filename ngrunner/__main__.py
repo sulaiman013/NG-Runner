@@ -34,6 +34,9 @@ Commands:
     SCRIPT.py [ARGS...]                the same as run-tool (ruling R7): crosscheck.py starts each
                                        checker as sys.executable <checker>.py, and in a build that is
                                        NGRunner.exe
+    run-call SCRIPT FUNCTION ROOM OUT  one room function of a toolkit script, given ROOM's text, its
+                                       text written to OUT in binary (toolkit.run_room_call: a fixer
+                                       of Jim's with no command line, as wm_eb.enforce_room)
 
 Modules are imported inside each command, so a module that fails to load breaks only the
 commands that need it, and --self-test can still name it.
@@ -117,6 +120,8 @@ def main(
         return _canary(Path(args.folder), environ, say)
     if args.command == "run-tool":
         return _run_tool(args.script, args.args)
+    if args.command == "run-call":
+        return _run_call(args.script, args.function, args.room, args.out)
     try:
         paths = app_paths(environ)
     except SettingsError as exc:
@@ -164,6 +169,10 @@ def _parser() -> _Parser:
     run_tool = commands.add_parser("run-tool", help="run a toolkit script (NG Runner starts this)")
     run_tool.add_argument("script", help="the script, as a full path")
     run_tool.add_argument("args", nargs=argparse.REMAINDER, help="what the script is given")
+    run_call = commands.add_parser("run-call", help="run a toolkit room function (NG Runner starts this)")
+    for name, said in (("script", "the script, as a full path"), ("function", "the function it holds"),
+                       ("room", "the room it is given"), ("out", "where its text is written")):
+        run_call.add_argument(name, help=said)
     return parser
 
 
@@ -322,6 +331,25 @@ def _run_tool(script: str, args: list[str]) -> int:
         print(exc.code, file=sys.stderr)
         return 1
     except Exception:  # noqa: BLE001 - a script that breaks fails its own run, as under Python
+        traceback.print_exc()
+        return 1
+    return 0
+
+
+def _run_call(script: str, function: str, room: str, out: str) -> int:
+    """A toolkit room function in this process, as run_tool runs a script: what breaks is on stderr and
+    exit code 1, and nothing is written."""
+    import traceback
+
+    from ngrunner.toolkit import call_room_function
+
+    sys.dont_write_bytecode = True
+    try:
+        call_room_function(script, function, room, out)
+    except SystemExit as exc:
+        print(exc.code, file=sys.stderr)
+        return 1
+    except Exception:  # noqa: BLE001 - a function that breaks fails its own run, as under Python
         traceback.print_exc()
         return 1
     return 0

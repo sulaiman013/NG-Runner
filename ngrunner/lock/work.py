@@ -25,14 +25,16 @@ Why it is built this way:
   show on the real tracker's snapshot (read only), and closes as matched or differing; with none after 7
   days, as not compared (lock/shadow.py). It blocks only a second drop for its own job (drop.in_flight).
   Each closing goes to Sulaiman, marked SHADOW, and is P4's "5 locks match the chat".
-- A fix is planned from the real room (read only) when a check that counts finds a notch on the wrong
-  face, and becomes a card in the plan's words. Only Jim's approval of that very plan applies it: into a
-  fresh copy of the room, under a lease and the P4 interlock, which waits while Mozaik runs, while the
-  job's folder is open or changed in the last two minutes, and for two polls two minutes apart. If the
-  room was saved meanwhile the plan is made again: the same finding applies, one gone closes, another asks
-  again. Undo is the same door backwards. After the copy is saved again, the fix's own check says whether
-  it survived, with Mozaik's sessions as the observer saw them: "Mozaik undid" is urgent with one redo,
-  "You changed it in Mozaik" a line in the log.
+- A fix is planned from the real room (read only) when a check that counts finds, still open, a finding
+  one of Jim's fixers fixes (lock/fixers.py: a notch on the wrong face, a panel off the top line, WM
+  banding not taped and locked, a countertop not taped on four edges), by that fixer, and becomes a card
+  in the plan's words. Only Jim's approval of that very plan applies it: into a fresh copy of the room,
+  under a lease and the P4 interlock, which waits while Mozaik runs, while the job's folder is open or
+  changed in the last two minutes, and for two polls two minutes apart. If the room was saved meanwhile
+  the plan is made again, by its own fixer: the same finding applies, one gone closes, another asks
+  again. Undo is the same door backwards, by the fixer that wrote it. After the copy is saved again, that
+  fixer's own check says whether it survived, with Mozaik's sessions as the observer saw them: "Mozaik
+  undid" is urgent with one redo, "You changed it in Mozaik" a line in the log.
 - A lease is taken for a fix or an Undo, renewed while one waits, and released when none does, on Pause,
   and by release-all. A lapsed lease is taken again, never renewed (leases.py).
 
@@ -70,7 +72,10 @@ from ngrunner.lock import kept, leases
 from ngrunner.lock import shadow as shadow_batches
 from ngrunner.lock.clicks import ClickResult, finish_lock, lock, lock_design
 from ngrunner.lock.drop import LOCKED, AfterRead, judge_after, read_after, resend_missing
-from ngrunner.lock.fixes import FixPlan, FixRefused, Survival, apply_fix, plan_fix, replan, survival, undo_fix
+from ngrunner.lock.fixers import FIXERS, fixer_named
+from ngrunner.lock.fixes import (
+    Fixer, FixPlan, FixRefused, Survival, apply_fix, plan_fix, replan, survival, undo_fix,
+)
 from ngrunner.lock.gate import CLICKS, GateResult, lock_gate
 from ngrunner.lock.job_sheet import JOB_SHEET_SUFFIX, MATCHES, JobSheetRun, make_job_sheet, write_job_sheet
 from ngrunner.lock.leases import ACTIVE, LeaseResult, lease_held, release_lease, renew_lease, take_lease
@@ -96,13 +101,13 @@ BATCH_WAITS = timedelta(minutes=30)     # design 3.4: a lock batch, 30 minutes, 
 LOCK_FAILED, LOCK_STUCK = "lock_failed", "lock_stuck"
 FIX_NOT_PLANNED, FIX_GAVE_UP, BATCH_SLOW = "fix_not_planned", "fix_gave_up", "lock_batch_waiting"
 NO_JOB_FOLDER = "Its job folder isn't in Mozaik Shared, so there is nothing to lock yet"
-_NOTCH = ("notch_check", "notch_face")
 _ROOM_TAG = "R"
 _SHEET_ASKED = "lock.sheet_asked"
 _ROOM = re.compile(r"Room(\d+)\.des", re.IGNORECASE)
 _OPEN = ("dropped", "archived", "first_ok")
 _FINAL = ("This fix was undone already", "Undo is refused", "Undo is offered only", "This fix isn't the one",
           "Putting the values back", "The patch", "The file isn't")
+NO_FIXER = "NG Runner has no fixer by the name this fix was written with"
 
 
 def pc_name() -> str:
@@ -338,7 +343,8 @@ class LockWork:
                 if item.get("replan"):
                     snapshot = adopted_snapshot(ctx.store, ctx.paths.toolkit)
                     work = ctx.paths.staging / "fixes"
-                    return lambda: ("plan", _plan(snapshot, real, plan.folder, plan.room, work,
+                    fixer = fixer_named(plan.fixer)
+                    return lambda: ("plan", _plan(fixer, snapshot, real, plan.folder, plan.room, work,
                                                   {"pending": item_id}))
                 return lambda: ("stage", (item_id, _stage_room(real, copy, plan.room)))
         return None
@@ -370,7 +376,8 @@ class LockWork:
             return None
         waiting = {p.get("fix") for p in kept.pending(store)}
         for fix in list_fixes(store):
-            if fix.state != "applied" or fix.survival is not None or fix.id in waiting:
+            fixer = fixer_named(fix.fixer)
+            if fix.state != "applied" or fix.survival is not None or fix.id in waiting or fixer is None:
                 continue
             room = shadow(ctx).mozaik_shared / "Jobs" / fix.folder / fix.room
             try:
@@ -380,8 +387,8 @@ class LockWork:
             if hashlib.sha256(data).hexdigest() == fix.result_sha256:
                 continue
             sessions, work, at = mozaik_sessions(store), ctx.paths.staging / "fixes", ctx.clock.now()
-            return lambda fix=fix, data=data: ("survival", (fix.id, survival(
-                fix, NOTCH_FACE, snapshot, room_bytes=data, room_name=fix.room, work=work, sessions=sessions,
+            return lambda fix=fix, data=data, fixer=fixer: ("survival", (fix.id, survival(
+                fix, fixer, snapshot, room_bytes=data, room_name=fix.room, work=work, sessions=sessions,
                 store=store, at=at, keep=False)))
         return None
 
@@ -394,8 +401,8 @@ class LockWork:
         for studio_id, check in sorted(job_checks(store, now).items()):
             if not check.counts or check.run is None:
                 continue
-            for room in _notch_rooms(check):
-                key = f"{check.run.id}|{room}"
+            for fixer, room in _fixer_rooms(check):
+                key = _planned_key(check.run.id, room, fixer)
                 if key in planned:
                     continue
                 job = get_job(store, studio_id)
@@ -404,8 +411,8 @@ class LockWork:
                 real = _job_dir(Path(ctx.settings.mozaik_shared) / "Jobs", folders_of(job))
                 work = ctx.paths.staging / "fixes"
                 kept.add_name(store, kept.PLANNED, key)
-                return lambda real=real, room=room, job=job: ("plan", _plan(
-                    snapshot, real, folder_of(job), room, work, {"studio_id": job.studio_id}))
+                return lambda real=real, room=room, job=job, fixer=fixer: ("plan", _plan(
+                    fixer, snapshot, real, folder_of(job), room, work, {"studio_id": job.studio_id}))
         return None
 
     # -- what came back, on the scheduler's thread
@@ -730,10 +737,14 @@ class LockWork:
         if fix is None:
             kept.drop_pending(store, item["id"])
             return
+        fixer = fixer_named(fix.fixer)
+        if fixer is None:
+            self._give_up(ctx, item, NO_FIXER, now)
+            return
         room = roots.mozaik_shared / "Jobs" / fix.folder / fix.room
         if check([room]) is not None:
             return
-        result = undo_fix(fix, NOTCH_FACE, programs=programs, store=store, roots=roots, interlock=check,
+        result = undo_fix(fix, fixer, programs=programs, store=store, roots=roots, interlock=check,
                           clock=ctx.clock)
         if result.ok:
             self._done(ctx, item, "undone", f"The fix on {fix.room} is undone: the room is as it was", now)
@@ -830,15 +841,17 @@ def _read_snapshot(folder: Path | None) -> tuple[TrackerSnapshot | None, str | N
         return None, str(exc)
 
 
-def _plan(snapshot: Snapshot | None, real: Path | None, folder: str, room: str, work: Path,
+def _plan(fixer: Fixer | None, snapshot: Snapshot | None, real: Path | None, folder: str, room: str, work: Path,
           extra: Mapping[str, Any]) -> dict[str, Any]:
     """Jim's fixer on a copy of the real room, read only, and the job's nests read for hand flips."""
     found: dict[str, Any] = {**extra, "folder": folder, "room": room}
+    if fixer is None:
+        return {**found, "refused": NO_FIXER}
     if snapshot is None or real is None:
         return {**found, "refused": "no copy of Jim's toolkit is adopted, or the job's folder isn't there"}
     try:
         nests = {p.stem: read_shared(p) for p in sorted(real.glob("*.opt"))}
-        found["plan"] = plan_fix(NOTCH_FACE, snapshot, real / room, folder=folder, work=work, nests=nests)
+        found["plan"] = plan_fix(fixer, snapshot, real / room, folder=folder, work=work, nests=nests)
     except FixRefused as exc:
         found["refused"] = str(exc).rstrip(".")
     except (Unreadable, OSError):
@@ -929,18 +942,30 @@ def _nest_identity(nests: Sequence[NestRecord]) -> dict[str, str]:
     return found
 
 
-def _notch_rooms(check: JobCheck) -> list[str]:
-    """The rooms a check that counts names a notch on the wrong face in, still open (not settled)."""
+def _fixer_rooms(check: JobCheck, fixers: Sequence[Fixer] = FIXERS) -> list[tuple[Fixer, str]]:
+    """Each fixer's rooms, fixer by fixer: those a check that counts names its finding in, still open (not
+    settled)."""
+    return [(fixer, room) for fixer in fixers for room in _rooms_for(check, fixer.finding)]
+
+
+def _rooms_for(check: JobCheck, finding: tuple[str, str]) -> list[str]:
+    """The rooms a check that counts names this finding in, (checker, what), still open (not settled)."""
     rooms = []
     for shown in check.open:
         item = shown.item
-        if (item.checker, item.what) != _NOTCH or item.kind != "fix":
+        if (item.checker, item.what) != finding or item.kind != "fix":
             continue
         for tag in item.tags:
             number = tag[1:].split("C")[0] if tag.startswith(_ROOM_TAG) else ""
             if number.isdecimal() and f"Room{int(number)}.des" not in rooms:
                 rooms.append(f"Room{int(number)}.des")
     return rooms
+
+
+def _planned_key(run_id: object, room: str, fixer: Fixer) -> str:
+    """Which run's finding in which room was planned, by which fixer. The notch's key is as it always was,
+    so a run planned before the other fixers came isn't planned again."""
+    return f"{run_id}|{room}" if fixer.name == NOTCH_FACE.name else f"{run_id}|{room}|{fixer.name}"
 
 
 def _asked_before(store: Store, fingerprint: str) -> bool:

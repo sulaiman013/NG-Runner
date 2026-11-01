@@ -23,7 +23,11 @@ NG Runner is configured with, and any .des while Mozaik runs.
     job_sheet   Jim's cnc_job_sheet run on a staged copy, its counts read and set against the nests
     patch       byte patches on a .des: a diff, its inverse, applied only to the bytes it was made from
     fixes       a fixer's plan as a diff, applied after approval, Undo, and the survival check
-    notch       the one real fixer: the hang notch's face (RULES section 3, Jim's notch_side.py)
+    des         a room's values by their place in the design, and the staged copy a fixer runs on
+    notch       the hang notch's face (RULES section 3, Jim's notch_side.py and notch_check.py)
+    topline     the room's top line (Jim's top_line.py, its own check with --check)
+    banding     WM panels' banding (wm_eb.enforce_room, notch_check.py) and countertops' (eb_tops.py)
+    fixers      every fixer NG Runner plans with, by name and by the finding it fixes
 """
 from __future__ import annotations
 
