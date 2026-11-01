@@ -114,9 +114,15 @@ This change is separate from the four above, and goes in after P1a's change 2 (`
 - Its `settled` lists the items Jim settled for this job, as "not a problem" or "I already told
   chat". Never raise one of them again for this job. A settle is for this job only, never a rule
   for another; NG Runner asks again by itself once the job's design changes.
+- Some entries in `settled` say `"scope": "all jobs"`: Jim settled that kind of finding (its
+  `checker` and `what`) for every job, under the `condition` in his words. All of them are also
+  in `NG Jobs\_NG Runner\NG Runner settled.json`; read that list before raising any finding. Where
+  the condition holds, don't raise that kind of finding on any job. Where it doesn't, raise it as
+  usual. Each one waits to be written into RULES and regression in your next session, with Jim's
+  accept; its `absorbed_by_rules` says whether it has been.
 ```
 
-Why: a session can't see NG Runner, so it learns what NG Runner checked, and what you settled, only from this file, as with the rest of it. "I already told chat" means the rule you gave your chat reaches NG Runner later, with your toolkit; until then the settle stands for this job alone, as the design asks ("Settle defaults to this job"). NG Runner keeps a settle only while the job's design and IC Conversion are the ones it was made on, so the chat can trust the list as it reads it.
+Why: a session can't see NG Runner, so it learns what NG Runner checked, and what you settled, only from this file and the one settled list, as with the rest of it. A settle for all jobs is one you gave with a condition in your own words, on the board's "Not a problem for any job" form; it takes effect at once, and the chat folds it into RULES only when you accept it (design: "'All jobs' must name a condition. It takes effect at once, is written to the shared settled list the chat reads, and is folded into RULES and regression in Jim's next chat session, with his accept"). "I already told chat" means the rule you gave your chat reaches NG Runner later, with your toolkit; until then the settle stands for this job alone, as the design asks ("Settle defaults to this job"). NG Runner keeps a settle for one job only while the job's design and IC Conversion are the ones it was made on, so the chat can trust the list as it reads it.
 
 It goes in with the Rev line of change 4: add "chat reads NG Runner's check and settled list (RULES §1)" to its words. Nothing here touches a script, a checker or a takeoff, so expect `Regression clean`; if anything moves, don't commit, and each moved item comes to you.
 
