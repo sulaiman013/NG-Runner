@@ -168,8 +168,7 @@ def _read(line: SummaryLine, desc: str, kind: str) -> BoardPart | Unplaced | Non
         return Unplaced(line, "a trim line (TR) that is neither a base nor a rail cover")
     after = desc[size.end():].split()
     codes = tuple(t for t in desc[:size.start()].split()[1:] + after if _CODE.fullmatch(t))
-    colour = next((t for t in after if _COLOUR_CANDIDATE.fullmatch(t) and t not in rules.FLAG_CODES),
-                  None)
+    colour = printed_colour(desc)
     if colour in rules.NO_MATERIAL:
         # RULES 146: say so and name it, never substitute. Named from rules' own table, never echoed.
         name = rules.NO_MATERIAL[colour]
@@ -186,6 +185,17 @@ def _read(line: SummaryLine, desc: str, kind: str) -> BoardPart | Unplaced | Non
         return Unplaced(line, f"a {kind} with no colour code printed")
     return BoardPart(kind, line.qty, float(size["a"]), float(size["b"]), float(printed or 0.0),
                      built, codes, colour, bool(rules.WALL_MOUNT.search(desc)), "pulled")
+
+
+def printed_colour(desc: str) -> str | None:
+    """The colour code a row prints after its size (two capitals that are no description code), as the
+    takeoff reads it; None when it prints none, or no size to read it after. A code the rules don't know
+    is returned as printed: the caller says what that means."""
+    size = _SIZE3.search(desc)
+    if size is None:
+        return None
+    return next((t for t in desc[size.end():].split()
+                 if _COLOUR_CANDIDATE.fullmatch(t) and t not in rules.FLAG_CODES), None)
 
 
 def _built(kind: str, printed: float | None, text: str, colour: str | None) -> tuple[float, str]:

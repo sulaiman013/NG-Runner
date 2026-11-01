@@ -309,3 +309,15 @@ def test_p1b_settings_survive_a_save_and_a_load(tmp_path):
     assert load_settings(paths) == saved
     save_settings(paths, settings_from(_p1b_raw()))
     assert load_settings(paths).tracker_folder is None
+
+
+def test_the_pdftoppm_for_gate_6_is_one_optional_full_path_that_survives_a_save():
+    """P5's one hook for a pinned poppler: with none, gate 6 searches PATH (gates.find_pdftoppm)."""
+    assert settings_from(_p1b_raw()).pdftoppm is None
+    assert settings_from(_p1b_raw(pdftoppm="")).pdftoppm is None
+    with pytest.raises(SettingsError, match="pdftoppm"):
+        settings_from(_p1b_raw(pdftoppm=r"poppler\pdftoppm.exe"))
+    given = settings_from(_p1b_raw(pdftoppm=r"C:\poppler\Library\bin\pdftoppm.exe"))
+    assert given.pdftoppm == Path(r"C:\poppler\Library\bin\pdftoppm.exe")
+    assert settings_to_json(given)["pdftoppm"] == r"C:\poppler\Library\bin\pdftoppm.exe"
+    assert settings_to_json(settings_from(_p1b_raw()))["pdftoppm"] is None

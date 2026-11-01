@@ -15,10 +15,12 @@ Why: P5a builds the rooms Jim's chat builds by hand (design section 7, P5). His 
                 design's, IdTagCount the highest IDTag of a wall or a product (SCHEMA 32-37)
   RoomParms     H_Walls, the tallest wall (gen_rooms.py 111-113)
   RoomSet       the material templates (SCHEMA 46-85) and the drawer fronts (SCHEMA 59). The model doesn't
-                hold them: the room's colour decides them, so they come in as RoomSettings, the
-                <BaseMatTempSel> run of a known-good room in that colour (SCHEMA 75-78, build_jobs_0914.py
-                39-50) and the drawer front, or the room is not written. Never cabinet id 88 (SCHEMA 82-84)
-                and never a per-part MatORId (BUILD 157-159)
+                hold them: the room's colour decides them, so they come in as RoomSettings (colour.settle),
+                the <BaseMatTempSel> run lifted whole from a known-good room in that colour (SCHEMA 75-78,
+                build_jobs_0914.py 39-50) and the drawer front, or the room is not written. A run handed in
+                rather than lifted, or one its room no longer holds byte for byte, is refused: never
+                hand-authored (colour.still_holds). Never cabinet id 88 (SCHEMA 82-84) and never a per-part
+                MatORId (BUILD 157-159)
   walls         each <Wall> a clone of the template's own, only IDTag, Len, Height, PosX, PosY, Ang and
                 WallNumber changed (SCHEMA 9-30: "clone this template and mutate only the numeric values")
   joints        each <WallJoint> a clone of one in Jim's reference rooms (the template room has none), only
@@ -39,9 +41,13 @@ from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass
 from xml.sax.saxutils import escape
 
+from ngrunner.build.colour import FRONTS, HANDED_IN, Lifted, still_holds
+from ngrunner.build.colour import NO_DRAWER_FRONT as NO_DRAWER_FRONT  # the colour's, re-exported
+from ngrunner.build.colour import NO_MATERIALS as NO_MATERIALS
+from ngrunner.build.colour import RoomSettings as RoomSettings
 from ngrunner.build.desxml import CRLF, Element, XmlError, attrs, crlf, elements, num, one, set_attr
 from ngrunner.build.products import Library, clone
-from ngrunner.build.room import PanelSpec, RoomModel, WallSpec
+from ngrunner.build.room import Fact, PanelSpec, RoomModel, WallSpec
 
 TEMPLATE_JOB = "Lux Closet Template Claude"  # BUILD 144: the closet template job
 TEMPLATE_ROOM = "Room1.des"  # BUILD 145: never Room0
@@ -51,10 +57,6 @@ DRAWER_ATTRS = ("NonColumnTopDrawer", "NonColumnMidDrawer", "NonColumnBotDrawer"
 MATERIAL = "BaseMatTempSel"
 CABINET = "3"  # SCHEMA 52-54: the Cabinet category
 NOT_THE_CABINET = "88"  # SCHEMA 82-84: the blank template's cabinet id, never a real job's
-NO_MATERIALS = ("the room's colour sets its material templates (SCHEMA 46-85), lifted from a known-good job in "
-                "that colour, and nothing NG Runner reads gives the colour yet")
-NO_DRAWER_FRONT = ("the drawer front is NG H or NG VG Drawer with pilot by the IC's grain code (SCHEMA 59), and "
-                   "nothing NG Runner reads gives it yet")
 _QUOTE = {'"': "&quot;"}
 
 
@@ -124,15 +126,7 @@ def load_template(room1: bytes, reference_rooms: Iterable[bytes] = ()) -> RoomTe
     return RoomTemplate(version.strip(), text, wall[0].of(text), joint, lib, fm[0].of(text), cats)
 
 
-# ----- what the model doesn't hold
-
-
-@dataclass(frozen=True)
-class RoomSettings:
-    """The room's colour as the writer needs it: the <BaseMatTempSel> run of a known-good room built in that
-    colour (SCHEMA 75-78), and its drawer front (SCHEMA 59). None: not known, and the room waits."""
-    materials: str | None = None
-    drawer_front: str | None = None
+# ----- what the model doesn't hold: the colour (colour.py)
 
 
 def materials_problem(run: str, template: RoomTemplate) -> str | None:
@@ -166,10 +160,12 @@ def materials_problem(run: str, template: RoomTemplate) -> str | None:
 
 @dataclass(frozen=True)
 class WrittenRoom:
-    """A room's Room#.des, in memory, with the values written that Jim's rules flag for review."""
+    """A room's Room#.des, in memory, with the values written that Jim's rules flag for review, and the colour
+    it was written in (gates.py's colour gate holds the bytes to it; commit.py records where it came from)."""
     number: int
     content: bytes
     review: tuple[str, ...] = ()
+    settings: RoomSettings | None = None
 
     @property
     def file_name(self) -> str:
@@ -191,12 +187,7 @@ def blocking(model: RoomModel, settings: RoomSettings, template: RoomTemplate,
              library: Library) -> list[tuple[str, str, str]]:
     """Every value the room needs that isn't settled (AGENTS.md rule 8): the model's, then the writer's."""
     out = list(model.unverified())
-    if settings.materials is None:
-        out.append(("room", "materials", NO_MATERIALS))
-    elif (problem := materials_problem(settings.materials, template)) is not None:
-        out.append(("room", "materials", problem))
-    if settings.drawer_front is None:
-        out.append(("room", "drawer front", NO_DRAWER_FRONT))
+    out += colour_blocking(settings, template)
     if len(model.walls) > 1 and template.joint is None:
         out.append(("room", "joints", "no reference room of Jim's has a <WallJoint> to clone (SCHEMA 9-30)"))
     for p in model.panels():
@@ -210,10 +201,30 @@ def blocking(model: RoomModel, settings: RoomSettings, template: RoomTemplate,
     return out
 
 
-def reviews(model: RoomModel) -> tuple[str, ...]:
-    """The values written but flagged Review by Jim's rules (SCHEMA 166)."""
-    return tuple(f"wall {p.wall} panel {p.index + 1}: {name.removesuffix('_mm')}: {fact.why}"
-                 for p in model.panels() for name, fact in p.facts() if fact.status == "review")
+def colour_blocking(settings: RoomSettings, template: RoomTemplate) -> list[tuple[str, str, str]]:
+    """What of the room's colour isn't settled, or isn't a run lifted from a known-good room (AGENTS.md rule 8)."""
+    out = []
+    materials, front = settings.materials, settings.drawer_front
+    if not isinstance(materials, Fact):
+        out.append(("room", "materials", HANDED_IN))
+    elif not materials.settled:
+        out.append(("room", "materials", materials.why))
+    elif (why := still_holds(materials.value)) is not None:
+        out.append(("room", "materials", why))
+    elif (problem := materials_problem(materials.value.run, template)) is not None:  # type: ignore[union-attr]
+        out.append(("room", "materials", problem))
+    if not isinstance(front, Fact) or front.value is None:
+        out.append(("room", "drawer front", front.why if isinstance(front, Fact) else NO_DRAWER_FRONT))
+    elif front.value not in FRONTS:
+        out.append(("room", "drawer front", "not a drawer front RULES 230-231 name"))
+    return out
+
+
+def reviews(model: RoomModel, settings: RoomSettings | None = None) -> tuple[str, ...]:
+    """The values written but flagged Review by Jim's rules (SCHEMA 166, RULES 233)."""
+    return (*(f"wall {p.wall} panel {p.index + 1}: {name.removesuffix('_mm')}: {fact.why}"
+              for p in model.panels() for name, fact in p.facts() if fact.status == "review"),
+            *(settings.reviews() if settings is not None else ()))
 
 
 def placed_panels(model: RoomModel) -> Iterator[tuple[WallSpec, PanelSpec]]:
@@ -233,7 +244,8 @@ def write_room(model: RoomModel, number: int, template: RoomTemplate, library: L
     blocked = blocking(model, settings, template, library)
     if blocked:
         return BlockedRoom(number, tuple(blocked))
-    assert settings.materials is not None and settings.drawer_front is not None
+    lifted, front = settings.materials.value, settings.drawer_front.value
+    assert isinstance(lifted, Lifted) and front is not None
     assert model.wall_height_mm.value is not None
     text = template.text
     room = one(text, "Room")
@@ -251,19 +263,19 @@ def write_room(model: RoomModel, number: int, template: RoomTemplate, library: L
         room_head = set_attr(room_head, attr, value)
     set_head = room_set.head(text)
     for attr in DRAWER_ATTRS:
-        set_head = set_attr(set_head, attr, escape(settings.drawer_front, _QUOTE))
+        set_head = set_attr(set_head, attr, escape(front, _QUOTE))
     changes: list[tuple[int, int, str]] = [
         (room.start, room.head_end, room_head),
         (parms.start, parms.head_end, set_attr(parms.head(text), "H_Walls", num(model.wall_height_mm.value))),
         (room_set.start, room_set.head_end, set_head),
-        (mats[0].start, mats[-1].end, crlf(settings.materials.strip())),
+        (mats[0].start, mats[-1].end, crlf(lifted.run)),  # whole, as it stands in its room (SCHEMA 75-76)
         (*_span(one(text, "Walls", inside)), _walls(model.walls, template)),
         (*_span(one(text, "WallJoints", inside)), _joints(model, template)),
         (*_span(one(text, "Products", inside)), products_xml),
     ]
     for start, end, new in sorted(changes, key=lambda c: c[0], reverse=True):  # from the end: spans still hold
         text = text[:start] + new + text[end:]
-    return WrittenRoom(number, crlf(text).encode("utf-8"), reviews(model))
+    return WrittenRoom(number, crlf(text).encode("utf-8"), reviews(model, settings), settings)
 
 
 def _span(e: Element) -> tuple[int, int]:

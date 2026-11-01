@@ -61,7 +61,7 @@ def setup(tmp_path: Path):
 def gated(tmp_path: Path, *, model=None, measured=MEASURED, number: int = 1) -> cm.Gated:
     lib = hb.library(tmp_path / "lib")
     model = model or hb.model()
-    room = wr.write_room(model, number, hb.template(), lib, hb.SETTINGS)
+    room = wr.write_room(model, number, hb.template(), lib, hb.settings())
     assert isinstance(room, wr.WrittenRoom)
     return cm.Gated(room, gt.gate_room(room, model, hb.WALLS, hb.template(), lib, measured))
 
@@ -152,6 +152,35 @@ def test_a_room_with_another_rooms_gates_is_not_written(setup, tmp_path: Path) -
     result = cm.commit_rooms(JOB, [cm.Gated(two.room, one.gates)], roots=shadow, interlock=interlock)
 
     assert not result.ok and result.reason == "Room2.des: its gates are Room1.des's"
+
+
+def test_a_committed_rooms_colour_source_is_kept_in_ng_runners_own_data_and_nowhere_else(setup, tmp_path) -> None:
+    from datetime import UTC, datetime
+
+    from ngrunner.build import colour as co
+
+    ctx, shadow, _, interlock = setup
+    at = datetime(2026, 11, 1, 9, 0, tzinfo=UTC)
+    result = cm.commit_rooms(JOB, [gated(tmp_path)], roots=shadow, interlock=interlock, store=ctx.store, at=at)
+
+    assert result.ok, result.reason
+    held = co.recorded_sources(ctx.store)
+    key = f"{JOB}\\Room1.des"
+    assert list(held) == [key] and held[key]["from_job"] == hb.JOB
+    written = (shadow.mozaik_shared / "Jobs" / JOB / "Room1.des").read_bytes()
+    assert hb.JOB.encode() not in written  # the room names no source
+
+
+def test_a_refused_commit_records_no_colour_source(setup, tmp_path) -> None:
+    from datetime import UTC, datetime
+
+    from ngrunner.build import colour as co
+
+    ctx, shadow, _, interlock = setup
+    room = gated(tmp_path, measured=None)
+    result = cm.commit_rooms(JOB, [room], roots=shadow, interlock=interlock, store=ctx.store,
+                             at=datetime(2026, 11, 1, 9, 0, tzinfo=UTC))
+    assert not result.ok and co.recorded_sources(ctx.store) == {}
 
 
 # ----- the chokepoint's P5 rules (writes.py)
@@ -260,9 +289,9 @@ def test_break_a_room_with_a_could_not_verify_value_written_anyway_is_caught_by_
     broken = dataclasses.replace(model, joints=dataclasses.replace(model.joints, status="could not verify",
                                                                    why="made up for the test"))
     lib = hb.library(tmp_path / "lib")
-    assert isinstance(wr.write_room(broken, 1, hb.template(), lib, hb.SETTINGS), wr.BlockedRoom)
+    assert isinstance(wr.write_room(broken, 1, hb.template(), lib, hb.settings()), wr.BlockedRoom)
     monkeypatch.setattr(wr, "blocking", lambda *a, **k: [])
-    room = wr.write_room(broken, 1, hb.template(), lib, hb.SETTINGS)
+    room = wr.write_room(broken, 1, hb.template(), lib, hb.settings())
     assert isinstance(room, wr.WrittenRoom)  # the first lock is out
 
     result = cm.commit_rooms(JOB, [cm.Gated(room, gt.gate_room(room, broken, hb.WALLS, hb.template(), lib, MEASURED))],

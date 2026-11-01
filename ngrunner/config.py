@@ -128,6 +128,10 @@ class Settings:
     tracker_folder: Path | None = None   # where Jim's tracker drops its snapshots; only ever read
     order_flag_total: float = 25000      # decision 12c: a heads-up names a total at or above this
     order_flags_on: bool = False         # nothing reaches Barbara or Will until Sulaiman turns it on
+    # P5. Poppler's pdftoppm.exe (or its folder) for gate 6's drawing check, Jim's elev_panels.py, which runs
+    # pdftoppm by name: the one hook for a pinned poppler. None: PATH is searched, and with none there gate 6
+    # could not verify (gates.find_pdftoppm). Never a stand-in renderer.
+    pdftoppm: Path | None = None
     # What load_settings set aside, as (name, value), sorted. No setting of this version: nothing
     # reads, compares or prints it, and save_settings puts it back for the version that knows it.
     set_aside: tuple[tuple[str, Any], ...] = field(default=(), compare=False, repr=False)
@@ -193,6 +197,8 @@ def _guard_settings(raw: Mapping[str, Any]) -> dict[str, Any]:
     values: dict[str, Any] = {}
     if raw.get("tracker_folder"):
         values["tracker_folder"] = _full_path(str(raw["tracker_folder"]), "tracker_folder")
+    if raw.get("pdftoppm"):
+        values["pdftoppm"] = _full_path(str(raw["pdftoppm"]), "pdftoppm")
     if "order_flag_total" in raw:
         total = raw["order_flag_total"]
         if (isinstance(total, bool) or not isinstance(total, int | float)
@@ -237,6 +243,7 @@ def settings_to_json(settings: Settings) -> dict[str, Any]:
         out[name] = str(out[name])
     out["sold_stages"] = list(settings.sold_stages)
     out["tracker_folder"] = None if settings.tracker_folder is None else str(settings.tracker_folder)
+    out["pdftoppm"] = None if settings.pdftoppm is None else str(settings.pdftoppm)
     return out
 
 

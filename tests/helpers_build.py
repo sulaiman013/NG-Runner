@@ -3,25 +3,50 @@ Made-up stand-ins for the files P5a's room writer reads at run time: the templat
 product templates and a reference room's joint. They are shaped like his (the same elements and the
 attributes the writer and its gates read) but every value, name and library here is invented, so no byte of
 his files is in the repo (AGENTS.md rule 5). The made-up job is Testerson's.
+
+The room's colour is lifted from a made-up known-good job (job_folder), as colour.py lifts it from a real one:
+its run carries SCHEMA's Egger template ids (the numbers Jim's checks read) with made-up template names, and its
+one texture is the library's Classic White, so its shade is white's.
 """
 from __future__ import annotations
 
+import atexit
+import shutil
+import tempfile
+from collections.abc import Mapping
 from pathlib import Path
 
+from ngrunner.build import colour as co
 from ngrunner.build import products as pr
 from ngrunner.build import schedule as sc
 from ngrunner.build import writer as wr
-from ngrunner.build.room import ICLine, Plan, ReadVertical, ReadWall, RoomModel, TableRow
+from ngrunner.build.room import ICLine, Plan, ReadVertical, ReadWall, RoomModel, TableRow, given
 
 LIB = "Testerson Library"
 JOINT = ('<WallJoint Wall1="7" Wall2="8" IsInterior="False" Wall1Corner="1" Wall2Corner="0" Wall2Along="0" '
          'Wall2Front="False" MiterBack="False" />')
-MATERIALS = ('<BaseMatTempSel CategoryId="3">\r\n      <MaterialTemplateSelection RootTemplateId="94" '
-             'MissingTemplateName="Testerson cabinets" />\r\n    </BaseMatTempSel>\r\n    '
-             '<BaseMatTempSel CategoryId="1">\r\n      <MaterialTemplateSelection RootTemplateId="12" '
-             'MissingTemplateName="Testerson doors" />\r\n    </BaseMatTempSel>')
-FRONT = "Testerson Drawer"
-SETTINGS = wr.RoomSettings(MATERIALS, FRONT)
+WHITE = co.Shade("WH", "Egger", co.TEXTURES["WH"])
+FRONT = co.H_FRONT
+JOB = "Testerson_090126"  # the made-up known-good job
+MODIFIED = 1791724189.25
+
+
+def material_run(ids: Mapping[str, str] = co.FAMILY_IDS["Egger"], texture: str = co.TEXTURES["WH"]) -> str:
+    """A made-up <BaseMatTempSel> run: the template ids given, every category but Drawers overriding one part
+    type to texture, CRLF as a real room's."""
+    blocks = []
+    for cat, rid in ids.items():
+        sel = f'<MaterialTemplateSelection RootTemplateId="{rid}" MissingTemplateName="Testerson {cat}"'
+        if cat == "2":
+            body = sel + " />"
+        else:
+            body = (sel + '>\r\n        <TextureIdOverrideByPartType PartType="Shelf" Id="35" ManuallyChanged="False" '
+                    f'MissingTextureName="{texture}" />\r\n      </MaterialTemplateSelection>')
+        blocks.append(f'<BaseMatTempSel CategoryId="{cat}">\r\n      {body}\r\n    </BaseMatTempSel>')
+    return "\r\n    ".join(blocks)
+
+
+MATERIALS = material_run()
 
 
 def point(i: int, x: float, y: float, side: str = "", band: str = "0", lock: str = "False") -> str:
@@ -122,16 +147,51 @@ def template_room(*, walls: int = 1, version: str = "15", fm: bool = True, lib: 
             '  <RoomParms SourceTemplateID="1" H_Walls="2438.4" H_Soffit="304.8" />\r\n'
             f'  <RoomSet Version="8" NonColumnTopDrawer="Slab" NonColumnMidDrawer="Slab" NonColumnBotDrawer="Slab" '
             f'AutofillLib="{LIB}" Note="a > b">\r\n'
-            '    <BaseMatTempSel CategoryId="3">\r\n      <MaterialTemplateSelection RootTemplateId="88" '
-            'MissingTemplateName="blank cabinets" />\r\n    </BaseMatTempSel>\r\n'
-            '    <BaseMatTempSel CategoryId="1">\r\n      <MaterialTemplateSelection RootTemplateId="12" '
-            'MissingTemplateName="blank doors" />\r\n    </BaseMatTempSel>\r\n'
+            '    ' + material_run({**co.FAMILY_IDS["Egger"], "3": "88"}, "Testerson White") + '\r\n'
             '  </RoomSet>\r\n'
             '  <Walls>\r\n' + "\r\n".join([wall] * walls) + '\r\n  </Walls>\r\n'
             '  <WallJoints />\r\n  <Appls />\r\n'
             '  <Products>\r\n' + "\r\n".join("    " + p.replace("\n", "\r\n") for p in prods) + '\r\n  </Products>\r\n'
             '  <Tops />\r\n  <RoomNotes />\r\n</Room>')
     return text.encode("utf-8")
+
+
+def with_run(room: bytes, run: str) -> bytes:
+    """room with its <BaseMatTempSel> run replaced by run."""
+    text = room.decode("utf-8")
+    start, end = text.index("<BaseMatTempSel"), text.rindex("</BaseMatTempSel>") + len("</BaseMatTempSel>")
+    return (text[:start] + run + text[end:]).encode("utf-8")
+
+
+def job_folder(base: Path, name: str = JOB, *, run: str = MATERIALS, room0: str | None = None,
+               modified: float | None = MODIFIED, more: Mapping[str, bytes] | None = None) -> Path:
+    """A made-up Mozaik job folder in base: JobDat.dat with its ModifiedDate (None: none), Room0 and Room1 in run
+    (Room0 in room0 when given), each holding the template room's products, and more files by name."""
+    folder = base / name
+    folder.mkdir(parents=True, exist_ok=True)
+    date = "" if modified is None else f"<ModifiedDate>{modified}</ModifiedDate>\r\n"
+    (folder / co.JOB_DATA).write_bytes(("3\r\n<?xml version=\"1.0\"?>\r\n<Job>\r\n  <CustomerName>Testerson"
+                                        f"</CustomerName>\r\n  {date}</Job>").encode("utf-8"))
+    (folder / "Room1.des").write_bytes(with_run(template_room(), run))
+    (folder / "Room0.des").write_bytes(with_run(template_room(), room0 if room0 is not None else run))
+    for file, content in (more or {}).items():
+        (folder / file).write_bytes(content)
+    return folder
+
+
+_MADE: dict[str, co.RoomSettings] = {}
+
+
+def settings() -> co.RoomSettings:
+    """The made-up room's colour, white, lifted from the made-up known-good job: made once per run, in a folder
+    of its own outside the repo, as the writer and the colour gate read the room it was lifted from."""
+    if "white" not in _MADE:
+        base = Path(tempfile.mkdtemp(prefix="ngr-colour-"))
+        atexit.register(shutil.rmtree, base, True)
+        found = co.KnownGood([job_folder(base)]).find(WHITE)
+        assert found.settled, found.why
+        _MADE["white"] = co.RoomSettings(found, given(FRONT, "rule"))
+    return _MADE["white"]
 
 
 def reference_room() -> bytes:

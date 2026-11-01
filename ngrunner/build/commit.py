@@ -16,19 +16,25 @@ real Mozaik Shared or NG Jobs. Three locks hold that, each on its own:
                 whatever the commit's roots say; nothing while NG Runner is paused, while any Mozaik
                 process runs here or that can't be told, or while the job's folder holds a lock file
                 (interlock.py's P4 checks, guards/observer.py's names)
+
+Once the rooms are written, which real job each one's colour was lifted from goes in NG Runner's own state
+table (colour.record_sources): it names clients, so it stays on this PC.
 """
 from __future__ import annotations
 
 import os
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from ngrunner.build.colour import record_sources
 from ngrunner.build.gates import RoomGates, report
 from ngrunner.build.writer import BlockedRoom, WrittenRoom
 from ngrunner.guards.observer import LOCK_FILE, OPTIMIZER_LOCK, mozaik_running
 from ngrunner.interlock import PAUSED_REASON, is_paused
+from ngrunner.store import Store
 from ngrunner.writes import CommitResult, FileWrite, Roots, commit_write
 
 P5_SHADOW = "P5 shadow"  # the phase P5a's rooms are written in: shadow copies only (writes.py)
@@ -125,10 +131,11 @@ def why_not(rooms: Sequence[Gated | BlockedRoom]) -> list[str]:
 
 def commit_rooms(job: str, rooms: Sequence[Gated | BlockedRoom], *, roots: Roots,
                  interlock: Callable[[list[Path]], str | None], expected: dict[str, str | None] | None = None,
-                 phase: str = P5_SHADOW) -> CommitResult:
+                 phase: str = P5_SHADOW, store: Store | None = None, at: datetime | None = None) -> CommitResult:
     """Every room of the job into roots.mozaik_shared\\Jobs\\<job>\\, all or none, only when every one passed
     every gate. expected: each room's sha256 as last read, by file name, for one NG Runner wrote before;
-    a room not named is new."""
+    a room not named is new. store: where, once written, each room's colour source is recorded
+    (colour.record_sources, NG Runner's own data), at at."""
     problems = why_not(rooms)
     if problems:
         return CommitResult(False, reason="; ".join(problems))
@@ -136,4 +143,8 @@ def commit_rooms(job: str, rooms: Sequence[Gated | BlockedRoom], *, roots: Roots
               for r in rooms if isinstance(r, Gated)]
     if not writes:
         return CommitResult(False, reason="no room to write")
-    return commit_write(writes, roots=roots, interlock=interlock, phase=phase)
+    result = commit_write(writes, roots=roots, interlock=interlock, phase=phase)
+    if result.ok and store is not None and at is not None:
+        record_sources(store, job, [(r.room.file_name, r.room.settings) for r in rooms
+                                    if isinstance(r, Gated) and r.room.settings is not None], at=at)
+    return result

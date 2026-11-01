@@ -22,7 +22,15 @@ never copied:
                 panel's top on the room's one T and its Elev on 32k (5) (RULES 313-319). T is read as
                 top_line.py's room_top reads it (RULES 333-339)
   gate 6        per wall, left to right, each placed panel's height against the drawing as Jim's
-                elev_panels.py measures it (RULES 320-322); a wall it can't measure could not verify
+                elev_panels.py measures it (RULES 320-322); a wall it can't measure could not verify. His
+                script renders the page with poppler's pdftoppm by name (its line 23), run unchanged: the
+                pdftoppm.exe NG Runner's settings name (Settings.pdftoppm), else one on PATH, put first on
+                the PATH his script sees. With none, or one that isn't poppler's, nothing is run and gate 6
+                could not verify: never a stand-in renderer. A page his wall-box finder can't read (a
+                portrait page) could not verify, and says so
+  colour        the written <BaseMatTempSel> run is, byte for byte, the run lifted from a known-good room,
+                which that room still holds, and is its shade's (SCHEMA 46-85); the three drawer fronts are
+                the settled one (RULES 230-233; colour.py)
   legal names   every ProdName one of the legal ones, never the June REA names (RULES 386-390, 415-417)
   drill codes   per wall, the sides of the panels that need one (WM, REA) are its lines' FD/LH/RH codes as a
                 set (RULES 371-372, 388-390; panel_drill.py gate)
@@ -43,7 +51,10 @@ never copied:
 from __future__ import annotations
 
 import math
+import os
 import re
+import shutil
+import subprocess
 import xml.etree.ElementTree as ET
 from collections import Counter
 from collections.abc import Mapping, Sequence
@@ -52,15 +63,16 @@ from pathlib import Path
 from typing import Literal
 
 from ngrunner.build import placement as pl
-from ngrunner.build.desxml import XmlError, attrs, elements, one, start_tags
+from ngrunner.build.colour import FRONTS, Lifted, RoomSettings, material_run, run_problem, still_holds
+from ngrunner.build.desxml import XmlError, attrs, crlf, elements, one, start_tags
 from ngrunner.build.products import (
     GROOVE_EQ, GROOVE_OFFSET_MM, LEGAL, SLANT_ALONG_MM, SLANT_INTO_MM, SUPERSEDED, Library, is_rea, is_wm,
     operations, outline_edges,
 )
-from ngrunner.build.room import ICLine, ReadWall, RoomModel
+from ngrunner.build.room import Fact, ICLine, ReadWall, RoomModel
 from ngrunner.build.schedule import DRILL_SIDE, drill, vt_lines
 from ngrunner.build.walls import net_turn
-from ngrunner.build.writer import WALL_SUFFIX, RoomTemplate, WrittenRoom, placed_panels
+from ngrunner.build.writer import DRAWER_ATTRS, WALL_SUFFIX, RoomTemplate, WrittenRoom, placed_panels
 
 Status = Literal["passed", "failed", "could not verify"]
 AUDIT_MM = 0.0005  # three places written: a value read back is the model's within half the last place
@@ -74,9 +86,12 @@ OVERLAP_IN = 1.0  # gate 6: a drawn line and a panel share more than 1 in of hei
 BOX_TOL_IN = 0.5  # gate 6: a line reaching the wall's top, within half an inch, is the wall's box
 BOX_FLOOR_IN = 2.0  # ... and the floor, within 2 in (frozen Z: 98.5 down to 2.0)
 ELEV_PANELS = "scripts/elev_panels.py"
+PDFTOPPM = "pdftoppm.exe"  # what elev_panels.py's subprocess.run(["pdftoppm", ...]) finds on Windows
+POPPLER = "poppler"  # pdftoppm -v names its makers: The Poppler Developers
+NO_PDFTOPPM = "the drawing check needs poppler's pdftoppm, which isn't on this PC"
 REQUIRED = ("file", "settled", "attributes", "walls", "panels", "gate 1", "gate 2", "gate 3", "gate 4", "gate 5",
-            "gate 6", "legal names", "drill codes", "notch", "groove", "WM banding", "REA", "line bores", "part",
-            "SourceLib")  # every gate a room must pass before it is committed (commit.py)
+            "gate 6", "colour", "legal names", "drill codes", "notch", "groove", "WM banding", "REA", "line bores",
+            "part", "SourceLib")  # every gate a room must pass before it is committed (commit.py)
 
 
 @dataclass(frozen=True)
@@ -153,19 +168,75 @@ def read_measure(stdout: str) -> Measured:
     return Measured(tuple(out))
 
 
-def measure_wall(snapshot: object, pdf: Path, page: int, wall_in: float, wall_h_in: float, *,
-                 python: Path | None = None, timeout_s: int = 120) -> Measured:
-    """Jim's elev_panels.py from the adopted toolkit copy, on one elevation page (RULES 321-322)."""
-    from ngrunner import toolkit
+def find_pdftoppm(setting: Path | None = None, *, environ: Mapping[str, str] = os.environ,
+                  timeout_s: int = 15) -> Path | str:
+    """Poppler's pdftoppm.exe for elev_panels.py, or why there is none, in words gate 6 reports. setting:
+    Settings.pdftoppm, the exe or its folder (the one hook for a pinned poppler); without it, PATH is searched.
+    One that isn't pdftoppm.exe, or whose -v doesn't name poppler, is refused: never a stand-in renderer."""
+    if setting is not None:
+        exe = setting / PDFTOPPM if setting.is_dir() else setting
+        if exe.name.casefold() != PDFTOPPM or not exe.is_file():
+            return "the pdftoppm NG Runner's settings name isn't there, so the drawing check can't run"
+    else:
+        found = shutil.which(PDFTOPPM, path=environ.get("PATH", ""))
+        if found is None:
+            return NO_PDFTOPPM
+        exe = Path(found)
+    return exe if is_poppler(exe, timeout_s=timeout_s) else (
+        "the pdftoppm found here isn't poppler's (its -v doesn't name it), so the drawing check didn't run")
+
+
+def is_poppler(exe: Path, *, timeout_s: int = 15) -> bool:
+    """Whether exe says it is poppler's pdftoppm: `pdftoppm -v` names The Poppler Developers."""
+    try:
+        said = subprocess.run([str(exe), "-v"], stdin=subprocess.DEVNULL, capture_output=True, timeout=timeout_s,
+                              creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0), check=False)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return POPPLER in (said.stdout + said.stderr).decode("utf-8", "replace").casefold()
+
+
+def page_shape(pdf: Path, page: int) -> str | None:
+    """portrait or landscape, as the page is shown (its /Rotate applied); None when it can't be read."""
+    import pypdf
 
     try:
+        shown = pypdf.PdfReader(str(pdf)).pages[page - 1]
+        width, height = float(shown.mediabox.width), float(shown.mediabox.height)
+        if int(shown.get("/Rotate", 0) or 0) % 180:
+            width, height = height, width
+    except Exception:  # noqa: BLE001 - pypdf raises many kinds on a file it can't read; the shape is then unknown
+        return None
+    return "portrait" if height > width else "landscape"
+
+
+def no_wall_box(pdf: Path, page: int) -> str:
+    """Why a page Jim's wall-box finder stopped on could not verify, in plain words (frozen job X's pages)."""
+    shape = page_shape(pdf, page)
+    where = f"a {shape} page" if shape else "its page"
+    return (f"Jim's elev_panels.py found no wall box on page {page}, {where}: his finder needs the wall's box to "
+            "fill 38% of the page's height, so this wall's drawing could not be measured")
+
+
+def measure_wall(snapshot: object, pdf: Path, page: int, wall_in: float, wall_h_in: float, *,
+                 pdftoppm: Path | str | None, python: Path | None = None, timeout_s: int = 120) -> Measured:
+    """Jim's elev_panels.py from the adopted toolkit copy, unchanged, on one elevation page (RULES 321-322).
+    pdftoppm: find_pdftoppm's answer. Without an exe nothing is run, and the reason is the measurement's."""
+    from ngrunner import toolkit
+
+    if not isinstance(pdftoppm, Path):
+        return Measured(None, pdftoppm or NO_PDFTOPPM)
+    try:
         args = [str(pdf), str(page), f"{wall_in:g}", f"{wall_h_in:g}"]
-        said = toolkit.run_tool(snapshot, ELEV_PANELS, args, timeout_s=timeout_s, python=python)  # type: ignore[arg-type]
+        said = toolkit.run_tool(snapshot, ELEV_PANELS, args, timeout_s=timeout_s, python=python,  # type: ignore[arg-type]
+                                on_path=(pdftoppm.parent,))
     except toolkit.ToolkitError as exc:
         return Measured(None, f"elev_panels.py could not be run: {exc}")
     if said.exit_code != 0:
+        if "no wall box found" in said.stderr:
+            return Measured(None, no_wall_box(pdf, page))
         if "pdftoppm" in said.stderr:
-            return Measured(None, "elev_panels.py renders the page with poppler's pdftoppm, which isn't on this PC")
+            return Measured(None, "elev_panels.py couldn't render the page with pdftoppm")
         if said.timed_out:
             return Measured(None, "elev_panels.py didn't finish")
         tail = (said.stderr.strip().splitlines() or ["no reason given"])[-1]
@@ -447,6 +518,33 @@ def gate_six(w: Written, model: RoomModel, walls: Sequence[ReadWall],
     return _gate("gate 6", items, "RULES 320-322; elev_panels.py", unsure=unsure)
 
 
+def colour_gate(w: Written, settings: RoomSettings | None) -> Gate:
+    """The room's colour on the bytes: the written run is the lifted one byte for byte, the room it was lifted
+    from still holds it, it is its shade's, and the three drawer fronts are the settled one (colour.py)."""
+    cites = "SCHEMA 46-85; RULES 211-233, 279; colour.py"
+    front = settings.drawer_front if settings is not None else None
+    materials = settings.materials if settings is not None else None
+    if not isinstance(materials, Fact) or not materials.settled or not isinstance(front, Fact) or front.value is None:
+        return _gate("colour", [], cites, unsure=["the room's colour wasn't settled when it was written"])
+    lifted = materials.value
+    items = []
+    if (why := still_holds(lifted)) is not None:
+        items.append(why)
+    written = material_run(w.text)
+    if not isinstance(lifted, Lifted) or written is None or written != crlf(lifted.run):
+        items.append("the written material run isn't, byte for byte, the one lifted from its known-good room")
+    elif (problem := run_problem(written, lifted.shade)) is not None:
+        items.append(f"the written material run: {problem}")
+    try:
+        head = attrs(one(w.text, "RoomSet").head(w.text))
+    except XmlError:
+        head = {}
+    if {head.get(a) for a in DRAWER_ATTRS} != {front.value} or front.value not in FRONTS:
+        items.append(f"its drawer fronts are {', '.join(sorted(str(head.get(a)) for a in DRAWER_ATTRS))}, "
+                     f"not {front.value}")
+    return _gate("colour", items, cites)
+
+
 def legal_gate(w: Written) -> Gate:
     items = [f"{_where(a)}: not a legal product" + (" (superseded, RULES 416-417)" if _name(a) in SUPERSEDED else "")
              for a, _ in w.products if _name(a) not in LEGAL]
@@ -617,8 +715,8 @@ def gate_room(written: WrittenRoom, model: RoomModel, walls: Sequence[ReadWall],
     groove, review = groove_gate(w)
     gates = (file, settled_gate(model), attributes_gate(w, template), walls_gate(w, model), panels_gate(w, model),
              *counts_gates(w, model, walls), heights_gate(w), top_gate(w), gate_six(w, model, walls, measured),
-             legal_gate(w), drill_gate(w, model, walls), notch_gate(w, library), groove, banding_gate(w),
-             rea_gate(w, library), bores_gate(w), part_gate(w), library_gate(w, template))
+             colour_gate(w, written.settings), legal_gate(w), drill_gate(w, model, walls), notch_gate(w, library),
+             groove, banding_gate(w), rea_gate(w, library), bores_gate(w), part_gate(w), library_gate(w, template))
     return RoomGates(written.file_name, gates, (*written.review, *review))
 
 

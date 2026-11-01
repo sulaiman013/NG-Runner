@@ -227,10 +227,11 @@ def _hash_of(lines: Iterable[tuple[str, str]]) -> str:
 
 
 def run_tool(snapshot: Snapshot, script: str, args: Sequence[str], *, timeout_s: int = 120,
-             python: Path | None = None) -> ToolRun:
+             python: Path | None = None, on_path: Sequence[Path] = ()) -> ToolRun:
     """Run one script of the copy, in a folder of its own, and what it gave back: in python, or the
-    tools' Python, or NG Runner's own (tools_python). Raises ToolkitError when it can't be started in
-    its job at all, or the copy changed while it ran: either way, no result."""
+    tools' Python, or NG Runner's own (tools_python). on_path: folders put first on the PATH the script sees,
+    for a program it starts by name (elev_panels.py's pdftoppm). Raises ToolkitError when it can't be
+    started in its job at all, or the copy changed while it ran: either way, no result."""
     path = _script_in(snapshot, script)
     return _run(snapshot, lambda py: tool_command(str(path), _expanded(args), python=py), timeout_s, python)
 
@@ -260,7 +261,7 @@ def _run(snapshot: Snapshot, command_for: Callable[[Path | None], list[str]], ti
     command = command_for(python)
     work = Path(tempfile.mkdtemp(prefix="run-", dir=snapshot.path.parent))
     try:
-        said = _run_in_a_job(command, work, timeout_s, isolated=python is not None)
+        said = _run_in_a_job(command, work, timeout_s, isolated=python is not None, on_path=on_path)
     finally:
         shutil.rmtree(work, ignore_errors=True)        # made by this call
     if hash_of_tree(snapshot.path) != snapshot.sha256:
@@ -374,10 +375,11 @@ def _expanded(args: Sequence[str]) -> list[str]:
     return out
 
 
-def _run_in_a_job(command: list[str], work: Path, timeout_s: int, *, isolated: bool = False) -> ToolRun:
+def _run_in_a_job(command: list[str], work: Path, timeout_s: int, *, isolated: bool = False,
+                  on_path: Sequence[Path] = ()) -> ToolRun:
     job = _new_job()
     try:
-        process = _start_in(job, command, work, isolated=isolated)
+        process = _start_in(job, command, work, isolated=isolated, on_path=on_path)
         try:
             out, err = process.communicate(timeout=timeout_s)
         except subprocess.TimeoutExpired:
@@ -397,11 +399,12 @@ def _new_job() -> Any:
     return job
 
 
-def _start_in(job: Any, command: list[str], work: Path, *, isolated: bool = False) -> subprocess.Popen[bytes]:
+def _start_in(job: Any, command: list[str], work: Path, *, isolated: bool = False,
+              on_path: Sequence[Path] = ()) -> subprocess.Popen[bytes]:
     try:
         process = subprocess.Popen(
             command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            cwd=work, env=_environment(isolated),
+            cwd=work, env=_environment(isolated, on_path),
             creationflags=_CREATE_SUSPENDED | subprocess.CREATE_NO_WINDOW)
     except OSError as exc:
         raise ToolkitError(f"The check could not be started: {_words(exc)}") from exc
@@ -423,12 +426,16 @@ def _resume(process: subprocess.Popen[bytes]) -> None:
     psutil.Process(process.pid).resume()
 
 
-def _environment(isolated: bool = False) -> dict[str, str]:
+def _environment(isolated: bool = False, on_path: Sequence[Path] = ()) -> dict[str, str]:
     """No .pyc written into the copy, UTF-8 mode and no user site, for the script and for any Python
     it starts, which reads these where -I would not. In the tools' Python no other PYTHON* variable
     reaches either; from the repo NG Runner's own needs PYTHONPATH to find ngrunner, as the run starts
-    in another folder."""
+    in another folder. on_path's folders go first on PATH, so a program the script starts by name is
+    found there first."""
     env = {**os.environ}
+    if on_path:
+        key = next((k for k in env if k.upper() == "PATH"), "PATH")
+        env[key] = os.pathsep.join([*(str(p) for p in on_path), *filter(None, [env.get(key)])])
     if isolated:
         env = {name: value for name, value in env.items() if not name.upper().startswith("PYTHON")}
     env.update(_CHILD_VARIABLES)

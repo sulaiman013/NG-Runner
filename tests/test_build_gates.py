@@ -7,7 +7,10 @@ gate that guards it catches it. Everything is made up (helpers_build.py).
 from __future__ import annotations
 
 import dataclasses
+import os
+import shutil
 from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -20,6 +23,7 @@ from ngrunner.build.room import ReadWall
 from ngrunner.guards.facts import ToolRun
 
 IN = 25.4
+NOW = datetime(2026, 11, 1, 9, 0, tzinfo=UTC)
 # The made-up wall 2 drawn as Jim's elev_panels.py prints it: the wall's box at both ends, each panel's lines.
 DRAWN = (gt.DrawnVertical(0.13, 98.0, 0.0), gt.DrawnVertical(0.75, 82.5, 2.0),
          gt.DrawnVertical(30.4, 82.0, 37.5), gt.DrawnVertical(60.05, 82.5, 2.0), gt.DrawnVertical(60.62, 98.0, 0.0))
@@ -34,7 +38,7 @@ def lib(tmp_path: Path) -> pr.Library:
 def run(lib: pr.Library, change: Callable[[str], str] | None = None, *, model=None,
         walls: tuple[ReadWall, ...] = hb.WALLS, measured=MEASURED) -> gt.RoomGates:
     model = model or hb.model()
-    room = wr.write_room(model, 1, hb.template(), lib, hb.SETTINGS)
+    room = wr.write_room(model, 1, hb.template(), lib, hb.settings())
     assert isinstance(room, wr.WrittenRoom)
     if change is not None:
         room = dataclasses.replace(room, content=change(room.content.decode("utf-8")).encode("utf-8"))
@@ -86,7 +90,7 @@ def test_a_model_holding_a_could_not_verify_fails_settled(lib) -> None:
     from ngrunner.build.room import unverified
 
     model = hb.model()
-    room = wr.write_room(model, 1, hb.template(), lib, hb.SETTINGS)
+    room = wr.write_room(model, 1, hb.template(), lib, hb.settings())
     assert isinstance(room, wr.WrittenRoom)
     broken = dataclasses.replace(model, joints=unverified("made up"))
     gates = gt.gate_room(room, broken, hb.WALLS, hb.template(), lib, MEASURED)
@@ -164,19 +168,164 @@ def test_gate_6_holds_each_placed_panel_to_the_line_drawn_at_its_x(lib, drawn, s
     assert gates.gate("gate 6").status == status, gates.gate("gate 6").items
 
 
-def test_gate_6_could_not_verify_when_jims_script_cant_run(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_gate_6_could_not_verify_when_jims_script_cant_run(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     from ngrunner import toolkit
 
+    exe = tmp_path / "poppler" / gt.PDFTOPPM
+    asked: list[dict] = []
     said = ToolRun(1, "", "FileNotFoundError: [WinError 2] ... 'pdftoppm'", False)
-    monkeypatch.setattr(toolkit, "run_tool", lambda *a, **k: said)
-    got = gt.measure_wall(object(), Path("C:/x.pdf"), 3, 80.0, 98.5)
-    assert got.verticals is None and "pdftoppm" in got.why
-    stopped = ToolRun(1, "", "SystemExit: no wall box found on that page", False)
-    monkeypatch.setattr(toolkit, "run_tool", lambda *a, **k: stopped)
-    assert gt.measure_wall(object(), Path("C:/x.pdf"), 3, 80.0, 98.5).why.endswith("no wall box found on that page")
+    monkeypatch.setattr(toolkit, "run_tool", lambda *a, **k: asked.append(k) or said)
+    got = gt.measure_wall(object(), Path("C:/x.pdf"), 3, 80.0, 98.5, pdftoppm=exe)
+    assert got.verticals is None and got.why == "elev_panels.py couldn't render the page with pdftoppm"
+    assert asked[0]["on_path"] == (exe.parent,)  # the renderer's folder first on the PATH his script sees
     table = "   x (in)      top   bottom  drawn len\n     1.00     82.0      2.0       80.0\n"
     monkeypatch.setattr(toolkit, "run_tool", lambda *a, **k: ToolRun(0, table, "", False))
-    assert gt.measure_wall(object(), Path("C:/x.pdf"), 3, 80.0, 98.5).verticals == (gt.DrawnVertical(1.0, 82.0, 2.0),)
+    got = gt.measure_wall(object(), Path("C:/x.pdf"), 3, 80.0, 98.5, pdftoppm=exe)
+    assert got.verticals == (gt.DrawnVertical(1.0, 82.0, 2.0),)
+
+
+# ----- gate 6's renderer: poppler's pdftoppm or nothing, never a stand-in (break tests)
+
+
+def test_a_missing_pdftoppm_never_runs_jims_script_and_never_passes_gate_6(lib, monkeypatch, tmp_path) -> None:
+    from ngrunner import toolkit
+
+    ran: list[object] = []
+    monkeypatch.setattr(toolkit, "run_tool", lambda *a, **k: ran.append(a) or ToolRun(0, "", "", False))
+    found = gt.find_pdftoppm(environ={"PATH": str(tmp_path)})
+    assert found == gt.NO_PDFTOPPM == "the drawing check needs poppler's pdftoppm, which isn't on this PC"
+    got = gt.measure_wall(object(), Path("C:/x.pdf"), 3, 80.0, 98.5, pdftoppm=found)
+    assert got == gt.Measured(None, gt.NO_PDFTOPPM) and not ran
+    gates = run(lib, measured={"2": got})
+    assert only(gates) == {"gate 6": "could not verify"} and not gates.passed
+    assert gates.gate("gate 6").items == (f"wall 2: {gt.NO_PDFTOPPM}",)
+
+
+def test_a_settings_pdftoppm_that_isnt_there_or_isnt_named_pdftoppm_is_refused(tmp_path: Path) -> None:
+    assert "settings name isn't there" in gt.find_pdftoppm(tmp_path / "poppler" / gt.PDFTOPPM)
+    assert "settings name isn't there" in gt.find_pdftoppm(tmp_path)  # a folder without one
+    shim = tmp_path / "pdftoppm.cmd"
+    shim.write_text("@echo off\n", encoding="utf-8")
+    assert "settings name isn't there" in gt.find_pdftoppm(shim)  # a .cmd stand-in is never the renderer
+    assert gt.find_pdftoppm(environ={"PATH": str(tmp_path)}) == gt.NO_PDFTOPPM  # nor found on PATH
+
+
+def _system_exe(tmp_path: Path) -> Path:
+    """A Windows program copied as pdftoppm.exe: something CreateProcess can run, and no poppler."""
+    system = Path(os.environ.get("SystemRoot", "C:\\Windows")) / "System32" / "hostname.exe"
+    if not system.is_file():
+        pytest.skip("no hostname.exe to stand as a program named pdftoppm")
+    folder = tmp_path / "not poppler"
+    folder.mkdir()
+    shutil.copyfile(system, folder / gt.PDFTOPPM)
+    return folder / gt.PDFTOPPM
+
+
+def test_a_pdftoppm_exe_that_isnt_poppler_is_refused_from_the_settings_and_from_path(tmp_path: Path) -> None:
+    exe = _system_exe(tmp_path)
+    on_path = gt.find_pdftoppm(environ={"PATH": str(exe.parent)})
+    for found in (gt.find_pdftoppm(exe), gt.find_pdftoppm(exe.parent), on_path):
+        assert isinstance(found, str) and "isn't poppler's" in found
+
+
+def test_poppler_is_told_by_what_its_pdftoppm_says(monkeypatch, tmp_path: Path) -> None:
+    import subprocess
+
+    exe = tmp_path / gt.PDFTOPPM
+    exe.write_bytes(b"MZ")
+    says = subprocess.CompletedProcess([], 0, b"",
+                                       b"pdftoppm version 24.08.0\nCopyright 2005-2024 The Poppler Developers")
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: says)
+    assert gt.find_pdftoppm(exe) == exe and gt.find_pdftoppm(environ={"PATH": str(tmp_path)}) == exe
+
+
+ELEV = """import subprocess, sys
+subprocess.run(["pdftoppm"], check=True, capture_output=True)
+print("   x (in)      top   bottom  drawn len")
+print("     1.00     82.0      2.0       80.0")
+"""
+
+
+def test_the_pdftoppm_folder_given_is_where_jims_unchanged_call_by_name_finds_it(tmp_path: Path) -> None:
+    """End to end through run_tool's job: a script calling pdftoppm by name, as elev_panels.py's line 23 does,
+    finds the program in the folder measure_wall puts first on its PATH, and only there."""
+    from ngrunner.clock import FakeClock
+    from ngrunner.toolkit import take_snapshot
+
+    exe = _system_exe(tmp_path)
+    kit = tmp_path / "_NG_Automation"
+    (kit / "scripts").mkdir(parents=True)
+    (kit / "scripts" / "elev_panels.py").write_text(ELEV, encoding="utf-8")
+    (kit / "reference").mkdir()
+    (kit / "reference" / "baseline.json").write_bytes(b"{}")
+    snap = take_snapshot(kit, tmp_path / "toolkit" / "copy", clock=FakeClock(NOW))
+    got = gt.measure_wall(snap, tmp_path / "x.pdf", 1, 80.0, 98.0, pdftoppm=exe)
+    assert got.verticals == (gt.DrawnVertical(1.0, 82.0, 2.0),), got.why
+    missing = gt.measure_wall(snap, tmp_path / "x.pdf", 1, 80.0, 98.0, pdftoppm=tmp_path / "nowhere" / gt.PDFTOPPM)
+    assert missing.verticals is None and "pdftoppm" in missing.why
+
+
+def _pdf(path: Path, width: float, height: float) -> Path:
+    import pypdf
+
+    writer = pypdf.PdfWriter()
+    writer.add_blank_page(width=width, height=height)
+    with path.open("wb") as f:
+        writer.write(f)
+    return path
+
+
+def test_a_portrait_page_jims_wall_box_finder_stops_on_could_not_verify_and_says_so(monkeypatch, tmp_path) -> None:
+    """Frozen X's pages: his script stops with "no wall box found on that page". His script is left as it is:
+    that wall's gate 6 could not verify, which keeps the room from being committed, and the reason says why."""
+    from ngrunner import toolkit
+
+    stopped = ToolRun(1, "", "no wall box found on that page\n", False)
+    monkeypatch.setattr(toolkit, "run_tool", lambda *a, **k: stopped)
+    portrait = _pdf(tmp_path / "portrait.pdf", 612, 792)
+    got = gt.measure_wall(object(), portrait, 1, 80.0, 98.5, pdftoppm=tmp_path / gt.PDFTOPPM)
+    assert got.verticals is None
+    assert got.why == ("Jim's elev_panels.py found no wall box on page 1, a portrait page: his finder needs the "
+                       "wall's box to fill 38% of the page's height, so this wall's drawing could not be measured")
+    landscape = _pdf(tmp_path / "landscape.pdf", 792, 612)
+    assert "page 1, a landscape page:" in gt.measure_wall(object(), landscape, 1, 80.0, 98.5,
+                                                          pdftoppm=tmp_path / gt.PDFTOPPM).why
+    assert "page 2, its page:" in gt.no_wall_box(landscape, 2)  # a page that can't be read: no shape claimed
+
+
+# ----- the colour, on the bytes (colour.py)
+
+
+def test_the_written_run_is_the_lifted_one_and_its_room_still_holds_it(lib) -> None:
+    gate = run(lib).gate("colour")
+    assert gate.status == "passed"
+
+
+@pytest.mark.parametrize("change", [
+    lambda t: t.replace('MissingTextureName="Classic White"', 'MissingTextureName="Apris Ski_M2015"', 1),
+    lambda t: t.replace('RootTemplateId="94"', 'RootTemplateId="88"', 1),
+    lambda t: t.replace('NonColumnBotDrawer="NG H Drawer with pilot"', 'NonColumnBotDrawer="Slab Drawer"'),
+])
+def test_a_written_colour_that_isnt_the_lifted_one_fails_the_colour_gate(lib, change) -> None:
+    assert only(run(lib, change)) == {"colour": "failed"}
+
+
+def test_a_room_written_without_its_colour_could_not_verify_the_colour_gate(lib) -> None:
+    room = wr.write_room(hb.model(), 1, hb.template(), lib, hb.settings())
+    bare = dataclasses.replace(room, settings=None)
+    gates = gt.gate_room(bare, hb.model(), hb.WALLS, hb.template(), lib, MEASURED)
+    assert only(gates) == {"colour": "could not verify"} and not gates.passed
+
+
+def test_a_room_whose_source_changed_after_writing_fails_the_colour_gate(lib, tmp_path: Path) -> None:
+    from ngrunner.build import colour as co
+
+    job = hb.job_folder(tmp_path)
+    settings = co.RoomSettings(co.KnownGood([job]).find(hb.WHITE), hb.settings().drawer_front)
+    room = wr.write_room(hb.model(), 1, hb.template(), lib, settings)
+    (job / "Room1.des").write_bytes(hb.with_run(hb.template_room(), hb.material_run(texture="Testerson Grey")))
+    gates = gt.gate_room(room, hb.model(), hb.WALLS, hb.template(), lib, MEASURED)
+    assert only(gates) == {"colour": "failed"}
 
 
 # ----- names, notches, banding, REA, bores, parts, libraries

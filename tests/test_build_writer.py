@@ -15,7 +15,7 @@ import pytest
 import helpers_build as hb
 from ngrunner.build import writer as wr
 from ngrunner.build.desxml import XmlError, attrs, crlf, elements, num, one, set_attr, start_tags
-from ngrunner.build.room import Plan, unverified
+from ngrunner.build.room import Plan, given, unverified
 
 
 @pytest.fixture
@@ -23,8 +23,8 @@ def lib(tmp_path: Path):
     return hb.library(tmp_path)
 
 
-def written(model=None, *, lib, number: int = 1, settings: wr.RoomSettings = hb.SETTINGS) -> wr.WrittenRoom:
-    out = wr.write_room(model or hb.model(), number, hb.template(), lib, settings)
+def written(model=None, *, lib, number: int = 1, settings: wr.RoomSettings | None = None) -> wr.WrittenRoom:
+    out = wr.write_room(model or hb.model(), number, hb.template(), lib, settings or hb.settings())
     assert isinstance(out, wr.WrittenRoom), getattr(out, "blocked_by", out)
     return out
 
@@ -69,7 +69,7 @@ def test_every_line_ends_crlf() -> None:
 
 def test_the_template_gives_its_one_wall_its_fm84_its_library_and_a_reference_rooms_joint() -> None:
     t = hb.template()
-    assert t.version == "15" and t.source_lib == hb.LIB and t.categories == ("3", "1")
+    assert t.version == "15" and t.source_lib == hb.LIB and t.categories == ("3", "1", "2", "4", "5")
     assert t.wall.startswith("<Wall IDTag") and t.wall.endswith("</Wall>")
     assert t.joint == hb.JOINT and t.joint_attrs[:2] == ("Wall1", "Wall2") and len(t.joint_attrs) == 8
     assert 'ProdName="FM 84 "' in t.fm84 and "CathedralHeight" in t.wall_attrs
@@ -138,11 +138,11 @@ def test_a_chain_out_of_table_order_puts_each_panel_on_its_walls_place_in_the_fi
     assert [(attrs(t)["Wall1"], attrs(t)["Wall2"]) for t in start_tags(room, "WallJoint")] == [("3", "1"), ("1", "2")]
 
 
-def test_the_colour_goes_in_as_given_and_the_templates_own_blank_set_goes(lib) -> None:
+def test_the_colour_goes_in_as_lifted_and_the_templates_own_blank_set_goes(lib) -> None:
     room = text(written(lib=lib))
     head = attrs(one(room, "RoomSet").head(room))
     assert {head[a] for a in wr.DRAWER_ATTRS} == {hb.FRONT}
-    assert hb.MATERIALS in room and 'RootTemplateId="88"' not in room
+    assert hb.MATERIALS in room and 'RootTemplateId="88"' not in room and "Testerson White" not in room
     assert head["AutofillLib"] == hb.LIB and head["Note"] == "a > b"  # the rest of the tag as it was
 
 
@@ -168,7 +168,7 @@ def test_nothing_but_the_walls_joints_products_room_tag_parms_and_roomset_change
 
 
 def test_without_a_plan_the_room_is_not_written_and_the_chain_is_what_blocks_it(lib) -> None:
-    out = wr.write_room(hb.model(plan=None), 1, hb.template(), lib, hb.SETTINGS)
+    out = wr.write_room(hb.model(plan=None), 1, hb.template(), lib, hb.settings())
     assert isinstance(out, wr.BlockedRoom) and out.file_name == "Room1.des"
     assert {what for _, what, _ in out.blocked_by} == {"position", "angle", "pos_mm", "joints"}
     assert all("plan" in why for _, _, why in out.blocked_by)
@@ -181,17 +181,74 @@ def test_a_room_whose_colour_isnt_known_is_not_written(lib) -> None:
                                                                 ("drawer front", wr.NO_DRAWER_FRONT)]
 
 
-@pytest.mark.parametrize("materials, words", [
-    (hb.MATERIALS.replace('"94"', '"88"'), "cabinet id 88"),
-    (hb.MATERIALS.replace('RootTemplateId="12"', 'RootTemplateId="12" MatORId="3"'), "MatORId"),
-    (hb.MATERIALS.split("\r\n    <BaseMatTempSel CategoryId=\"1\">")[0], "categories 3"),
-    ("<Walls />", "not a run"),
-    (hb.MATERIALS + "<Extra />", "not a run"),
-])
-def test_materials_that_arent_a_known_good_set_block_the_room(lib, materials: str, words: str) -> None:
-    out = wr.write_room(hb.model(), 1, hb.template(), lib, wr.RoomSettings(materials, hb.FRONT))
+def test_materials_with_other_categories_than_the_templates_block_the_room(lib) -> None:
+    from ngrunner.build import colour as co
+
+    template = wr.load_template(hb.with_run(hb.template_room(), hb.MATERIALS.split(
+        '\r\n    <BaseMatTempSel CategoryId="5">')[0].replace('"94"', '"88"')), [hb.reference_room()])
+    settings = hb.settings()
+    out = wr.write_room(hb.model(), 1, template, lib, settings)
     assert isinstance(out, wr.BlockedRoom)
-    assert any(what == "materials" and words in why for _, what, why in out.blocked_by)
+    assert [(what, why) for _, what, why in out.blocked_by] == [
+        ("materials", "the materials given hold categories 3, 1, 2, 4, 5, and the template's room 3, 1, 2, 4")]
+    assert co.still_holds(settings.materials.value) is None  # the run is a known-good one: the template differs
+
+
+# ----- the colour is never hand-authored (SCHEMA 75-76): break tests
+
+
+def test_a_run_handed_in_as_text_is_never_written(lib) -> None:
+    """The slice-2 way of giving the colour, a run as text, is a hand-authored run: refused, however good it is."""
+    handed = wr.RoomSettings(hb.MATERIALS, hb.FRONT)  # type: ignore[arg-type]
+    out = wr.write_room(hb.model(), 1, hb.template(), lib, handed)
+    assert isinstance(out, wr.BlockedRoom)
+    assert [(what, why) for _, what, why in out.blocked_by if what == "materials"] == [
+        ("materials", wr.HANDED_IN)]
+
+
+def test_a_lifted_run_with_one_texture_swapped_by_hand_is_never_written(lib) -> None:
+    """Job E's build script swapped one colour's texture into another's run by hand; the writer refuses that, with
+    the run's hash left as lifted or recomputed."""
+    from ngrunner.build import colour as co
+
+    lifted = hb.settings().materials.value
+    swapped = lifted.run.replace(co.TEXTURES["WH"], co.TEXTURES["AP"])
+    for forged in (dataclasses.replace(lifted, run=swapped),
+                   dataclasses.replace(lifted, run=swapped, sha256=co.sha256(swapped))):
+        settings = wr.RoomSettings(given(forged, "rule"), given(hb.FRONT, "rule"))
+        out = wr.write_room(hb.model(), 1, hb.template(), lib, settings)
+        assert isinstance(out, wr.BlockedRoom) and [what for _, what, _ in out.blocked_by] == ["materials"]
+
+
+def test_a_run_whose_room_changed_since_it_was_lifted_is_never_written(lib, tmp_path: Path) -> None:
+    from ngrunner.build import colour as co
+
+    job = hb.job_folder(tmp_path)
+    found = co.KnownGood([job]).find(hb.WHITE)
+    settings = wr.RoomSettings(found, given(hb.FRONT, "rule"))
+    assert isinstance(wr.write_room(hb.model(), 1, hb.template(), lib, settings), wr.WrittenRoom)
+    (job / "Room1.des").write_bytes(hb.with_run(hb.template_room(), hb.material_run(texture="Testerson Grey")))
+    out = wr.write_room(hb.model(), 1, hb.template(), lib, settings)
+    assert isinstance(out, wr.BlockedRoom)
+    assert out.blocked_by == (("room", "materials", "the room the material run was lifted from no longer holds it "
+                                                    "byte for byte"),)
+
+
+def test_a_room_whose_colour_has_no_known_good_source_is_not_written(lib, tmp_path: Path) -> None:
+    from ngrunner.build import colour as co
+
+    sources = co.KnownGood([hb.job_folder(tmp_path)])  # a white job only
+    ore = co.Shade("LG", "Tafisa", co.TEXTURES["LG"])
+    settings = wr.RoomSettings(sources.find(ore), given(hb.FRONT, "rule"))
+    out = wr.write_room(hb.model(), 1, hb.template(), lib, settings)
+    assert isinstance(out, wr.BlockedRoom)
+    assert out.blocked_by == (("room", "materials", "no known-good job is built in Ore (LG) (SCHEMA 75-76)"),)
+
+
+def test_a_drawer_front_rules_230_231_dont_name_is_not_written(lib) -> None:
+    settings = dataclasses.replace(hb.settings(), drawer_front=given("Slab Drawer", "rule"))
+    out = wr.write_room(hb.model(), 1, hb.template(), lib, settings)
+    assert isinstance(out, wr.BlockedRoom) and out.blocked_by[0][1] == "drawer front"
 
 
 def test_a_product_jims_templates_dont_hold_blocks_the_room(tmp_path: Path) -> None:
@@ -200,7 +257,7 @@ def test_a_product_jims_templates_dont_hold_blocks_the_room(tmp_path: Path) -> N
     from ngrunner.build.products import load_library
 
     lib = load_library(folder, hb.template().fm84)
-    out = wr.write_room(hb.model(), 1, hb.template(), lib, hb.SETTINGS)
+    out = wr.write_room(hb.model(), 1, hb.template(), lib, hb.settings())
     assert isinstance(out, wr.BlockedRoom)
     assert out.blocked_by == (("wall 2 panel 2", "product", "Jim's templates have no WM_Panel_48_Thru.xml"),)
 
@@ -211,13 +268,13 @@ def test_a_could_not_verify_anywhere_in_the_model_blocks_the_whole_room(lib) -> 
     panel = dataclasses.replace(schedule.panels[1], x_mm=unverified("the reading isn't sure where it stands"))
     broken = dataclasses.replace(model, schedules=(model.schedules[0], dataclasses.replace(
         schedule, panels=(schedule.panels[0], panel, schedule.panels[2])), model.schedules[2]))
-    out = wr.write_room(broken, 1, hb.template(), lib, hb.SETTINGS)
+    out = wr.write_room(broken, 1, hb.template(), lib, hb.settings())
     assert isinstance(out, wr.BlockedRoom)
     assert out.blocked_by == (("wall 2 panel 2", "x_mm", "the reading isn't sure where it stands"),)
 
 
 def test_room0_is_never_a_designs(lib) -> None:
-    out = wr.write_room(hb.model(), 0, hb.template(), lib, hb.SETTINGS)
+    out = wr.write_room(hb.model(), 0, hb.template(), lib, hb.settings())
     assert isinstance(out, wr.BlockedRoom) and out.blocked_by[0][1] == "number"
 
 

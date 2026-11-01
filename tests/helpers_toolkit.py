@@ -65,6 +65,25 @@ def job_folder(case: str) -> Path:
     return next(found.iterdir())
 
 
+def real_jobs() -> dict[str, Path]:
+    """Every real Mozaik job folder here, read only, by case letter (A to J), P-tag (the P5 jobs) or a1 to a5 (the
+    jobs of Jim's answers of 2026-10-31, in name order; their template job left out): the jobs colour.KnownGood
+    looks in, standing for Mozaik Shared\\Jobs. Its keys name no client."""
+    out: dict[str, Path] = {}
+    toolkit = real_toolkit()
+    for case in CASES:
+        found = sorted((toolkit / "jobs" / case).glob("*/"))
+        if found:
+            out[case] = found[0]
+    for tag in sorted((FIXTURES / "reader" / "p5jobs").glob("P[0-9][0-9]")):
+        found = sorted(p for p in tag.iterdir() if p.is_dir())
+        if found:
+            out[tag.name] = found[0]
+    answers = sorted(p for p in FIXTURES.glob("answers*/*") if (p / "mozaik").is_dir() and not p.name.startswith("Lux "))
+    out.update({f"a{i}": p / "mozaik" for i, p in enumerate(answers, start=1)})
+    return out
+
+
 def ng_jobs() -> Path | None:
     given = os.environ.get("NGR_NG_JOBS")
     if given:

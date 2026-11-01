@@ -5,10 +5,11 @@ copy of his toolkit in the tools' Python; the first 26 walls' rooms, and which v
 and the ties to his scripts and SCHEMA (docs/decisions.md, "P5a builder, slice 2").
 
 The frozen rooms' own panels stand in for the reading and their own chains for the plan, as slice 1 has them
-(tools/reader_eval/built.py), and their own material run and drawer front for the room's colour, which
-nothing in NG Runner reads yet. The template job's Room1 is read where Jim sent it (.local-fixtures\\answers*),
+(tools/reader_eval/built.py). Each room's colour is colour.py's (slice 3): its shade from its design's own
+lines, its run lifted from the newest known-good job among every real job here (helpers_colour.py), never the
+frozen room's own. The template job's Room1 is read where Jim sent it (.local-fixtures\\answers*),
 never copied into the repo. Rooms are written only into the test's own folders. Results measured on
-2026-11-01 are pinned, so a regression fails, never fitted to. Real jobs are named by case letter only.
+2026-11-01 are pinned, so a regression fails, never fitted to. Real jobs are named by case letter or P-tag only.
 """
 from __future__ import annotations
 
@@ -21,13 +22,14 @@ from pathlib import Path
 
 import pytest
 
-from helpers_toolkit import stage_tree, tools_python
+import helpers_colour as hc
+from helpers_toolkit import real_jobs, stage_tree, tools_python
 from ngrunner import toolkit
 from ngrunner.build import commit as cm
 from ngrunner.build import gates as gt
 from ngrunner.build import products as pr
 from ngrunner.build import writer as wr
-from ngrunner.build.desxml import attrs, start_tags
+from ngrunner.build.desxml import attrs, crlf, start_tags
 from ngrunner.clock import FakeClock
 from tools.reader_eval import budget, built, cases, providers, run
 
@@ -97,18 +99,26 @@ def frozen(world: run.World) -> list[tuple[built.RoomResult, list]]:
     return [(r, [built.read_wall(c, None) for c in crops[r.case] if c.design == r.design]) for r in results]
 
 
-def stand_in(job: Path, room: str) -> wr.RoomSettings:
-    """The frozen room's own colour, standing in for what nothing reads yet: its material run, its drawer front."""
-    text = (job / "rooms" / f"{room}.des").read_text(encoding="utf-8")
-    start, end = text.find("<BaseMatTempSel"), text.rfind("</BaseMatTempSel>") + len("</BaseMatTempSel>")
-    return wr.RoomSettings(text[start:end], re.search(r'NonColumnTopDrawer="([^"]*)"', text)[1])  # type: ignore[index]
+def key_of(world: run.World, case: str, design: int) -> str:
+    """The design's name_key_hash, from its crops: the design is never named."""
+    (key,) = {c.design_key for c in world.preps[case].crops if c.design == design}
+    return key
 
 
 @pytest.fixture(scope="module")
-def written(frozen, jobs, template, library) -> dict[str, list[tuple[built.RoomResult, list, object]]]:
+def colours(frozen, jobs, world) -> dict[tuple[str, str], wr.RoomSettings]:
+    """Each frozen room's colour as colour.py settles it, its own job left out of the known-good ones."""
+    if not real_jobs():
+        pytest.skip("no real Mozaik jobs here to lift a colour from")
+    known = {case: hc.sources(jobs[case].name) for case in "XYZ"}
+    return {(r.case, r.room): hc.colour_of(r.case, key_of(world, r.case, r.design), known[r.case]) for r, _ in frozen}
+
+
+@pytest.fixture(scope="module")
+def written(frozen, template, library, colours) -> dict[str, list[tuple[built.RoomResult, list, object]]]:
     out: dict[str, list] = {}
     for r, walls in frozen:
-        room = wr.write_room(r.model, int(r.room.removeprefix("Room")), template, library, stand_in(jobs[r.case], r.room))
+        room = wr.write_room(r.model, int(r.room.removeprefix("Room")), template, library, colours[(r.case, r.room)])
         out.setdefault(r.case, []).append((r, walls, room))
     return out
 
@@ -117,6 +127,7 @@ def written(frozen, jobs, template, library) -> dict[str, list[tuple[built.RoomR
 def measured(adopted, jobs, world, written) -> dict[tuple[str, str], dict[str, gt.Measured]]:
     """Each written wall's drawing as Jim's elev_panels.py measures it, from the adopted copy."""
     python = tools_python()
+    pdftoppm = gt.find_pdftoppm()  # no setting here, so PATH: on this PC there is none (2026-11-01)
     pages = {(c, cr.design, cr.wall): cr for c in "XZ" for cr in world.preps[c].crops}
     out = {}
     for case in "XZ":
@@ -126,7 +137,7 @@ def measured(adopted, jobs, world, written) -> dict[tuple[str, str], dict[str, g
                 if s.panels:
                     crop = pages[(case, r.design, s.wall)]
                     got[s.wall] = gt.measure_wall(adopted, jobs[case] / "summary.pdf", crop.page, crop.width_in,
-                                                  crop.height_in, python=python)
+                                                  crop.height_in, pdftoppm=pdftoppm, python=python)
             out[(case, r.room)] = got
     return out
 
@@ -141,9 +152,28 @@ def test_x_and_z_are_written_and_y_is_blocked_by_the_values_it_could_not_verify(
     assert isinstance(y, wr.BlockedRoom) and y.file_name == "Room1.des"
     what = Counter(what for _, what, _ in y.blocked_by)
     # its run start (0.78 in out), its top line (2408 on the old Elev rule), two sides where geometry and
-    # the drill codes differ, and its own material run, on the blank template's cabinet id 88 (SCHEMA 82-84)
+    # the drill codes differ, and its colour: Ore, in which no real job here passes Jim's standing gate
     assert what == Counter({"x_mm": 7, "elev_mm": 4, "side": 2, "product": 2, "run start": 1, "materials": 1})
+    (why,) = [why for _, what, why in y.blocked_by if what == "materials"]
+    assert why.startswith("no known-good job is built in Ore (LG) (SCHEMA 75-76): 3 jobs carry its run")
     assert all(not r.review for case in "XZ" for _, _, r in written[case])
+
+
+def test_x_and_zs_colour_is_white_lifted_from_case_f_never_from_their_own_rooms(written, colours, jobs) -> None:
+    from ngrunner.build import colour as co
+
+    tags = {path: tag for tag, path in real_jobs().items()}
+    for case in "XZ":
+        for r, _, room in written[case]:
+            settings = colours[(case, r.room)]
+            lifted = settings.materials.value
+            assert (lifted.shade, tags[lifted.job], lifted.room) == (co.Shade("WH", "Egger", "Classic White"), "F",
+                                                                     "Room1.des")
+            assert (settings.drawer_front.value, settings.drawer_front.status) == (co.H_FRONT, "set")
+            assert co.material_run(room.content.decode("utf-8")) == lifted.run
+            own = co.material_run((jobs[case] / "rooms" / f"{r.room}.des").read_text(encoding="utf-8"))
+            its_own_job = lifted.job.name.casefold() == jobs[case].name.casefold()  # compared, never printed
+            assert not its_own_job and crlf(own or "") == lifted.run  # the run Jim built it in, lifted from F
 
 
 def test_jims_regression_compare_reproduces_x_and_z_and_finds_y_not_rebuilt(adopted, jobs, written,
@@ -164,13 +194,17 @@ def test_jims_regression_compare_reproduces_x_and_z_and_finds_y_not_rebuilt(adop
 
 def test_every_gate_on_x_and_z_passes_but_gate_6_which_jims_script_cant_measure_here(
         written, template, library, measured) -> None:
+    pdftoppm = gt.find_pdftoppm()
     for case in "XZ":
         for r, walls, room in written[case]:
             gates = gt.gate_room(room, r.model, walls, template, library, measured[(case, r.room)])
             assert {g.name: g.status for g in gates.not_passed()} == {"gate 6": "could not verify"}, gt.report(gates)
-            # this PC has no pdftoppm; given one, X's pages still have no wall box his script can find
+            assert gates.gate("colour").status == "passed" and len(gates.gates) == len(gt.REQUIRED) == 21
             whys = gates.gate("gate 6").items
-            assert whys and all("pdftoppm" in w or "no wall box" in w for w in whys), whys
+            if isinstance(pdftoppm, str):  # this PC, 2026-11-01: none, and his script is never run
+                assert pdftoppm == gt.NO_PDFTOPPM and whys and all(w.endswith(gt.NO_PDFTOPPM) for w in whys), whys
+            else:  # given one, X's portrait pages still have no wall box his finder can find
+                assert case == "X" and all("a portrait page" in w for w in whys), whys
 
 
 def test_nothing_of_x_or_z_reaches_even_the_shadow_copy_while_gate_6_could_not_verify(
@@ -230,16 +264,32 @@ def kind(what: str, why: str) -> str:
     return "a wall not read" if "aren't read" in why else built.reason(why)
 
 
-def test_every_dev_room_waits_for_its_plan_and_its_colour_and_12_of_18_for_a_panel_value(
-        dev_rooms, template, library) -> None:
-    rooms = [wr.write_room(r.model, 1, template, library, wr.RoomSettings()) for r in dev_rooms]
+def test_every_dev_room_waits_for_its_plan_9_of_18_now_have_their_colour_and_4_wait_for_nothing_else(
+        dev_rooms, world, template, library) -> None:
+    tags = {path: tag for tag, path in real_jobs().items()}
+    colours = [hc.colour_of(r.case, key_of(world, r.case, r.design), hc.sources(hc.own_job(r.case)))
+               for r in dev_rooms]
+    rooms = [wr.write_room(r.model, 1, template, library, s) for r, s in zip(dev_rooms, colours)]
     assert len(rooms) == 18 and all(isinstance(r, wr.BlockedRoom) for r in rooms)
     kinds = [Counter(kind(what, why) for _, what, why in r.blocked_by) for r in rooms]  # type: ignore[union-attr]
-    assert all(k["the plan"] and k["the colour"] == 2 for k in kinds)
+    assert all(k["the plan"] for k in kinds)
+    # the colour: white from Case F on 8 rooms, from P39 on Case F's own; none for the rest (measured 2026-11-01)
+    assert Counter(tags[s.materials.value.job] for s in colours if s.materials.settled) == Counter({"F": 8, "P39": 1})
+    unsettled = Counter(colour_reason(s.materials.why) for s in colours if not s.materials.settled)
+    assert unsettled == Counter({"no known-good job in AMWH": 3, "no known-good job in New Natural": 2,
+                                 "no known-good job in Interlochen": 1, "no known-good job in Ore": 1,
+                                 "three colours": 1, "a garage room": 1})
     by_room = Counter(name for k in kinds for name in k if name not in ("the plan", "the colour"))
     assert by_room == Counter({"run start": 8, "FM 84 or FM 90": 5, "a wall not read": 3,
-                               "the reading's own doubt": 3, "top line": 1})  # measured 2026-11-01
-    assert sum(1 for k in kinds if set(k) == {"the plan", "the colour"}) == 6
+                               "the reading's own doubt": 3, "top line": 1})  # as slice 2 measured them
+    assert sum(1 for k in kinds if set(k) == {"the plan"}) == 4  # Jobs C (2), D and G
+
+
+def colour_reason(why: str) -> str:
+    for word in ("AMWH", "New Natural", "Interlochen", "Ore"):
+        if why.startswith("no known-good job") and word in why:
+            return f"no known-good job in {word}"
+    return "three colours" if "print 3 colours" in why else "a garage room" if "garage" in why else why
 
 
 # ----- the ties to Jim's files
