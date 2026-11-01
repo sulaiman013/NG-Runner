@@ -236,6 +236,10 @@ class WallCrop:
     sha256: str
     parts: tuple[PartLine, ...]
     table: tuple[tuple[str, float], ...] = ()  # the design's whole WALL/AREA table: (name, width in)
+    # In memory only, never written or sent: the design's name key, and every design's in its summary,
+    # for pairing a room Mozaik names differently (pairing.py).
+    design_name_key: str = field(default="", repr=False, compare=False)
+    summary_designs: tuple[str, ...] = field(default=(), repr=False, compare=False)
 
     @property
     def vt_lines(self) -> tuple[tuple[PartLine, re.Match[str]], ...]:
@@ -457,11 +461,22 @@ def _page_one_entries(runs: Sequence[_Run]) -> list[tuple[str, str]]:
 # ----- the whole summary
 
 
+def project_name(data: bytes) -> str | None:
+    """Page 1's PROJECT NAME value, and nothing else from page 1; None when the label is absent."""
+    runs, _, _ = _read_page(PdfReader(io.BytesIO(data)).pages[0])
+    label = next((r for r in runs if r.text == "PROJECT NAME"), None)
+    if label is None:
+        return None
+    beside = sorted((r for r in runs if abs(r.y - label.y) <= 1 and r.x > label.x + 1), key=lambda r: r.x)
+    return " ".join(r.text for r in beside) or None
+
+
 @dataclass
 class _Elevation:
     page: int
     design: int
     design_key: str
+    design_name_key: str
     wall: str
     runs: list[_Run]
     drawn: list[_Drawn]
@@ -478,6 +493,7 @@ def prepare(data: bytes) -> SummaryPrep:
     design_order: dict[str, int] = {}
     wall_sizes: dict[tuple[str, str], tuple[float, float]] = {}
     wall_tables: dict[str, list[tuple[str, float]]] = {}
+    design_names: dict[str, str] = {}
     elevations: list[_Elevation] = []
     unlabelled = orphans = 0
     for number, page in enumerate(pages, 1):
@@ -495,6 +511,7 @@ def prepare(data: bytes) -> SummaryPrep:
             entries += [("design name", r.text) for r in used]
             key = name_key_hash(name)
             design_order.setdefault(key, len(design_order))
+            design_names.setdefault(key, name_key(name))
             table = next((r for r in runs if r.text == "WALL/AREA NAME (W X H)"), None)
             titles = [r for r in runs if r.size > size + 0.5 and r.y < bottom]
             if table is not None:
@@ -506,8 +523,8 @@ def prepare(data: bytes) -> SummaryPrep:
                 images = {im.name.rsplit(".", 1)[0]: im.image for im in page.images
                           if any(d.name.lstrip("/") == im.name.rsplit(".", 1)[0] for d in drawn
                                  if max(d.rect.x1 - d.rect.x0, d.rect.y1 - d.rect.y0) >= DRAWING_MIN)}
-                elevations.append(_Elevation(number, design_order[key], key, title.removeprefix("Wall ").strip(),
-                                             runs, drawn, annots, images))
+                elevations.append(_Elevation(number, design_order[key], key, design_names[key],
+                                             title.removeprefix("Wall ").strip(), runs, drawn, annots, images))
         for label, lines in _tables(runs, floor):
             if label is None:
                 unlabelled += 1
@@ -519,14 +536,14 @@ def prepare(data: bytes) -> SummaryPrep:
     refused: list[Refusal] = []
     for elevation in elevations:
         result = _contain(elevation, wall_sizes.get((elevation.design_key, elevation.wall)),
-                          tuple(wall_tables.get(elevation.design_key, ())))
+                          tuple(wall_tables.get(elevation.design_key, ())), tuple(design_names.values()))
         (crops if isinstance(result, WallCrop) else refused).append(result)
     return SummaryPrep(tuple(crops), tuple(refused), DenyList(entries), len(pages), len(elevations),
                        unlabelled, orphans)
 
 
-def _contain(e: _Elevation, size: tuple[float, float] | None,
-             table: tuple[tuple[str, float], ...]) -> WallCrop | Refusal:
+def _contain(e: _Elevation, size: tuple[float, float] | None, table: tuple[tuple[str, float], ...],
+             designs: tuple[str, ...] = ()) -> WallCrop | Refusal:
     if any(d.subtype == "/Form" for d in e.drawn):
         return Refusal(e.page, "form_on_page", "The page draws a form, which prep does not read inside.")
     big = [d for d in e.drawn if d.subtype == "/Image"
@@ -558,4 +575,88 @@ def _contain(e: _Elevation, size: tuple[float, float] | None,
     _PREPARED.add(hashlib.sha256(png).hexdigest())
     return WallCrop(e.page, e.design, e.design_key, e.wall, size[0] if size else None,
                     size[1] if size else None, png, fitted.size, native, trim,
-                    hashlib.sha256(png).hexdigest(), tuple(e.parts), table)
+                    hashlib.sha256(png).hexdigest(), tuple(e.parts), table, e.design_name_key, designs)
+
+
+# ----- enlarged tiles of a crop (design 3.6: the WIDTH/DEPTH strip and the verticals, enlarged)
+
+TILE_ZOOM = 2.0
+TILE_MAX = 12  # vertical tiles per wall at most; a wall with more gets none (too busy to tile)
+RUN_FRACTION = 0.15  # a vertical is a column inked over at least this share of the wall box's height
+
+
+@dataclass(frozen=True, repr=False)
+class Tile:
+    """An enlarged part of a contained crop: it adds no pixel the crop did not hold."""
+    kind: str  # "strip" or "vertical"
+    png: bytes
+    sha256: str
+    pixels: tuple[int, int]
+    box: tuple[int, int, int, int]  # left, top, right, bottom in the crop's own pixels
+
+    def __repr__(self) -> str:
+        return f"Tile({self.kind}, box={self.box}, pixels={self.pixels}, sha256={self.sha256[:12]})"
+
+
+def _enlarged(img: Image.Image, box: tuple[int, int, int, int]) -> tuple[Image.Image, tuple[int, int, int, int]]:
+    part = img.crop(box)
+    w, h = part.size
+    zoom = min(TILE_ZOOM, MAX_SIDE / max(w, h))
+    while zoom > 1.0 and visual_tokens(round(w * zoom), round(h * zoom)) > MAX_VISUAL_TOKENS:
+        zoom -= 0.1
+    zoom = max(zoom, 1.0)
+    if visual_tokens(round(w * zoom), round(h * zoom)) > MAX_VISUAL_TOKENS:
+        raise TooLarge("a tile is over the budget even unenlarged")
+    return part.resize((round(w * zoom), round(h * zoom)), Image.Resampling.LANCZOS), box
+
+
+def tiles(crop: WallCrop) -> tuple[Tile, ...]:
+    """
+    The crop's WIDTH/DEPTH strip (below the wall box) and one tile around each vertical, enlarged
+    up to 2 times within Claude's limits. Each is a part of the crop, which containment already
+    proved clean, and each is registered as prepared, so payload.py may send it. A crop whose wall
+    box or verticals can't be found gets fewer tiles, never a guess.
+    """
+    img = Image.open(io.BytesIO(crop.png)).convert("RGB")
+    w, h = img.size
+    ink = img.convert("L").tobytes().translate(_INK)
+    box_cols = [x for x in range(w) if ink[x::w].count(1) > BOX_COLUMN * h]
+    if not box_cols:
+        return ()
+    xl, xr = min(box_cols), max(box_cols)
+    span = xr - xl + 1
+    full = [y for y in range(h) if ink[y * w + xl: y * w + xr + 1].count(1) >= 0.9 * span]
+    if not full:
+        return ()
+    ytop, ybot = min(full), max(full)
+    out: list[tuple[str, Image.Image, tuple[int, int, int, int]]] = []
+    if h - ybot > 8:
+        part, box = _enlarged(img, (0, ybot, w, h))
+        out.append(("strip", part, box))
+    height = ybot - ytop
+    columns = []
+    for x in range(xl + 2, xr - 1):
+        col = ink[x::w][ytop:ybot]
+        if max((len(run) for run in col.split(b"\x00")), default=0) >= RUN_FRACTION * height:
+            columns.append(x)
+    groups: list[list[int]] = []
+    for x in columns:
+        if groups and x - groups[-1][-1] <= max(4, w // 100):
+            groups[-1].append(x)
+        else:
+            groups.append([x])
+    if 0 < len(groups) <= TILE_MAX:
+        half = max(40, span // 16)
+        for g in groups:
+            cx = (g[0] + g[-1]) // 2
+            part, box = _enlarged(img, (max(0, cx - half), max(0, ytop - 4), min(w, cx + half), h))
+            out.append(("vertical", part, box))
+    made: list[Tile] = []
+    for kind, part, box in out:
+        buf = io.BytesIO()
+        part.save(buf, format="PNG")
+        png = buf.getvalue()
+        sha = hashlib.sha256(png).hexdigest()
+        _PREPARED.add(sha)
+        made.append(Tile(kind, png, sha, part.size, box))
+    return tuple(made)

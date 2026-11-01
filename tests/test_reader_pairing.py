@@ -166,3 +166,53 @@ def test_a_table_that_fits_no_mapping_stays_left_out() -> None:
     table = (("1", 42.375), ("2", 59.75), ("3", 80.5), ("4", 59.75), ("5", 3.0))
     result = pairing.pair("T", [_u_crop("2", table, 1)], _rooms(walls=_U, panels=_U_PANELS, others=()))
     assert [x.code for x in result.left_out] == ["several_walls_of_that_length"]
+
+
+# ----- rooms Mozaik names differently from the design (the P5 jobs, 2026-10-31)
+
+
+def _named(design: str, others: tuple[str, ...] = ()) -> prep.WallCrop:
+    crop = _crop(design=design)
+    keys = tuple(prep.name_key(d) for d in (design, *others))
+    return prep.WallCrop(*[getattr(crop, f) for f in ("page", "design", "design_key", "wall", "width_in",
+                                                      "height_in", "png", "pixels", "native", "trim",
+                                                      "sha256", "parts")],
+                         design_name_key=prep.name_key(design), summary_designs=keys)
+
+
+def _room(name: str) -> dict[str, truth.RoomTruth]:
+    return {"Room1": truth.read_room(s.room_des(name=name))}
+
+
+def test_an_exactly_named_room_pairs_by_name() -> None:
+    result = pairing.pair("T", [_named(s.DESIGN)], _room(s.DESIGN))
+    assert [p.room_rule for p in result.pairs] == ["name"]
+
+
+def test_a_room_named_by_part_of_one_design_pairs_by_that_part() -> None:
+    crop = _named("Testerson - Primary Closet warm sand", ("Testerson - Daughter Closet",))
+    result = pairing.pair("T", [crop], _room("Primary"))
+    assert [p.room_rule for p in result.pairs] == ["part of the name"]
+
+
+def test_a_room_name_that_is_part_of_two_designs_is_left_out() -> None:
+    crop = _named("Testerson - Primary Closet", ("Testerson - Primary Closet - option 2",))
+    result = pairing.pair("T", [crop], _room("Primary Closet"))
+    assert [x.code for x in result.left_out] == ["no_room"]
+
+
+def test_the_only_design_and_the_only_room_pair_by_elimination() -> None:
+    result = pairing.pair("T", [_named("Testerson - Shelves for Kitchen")], _room("Room 1"))
+    assert [p.room_rule for p in result.pairs] == ["only design, only room"]
+
+
+def test_two_designs_and_generically_named_rooms_are_left_out() -> None:
+    crop = _named("Testerson - Shelves for Kitchen", ("Testerson - Pantry",))
+    assert [x.code for x in pairing.pair("T", [crop], _room("Room 1")).left_out] == ["no_room"]
+
+
+def test_room_names_are_read_with_their_xml_escapes_undone() -> None:
+    room = truth.read_room(s.room_des(name="Testerson - Baby Closet - 26&quot;deep"))
+    assert room.key == prep.name_key_hash('Testerson - Baby Closet - 26"deep')
+    assert room.name_key == prep.name_key('Testerson - Baby Closet - 26"deep')
+    assert "Testerson" not in repr(room)

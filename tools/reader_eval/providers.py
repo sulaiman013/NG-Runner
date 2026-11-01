@@ -112,7 +112,7 @@ class _Base:
     def worst_case_usd(self, req: payload.WallRequest) -> float:
         """The most this request can cost: every input token at the dearest input rate, one token per
         byte of text, and every output token max_output_tokens allows."""
-        images = [req.target.image, *(e.turn.image for e in req.examples)]
+        images = [req.target.image, *req.target.tiles, *(i for e in req.examples for i in (e.turn.image, *e.turn.tiles))]
         text = sum(len(t.encode("utf-8")) for t in [req.instructions, json.dumps(req.schema), req.target.text,
                                                      *(e.turn.text for e in req.examples),
                                                      *(e.answer for e in req.examples)])
@@ -172,7 +172,7 @@ class OpenAIResponses(_Base):
 
     def _user(self, turn: payload.Turn) -> dict[str, Any]:
         return {"role": "user", "content": [
-            {"type": "input_image", "image_url": _data_url(turn.image), "detail": "original"},
+            *({"type": "input_image", "image_url": _data_url(i), "detail": "original"} for i in (turn.image, *turn.tiles)),
             {"type": "input_text", "text": turn.text}]}
 
     def body(self, req: payload.WallRequest) -> dict[str, Any]:
@@ -226,8 +226,9 @@ class AnthropicMessages(_Base):
 
     def _user(self, turn: payload.Turn) -> dict[str, Any]:
         return {"role": "user", "content": [
-            {"type": "image", "source": {"type": "base64", "media_type": "image/png",
-                                         "data": base64.b64encode(turn.image.png).decode("ascii")}},
+            *({"type": "image", "source": {"type": "base64", "media_type": "image/png",
+                                           "data": base64.b64encode(i.png).decode("ascii")}}
+              for i in (turn.image, *turn.tiles)),
             {"type": "text", "text": turn.text}]}
 
     def body(self, req: payload.WallRequest) -> dict[str, Any]:
@@ -313,7 +314,8 @@ class OpenRouterLuna(_Base):
 
     def _user(self, turn: payload.Turn) -> dict[str, Any]:
         return {"role": "user", "content": [
-            {"type": "image_url", "image_url": {"url": _data_url(turn.image), "detail": "original"}},
+            *({"type": "image_url", "image_url": {"url": _data_url(i), "detail": "original"}}
+              for i in (turn.image, *turn.tiles)),
             {"type": "text", "text": turn.text}]}
 
     def body(self, req: payload.WallRequest) -> dict[str, Any]:

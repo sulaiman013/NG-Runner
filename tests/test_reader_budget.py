@@ -124,3 +124,69 @@ def test_a_guard_with_a_ledger_refuses_what_fits_the_run_but_not_the_total(tmp_p
     with pytest.raises(budget.CapReached):
         guard.before(1.0)  # 49.2 + 1.0 > 50, though the run has $1.80 left
     assert budget.SpendLedger(path, 50.0).spent == pytest.approx(49.2)
+
+
+def test_a_guard_holds_a_round_ledger_beside_the_total(tmp_path) -> None:
+    total = budget.SpendLedger(tmp_path / "total.json", 50.0)
+    round_ = budget.SpendLedger(tmp_path / "round.json", 25.0)
+    guard = budget.CostGuard(20.0, ledger=total, ledgers=(round_,))
+    guard.before(1.0)
+    guard.after(0.5)
+    assert total.spent == pytest.approx(0.5) and round_.spent == pytest.approx(0.5)
+
+
+def test_a_round_ledger_refuses_what_the_total_still_allows_and_charges_neither(tmp_path) -> None:
+    old = budget.SpendLedger(tmp_path / "round.json", 25.0)
+    old.reserve(24.8)
+    old.settle(24.8)
+    total = budget.SpendLedger(tmp_path / "total.json", 50.0)
+    guard = budget.CostGuard(20.0, ledger=total, ledgers=(budget.SpendLedger(tmp_path / "round.json", 25.0),))
+    with pytest.raises(budget.CapReached):
+        guard.before(0.5)
+    assert budget.SpendLedger(tmp_path / "total.json", 50.0).spent == 0.0  # its reservation was released
+    total.reserve(0.1)  # and it is free for the next call
+
+
+# ----- several calls at once (the tuning runs): every outstanding worst case counts
+
+
+def test_outstanding_reservations_count_together_against_the_run_cap() -> None:
+    guard = budget.CostGuard(1.0)
+    a = guard.reserve(0.4)
+    guard.reserve(0.4)
+    with pytest.raises(budget.CapReached):
+        guard.reserve(0.3)  # 0.8 outstanding + 0.3 > 1.0
+    guard.settle(a, 0.1)
+    guard.reserve(0.3)  # 0.1 spent + 0.4 + 0.3 outstanding fits
+    assert guard.calls == 1
+
+
+def test_outstanding_reservations_count_together_against_a_ledger(tmp_path) -> None:
+    ledger = budget.SpendLedger(tmp_path / "spend.json", 1.0)
+    guard = budget.CostGuard(20.0, ledger=ledger)
+    a = guard.reserve(0.5)
+    guard.reserve(0.4)
+    with pytest.raises(budget.CapReached):
+        guard.reserve(0.2)
+    guard.settle(a, None)  # unknown: charged its worst case
+    assert budget.SpendLedger(tmp_path / "spend.json", 1.0).spent == pytest.approx(0.9)  # 0.5 + 0.4 pending
+
+
+def test_a_crash_with_calls_outstanding_leaves_all_their_worst_cases_counted(tmp_path) -> None:
+    guard = budget.CostGuard(20.0, ledger=budget.SpendLedger(tmp_path / "spend.json", 2.0))
+    guard.reserve(0.6)
+    guard.reserve(0.7)  # the process dies here
+    again = budget.CostGuard(20.0, ledger=budget.SpendLedger(tmp_path / "spend.json", 2.0))
+    with pytest.raises(budget.CapReached):
+        again.reserve(0.8)
+    again.reserve(0.6)
+
+
+def test_a_reservation_refused_by_a_round_ledger_is_released_from_the_total(tmp_path) -> None:
+    total = budget.SpendLedger(tmp_path / "total.json", 50.0)
+    round_ = budget.SpendLedger(tmp_path / "round.json", 0.5)
+    guard = budget.CostGuard(20.0, ledger=total, ledgers=(round_,))
+    guard.reserve(0.4)
+    with pytest.raises(budget.CapReached):
+        guard.reserve(0.2)
+    assert budget.SpendLedger(tmp_path / "total.json", 50.0).spent == pytest.approx(0.4)

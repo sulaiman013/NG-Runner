@@ -31,7 +31,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-from tools.reader_eval import budget, cases, keys, pairing, payload, prep, providers, scoring, truth
+from tools.reader_eval import budget, cases, diagnose, keys, pairing, payload, prep, providers, scoring, truth
 
 DEFAULT_WORKED = 4  # worked walls per request: decision 17 says 3 to 5
 # Totals across every run, kept on disk (budget.SpendLedger): Claude $50 for this evaluation, ever;
@@ -46,7 +46,7 @@ class World:
 
 
 def load() -> World:
-    preps = {c: prep.prepare(cases.summary(c)) for c in cases.TEST_CASES + cases.WORKED_CASES}
+    preps = {c: prep.prepare(cases.summary(c)) for c in cases.collected()}
     pairings = {c: pairing.pair(c, preps[c].crops, {stem: truth.read_room(data)
                                                     for stem, data in cases.rooms(c).items()})
                 for c in preps}
@@ -54,7 +54,7 @@ def load() -> World:
 
 
 def test_walls(world: World) -> list[pairing.Pair]:
-    return [p for c in cases.TEST_CASES if c in world.pairings
+    return [p for c in cases.test_cases() if c in world.pairings
             for p in sorted(world.pairings[c].pairs, key=lambda p: p.crop.page)]
 
 
@@ -92,7 +92,7 @@ def cmd_collect(_: argparse.Namespace) -> int:
 def cmd_prep(_: argparse.Namespace) -> int:
     out = cases.reader_dir()
     rows, total = [], Counter()
-    for c in cases.TEST_CASES + cases.WORKED_CASES:
+    for c in cases.collected():
         result = prep.prepare(cases.summary(c))
         folder = out / "crops" / c
         folder.mkdir(parents=True, exist_ok=True)
@@ -120,13 +120,20 @@ def cmd_prep(_: argparse.Namespace) -> int:
 
 def cmd_pair(_: argparse.Namespace) -> int:
     world = load()
-    rows, left, unpaired, cats, group = [], Counter(), 0, Counter(), Counter()
+    rows, left, unpaired, group = [], Counter(), 0, Counter()
+    cats: dict[str, Counter[str]] = {"first": Counter(), "new": Counter()}
+    rules: Counter[str] = Counter()
+    walls_by_group: Counter[str] = Counter()
+    tests = set(cases.test_cases())
     for c, result in world.pairings.items():
-        kind = "test" if c in cases.TEST_CASES else "worked"
+        kind = ("new" if c.startswith("P") else "first") if c in tests else "worked"
         group[f"{kind} pairs"] += len(result.pairs)
+        walls_by_group[kind] += sum(len(truth.read_room(d).walls) for d in cases.rooms(c).values())
+        group[f"{kind} crops"] += len(world.preps[c].crops)
         for p in result.pairs:
-            if kind == "test":
-                cats.update(p.wall.categories)
+            rules[f"{kind}: {p.room_rule}"] += 1
+            if kind != "worked":
+                cats[kind].update(p.wall.categories)
             rows.append({"case": c, "page": p.crop.page, "wall": p.crop.wall, "room": p.room,
                          "position": p.wall.position, "length_in": round(p.wall.length_in, 3),
                          "categories": p.wall.categories,
@@ -147,8 +154,13 @@ def cmd_pair(_: argparse.Namespace) -> int:
     print(f"Walls in the .des: {walls}. Crops: {crops}. Pairs: {sum(len(r.pairs) for r in world.pairings.values())}. "
           f"Left out: {sum(left.values())} ({', '.join(f'{k} {v}' for k, v in sorted(left.items()))}). "
           f"Walls with verticals no crop paired: {unpaired}.")
-    print("By group: " + ", ".join(f"{k} {v}" for k, v in sorted(group.items())))
-    print("Test-set categories: " + ", ".join(f"{k} {v}" for k, v in sorted(cats.items())))
+    print("By group: " + ", ".join(f"{k} {v}" for k, v in sorted(group.items()))
+          + "; walls in the .des: " + ", ".join(f"{k} {v}" for k, v in sorted(walls_by_group.items())))
+    print("Rooms found by: " + ", ".join(f"{k} {v}" for k, v in sorted(rules.items())))
+    for kind in ("first", "new"):
+        print(f"Test-set categories, {kind}: " + ", ".join(f"{k} {v}" for k, v in sorted(cats[kind].items())))
+    both = cats["first"] + cats["new"]
+    print("Test-set categories, together: " + ", ".join(f"{k} {v}" for k, v in sorted(both.items())))
     return 0
 
 
@@ -172,7 +184,10 @@ def cmd_dry_run(args: argparse.Namespace) -> int:
     worked = worked_walls(world, args.worked)
     provider = providers.PROVIDERS[args.provider](effort=args.effort) if args.provider else None
     shown: list[str] = []
-    for wall in test_walls(world)[: args.walls]:
+    chosen = [w for w in test_walls(world)
+              if getattr(args, "set", "all") == "all" or (w.case.startswith("P") == (args.set == "new"))]
+    start = getattr(args, "start", 0)
+    for wall in chosen[start: start + args.walls]:
         try:
             req = request_for(world, wall, worked)
         except payload.ContainmentError as exc:
@@ -199,7 +214,7 @@ def _cache_path(answers: Path, provider: providers._Base, req: payload.WallReque
 def _required(world: World, scored: set[str]) -> dict[str, set[str]]:
     """Per test job whose every paired wall was read in this run: every wall a full build needs."""
     required: dict[str, set[str]] = {}
-    for c in cases.TEST_CASES:
+    for c in cases.test_cases():
         result = world.pairings.get(c)
         if result is None:
             continue
@@ -213,6 +228,7 @@ def _required(world: World, scored: set[str]) -> dict[str, set[str]]:
 @dataclass
 class RunResult:
     scores: list[scoring.WallScore]
+    readings: list[tuple[pairing.Pair, scoring.Reading]]
     blocked: Counter[str]
     not_run: int
     stopped: str | None
@@ -228,7 +244,7 @@ def read_walls(world: World, walls: Sequence[pairing.Pair], worked: Sequence[pai
     allows first, and one more only when the network failed (re-reserving its worst case). Once the
     guard refuses, no further call is made in this run. A request containment blocks is never sent.
     """
-    result = RunResult([], Counter(), 0, None)
+    result = RunResult([], [], Counter(), 0, None)
     for wall in walls:
         try:
             req = request_for(world, wall, worked)
@@ -275,7 +291,30 @@ def read_walls(world: World, walls: Sequence[pairing.Pair], worked: Sequence[pai
             result.not_run += 1
         else:
             result.scores.append(scoring.score_wall(wall, reading, tol_x=tol_x, tol_y=tol_y))
+            result.readings.append((wall, reading))
     return result
+
+
+def _split(readings: Sequence[tuple[pairing.Pair, scoring.Reading]], tol_x: float, tol_y: float) -> str:
+    """Silent errors split into offsets from Jim's build choices and reading errors (diagnose.py)."""
+    diags = [(pair, diagnose.diagnose(pair, reading, tol_x=tol_x, tol_y=tol_y)) for pair, reading in readings]
+    kinds = Counter(k for _, d in diags for k in d.kinds)
+    per_cat: dict[str, Counter[str]] = {}
+    for pair, d in diags:
+        for cat in pair.wall.categories:
+            c = per_cat.setdefault(cat, Counter())
+            c["walls"] += 1
+            c["reading-error walls"] += "reading error" in d.kinds
+            c["silent reading"] += d.silent_reading
+    lines = [f"Silent errors from Jim's build choices: {sum(d.silent_offset for _, d in diags)}; "
+             f"silent reading errors: {sum(d.silent_reading for _, d in diags)} "
+             f"(flagged: {sum(d.flagged_offset for _, d in diags)} and {sum(d.flagged_reading for _, d in diags)}).",
+             "Walls by what explains them: " + ", ".join(f"{k} {v}" for k, v in sorted(kinds.items())) + ".",
+             "Per category (walls, walls with a reading error, silent reading errors):"]
+    lines += [f"  {cat}: {c['walls']}, {c['reading-error walls']}, {c['silent reading']}"
+              for cat, c in sorted(per_cat.items())]
+    lines += ["Walls with a reading error: " + ", ".join(d.wall_id for _, d in diags if "reading error" in d.kinds)]
+    return "\n".join(lines)
 
 
 def _evaluate(args: argparse.Namespace, *, call: bool) -> int:
@@ -288,8 +327,11 @@ def _evaluate(args: argparse.Namespace, *, call: bool) -> int:
             print(f"No key in Windows Credential Manager under {keys.target(provider.key_name)}: nothing was sent.")
             return 2
     ledger = budget.SpendLedger(cases.reader_dir() / f"spend_{provider.name}.json", LEDGER_CAPS[provider.name])
-    guard = budget.CostGuard(args.cap, ledger=ledger)
-    walls = test_walls(world)[args.start: args.start + args.limit]
+    rounds = ((budget.SpendLedger(cases.reader_dir() / f"spend_{provider.name}_{args.round}.json", args.round_cap),)
+              if args.round else ())
+    guard = budget.CostGuard(args.cap, ledger=ledger, ledgers=rounds)
+    walls = [w for w in test_walls(world) if args.set == "all" or (w.case.startswith("P") == (args.set == "new"))]
+    walls = walls[args.start: args.start + args.limit]
     result = read_walls(world, walls, worked_walls(world, args.worked), provider, key,
                         guard, answers=cases.reader_dir() / "answers", call=call, tol_x=args.tol_x, tol_y=args.tol_y)
     report = scoring.summarize(result.scores, required=_required(world, {s.wall_id for s in result.scores}),
@@ -304,9 +346,13 @@ def _evaluate(args: argparse.Namespace, *, call: bool) -> int:
             f"{result.not_run} walls not run. Blocked by the containment scan: {sum(blocked.values())}"
             + (f" ({'; '.join(f'{k}: {v}' for k, v in blocked.items())})" if blocked else "") + ".")
     (out / f"{stamp}-{provider.name}.json").write_text(report.to_json(), encoding="utf-8")
-    (out / f"{stamp}-{provider.name}.txt").write_text(f"{head}\n{report.text()}\n", encoding="utf-8")
+    if rounds:
+        head += f" Round {args.round}: ${rounds[0].spent:.4f} of ${rounds[0].cap:.2f}."
+    split = _split(result.readings, args.tol_x, args.tol_y)
+    (out / f"{stamp}-{provider.name}.txt").write_text(f"{head}\n{report.text()}\n{split}\n", encoding="utf-8")
     print(head)
     print(report.text())
+    print(split)
     return 0
 
 
@@ -323,6 +369,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         p.add_argument("--worked", type=int, default=DEFAULT_WORKED)
         p.add_argument("--walls", type=int, default=3)
         p.add_argument("--start", type=int, default=0)
+        p.add_argument("--set", choices=("all", "first", "new"), default="all")
+        p.add_argument("--round", default="")
+        p.add_argument("--round-cap", type=float, default=25.0)
         p.add_argument("--limit", type=int, default=10)
         p.add_argument("--cap", type=float, default=budget.DEFAULT_CAP_USD)
         p.add_argument("--tol-x", type=float, default=scoring.TOL_X_IN)

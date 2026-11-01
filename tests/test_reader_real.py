@@ -132,24 +132,33 @@ def test_a_products_wall_is_its_position_on_every_real_room(world: run.World) ->
 
 
 def test_pairing_counts_hold(world: run.World) -> None:
-    pairs = sum(len(r.pairs) for r in world.pairings.values())
-    tests = sum(len(world.pairings[c].pairs) for c in cases.TEST_CASES)
+    first = [c for c in cases.TEST_CASES if c in world.pairings]
+    new = [c for c in cases.test_cases() if c.startswith("P") and c in world.pairings]
     left = [x.code for r in world.pairings.values() for x in r.left_out]
-    assert pairs >= 34 and tests >= 26 and len(left) <= 7  # 2026-10-31
+    assert sum(len(world.pairings[c].pairs) for c in first) >= 26  # 2026-10-31
+    assert sum(len(world.pairings[c].left_out) for c in first) <= 7
+    if new:  # the P5 jobs, collected 2026-10-31: 39 of 40 (one summary is another job's)
+        assert len(new) >= 39
+        assert sum(len(world.pairings[c].pairs) for c in new) >= 122
+        assert sum(len(world.pairings[c].left_out) for c in new) <= 28
     assert set(left) <= KNOWN_LEFT_OUT
 
 
-def test_every_real_test_wall_builds_a_contained_request(world: run.World) -> None:
+def test_every_real_test_wall_builds_a_contained_request_or_is_blocked(world: run.World) -> None:
     worked = run.worked_walls(world)
     words = {w.casefold() for job in cases.job_names().values() for w in (job, job.split("_")[0]) if len(w) >= 3}
-    built = 0
+    built = blocked = 0
     for wall in run.test_walls(world):
-        req = run.request_for(world, wall, worked)  # raises ContainmentError if anything is off
+        try:
+            req = run.request_for(world, wall, worked)
+        except payload.ContainmentError:
+            blocked += 1  # never sent: on 2026-10-31 every one was a catalog word also on page 1
+            continue
         payload.assert_contained(req)
         sent = "\n".join([req.target.text, *(e.turn.text for e in req.examples), *(e.answer for e in req.examples)])
         assert not any(w in sent.casefold() for w in words), wall.case
         built += 1
-    assert built >= 26
+    assert built >= 26 and blocked <= 7
 
 
 def test_worked_walls_are_held_out_of_the_test_set(world: run.World) -> None:

@@ -7,7 +7,13 @@ one as right). So a crop is paired only when every step below holds, and otherwi
 code, counted in the report, never guessed:
 
   room     the one .des room whose Name has the design's key (letters and digits, any case; Mozaik
-           drops apostrophes). None: no_room. More than one: several_rooms.
+           drops apostrophes; XML escapes undone), else, because Mozaik rooms are not always named
+           as the design is (real P5 jobs, 2026-10-31), one of two narrower rules, each recorded
+           on the pair as its room_rule:
+             part of the name  the one room whose key is part of this design's key and of no other
+                               design's in the summary ("Primary" for "<client> - Primary Closet")
+             only design, only room  the summary has one design and the job one room with walls
+           None: no_room. More than one by name: several_rooms. The checks below still apply.
   wall     the WALL/AREA table's width for the crop's wall (no_wall_size without one) equals one
            wall's length in that room, within 0.07 in (IC prints eighths). IC's wall numbers are
            not Mozaik's (real Job D starts at 2), so the number never decides. None:
@@ -42,6 +48,7 @@ class Pair:
     crop: WallCrop
     room: str  # the room's file stem, e.g. "Room1"
     wall: Wall
+    room_rule: str = "name"  # how the room was found (module notes)
 
 
 @dataclass(frozen=True)
@@ -121,15 +128,31 @@ def _as_drawn(crop: WallCrop, wall: Wall) -> str | None:
     return None
 
 
-def _match(crop: WallCrop, rooms: Mapping[str, RoomTruth]) -> tuple[str, Wall] | str:
+def _room(crop: WallCrop, rooms: Mapping[str, RoomTruth]) -> tuple[str, str] | str:
+    """The room the crop's design was built as, and the rule that found it; or a left-out code."""
     named = [label for label, room in rooms.items() if room.key == crop.design_key]
-    if not named:
-        return "no_room"
     if len(named) > 1:
         return "several_rooms"
+    if named:
+        return named[0], "name"
+    others = [k for k in crop.summary_designs if k != crop.design_name_key]
+    part = [label for label, room in rooms.items() if room.walls and room.name_key
+            and room.name_key in crop.design_name_key and not any(room.name_key in k for k in others)]
+    if len(part) == 1:
+        return part[0], "part of the name"
+    with_walls = [label for label, room in rooms.items() if room.walls]
+    if not part and len(crop.summary_designs) == 1 and len(with_walls) == 1:
+        return with_walls[0], "only design, only room"
+    return "no_room"
+
+
+def _match(crop: WallCrop, rooms: Mapping[str, RoomTruth]) -> tuple[str, Wall, str] | str:
+    found = _room(crop, rooms)
+    if isinstance(found, str):
+        return found
+    label, rule = found
     if crop.width_in is None:
         return "no_wall_size"
-    label = named[0]
     fits = [w for w in rooms[label].walls if abs(w.length_in - crop.width_in) <= LENGTH_TOL_IN]
     if not fits:
         return "no_wall_of_that_length"
@@ -140,12 +163,12 @@ def _match(crop: WallCrop, rooms: Mapping[str, RoomTruth]) -> tuple[str, Wall] |
         fits = [by_table]
     wall = fits[0]
     why = _as_drawn(crop, wall)
-    return why if why else (label, wall)
+    return why if why else (label, wall, rule)
 
 
 def pair(case: str, crops: Sequence[WallCrop], rooms: Mapping[str, RoomTruth]) -> Pairing:
     """Pair every crop of one case (job) with its wall in that job's rooms, or leave it out."""
-    found: list[tuple[WallCrop, str, Wall]] = []
+    found: list[tuple[WallCrop, str, Wall, str]] = []
     left: list[LeftOut] = []
     for crop in crops:
         result = _match(crop, rooms)
@@ -153,14 +176,15 @@ def pair(case: str, crops: Sequence[WallCrop], rooms: Mapping[str, RoomTruth]) -
             left.append(LeftOut(case, crop.page, crop.wall, result))
         else:
             found.append((crop, *result))
-    twice = Counter((label, wall.position) for _, label, wall in found)
+    twice = Counter((label, wall.position) for _, label, wall, _ in found)
     pairs: list[Pair] = []
-    for crop, label, wall in found:
+    for crop, label, wall, rule in found:
         if twice[(label, wall.position)] > 1:
             left.append(LeftOut(case, crop.page, crop.wall, "wall_paired_twice"))
         else:
-            pairs.append(Pair(case, crop, label, wall))
+            pairs.append(Pair(case, crop, label, wall, rule))
     named_rooms = {label for label, room in rooms.items() if any(room.key == c.design_key for c in crops)}
+    named_rooms |= {p.room for p in pairs}
     paired = {(p.room, p.wall.position) for p in pairs}
     unpaired = tuple(UnpairedWall(case, label, w.position, len(w.panels))
                      for label in sorted(named_rooms) for w in rooms[label].walls

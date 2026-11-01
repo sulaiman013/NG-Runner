@@ -65,6 +65,36 @@ Give a number only when you read it off the drawing. Never guess: give null and 
 unsure. Set count_unsure when you are not sure how many verticals there are, and list in \
 unreadable anything that stops you reading the wall."""
 
+RULES_BLOCK = """\
+Rules the shop builds by, from its own build notes:
+- The elevation assigns verticals to positions; the parts list does not. Walk the drawing left to \
+right and match each drawn vertical to a parts line by its drawn length.
+- Read x from the inside of the box's left line. A vertical tight to a wall has its outer face on \
+the box line, so it reads one face short: give the x where its left face is drawn.
+- A radius vertical's front edge is clipped by the corner radius at both ends, so a 47.4 reads about \
+40 long: classify it by its longer back edge, and count it once.
+- A stacked tower is an upper wall-hung run and a lower floor run at the same x, between two \
+full-height verticals: report both.
+- Floor verticals stand on 0. A vertical whose run starts well above the floor is wall-hung: read \
+its drawn top and bottom.
+- Do not infer what the shop decides when it builds the job: the room's top line (where wall-hung \
+verticals hang) and where the run starts along the wall are set then. Give what is drawn, and list \
+a value as unsure when the drawing does not show it plainly."""
+
+TILES_BLOCK = """\
+After the whole wall come enlarged tiles of the same drawing: first the WIDTH and DEPTH strip, then \
+one tile around each vertical, left to right. They are parts of the one drawing, not other walls."""
+
+BAYS_BLOCK = """\
+Also give bays: the WIDTH values written under the box, left to right, in inches as printed (null \
+for one you can't read)."""
+
+NOTE_WORDS = ("verticals, left to right, at x; each x is every bay's WIDTH before it plus 3/4 for each "
+              "vertical before it. The first vertical stands tight to the wall at x 0. Floor verticals "
+              "stand on 0 (tops). Wall-hung verticals hang from to. The VT RAD is the one at x: its "
+              "front edge is drawn clipped at both ends. A stacked tower at x: the lower vertical first. "
+              "No verticals on this wall: report none. How it was read:")
+
 _NUMBER_OR_NULL = {"anyOf": [{"type": "number"}, {"type": "null"}]}
 FIELDS = ("x_in", "bottom_in", "top_in", "height", "radius")
 UNREADABLE = ("more than one wall", "too small to read", "verticals hidden", "no drawing", "other")
@@ -95,7 +125,24 @@ _SCAFFOLD = ("Wall width: unknown. in. Wall height: Parts list for this wall (qu
 # Our own fixed words. They are in every payload whatever the summary says, so a page-1 word that is
 # also one of them carries nothing about the client, and the deny scan skips it (prep.DenyList).
 FIXED_WORDS = frozenset(w.casefold() for w in prep._WORD.findall(
-    " ".join([INSTRUCTIONS, json.dumps(SCHEMA), _SCAFFOLD, *UNREADABLE, *FIELDS])))
+    " ".join([INSTRUCTIONS, json.dumps(SCHEMA), _SCAFFOLD, *UNREADABLE, *FIELDS,
+              RULES_BLOCK, TILES_BLOCK, BAYS_BLOCK, NOTE_WORDS, "bays"])))
+
+
+SCHEMA_BAYS: dict[str, Any] = {**SCHEMA, "properties": {**SCHEMA["properties"],
+                                                       "bays": {"type": "array", "items": _NUMBER_OR_NULL}},
+                                "required": [*SCHEMA["required"], "bays"]}
+
+
+def instructions(*, rules: bool = False, tiles: bool = False, bays: bool = False) -> str:
+    """The reviewed instructions, with the blocks a tuning variant switches on (tuning.py)."""
+    return "\n\n".join([INSTRUCTIONS, *(b for b, on in ((RULES_BLOCK, rules), (TILES_BLOCK, tiles),
+                                                        (BAYS_BLOCK, bays)) if on)])
+
+
+REVIEWED_INSTRUCTIONS = frozenset(instructions(rules=r, tiles=t, bays=b)
+                                  for r in (False, True) for t in (False, True) for b in (False, True))
+REVIEWED_SCHEMAS = frozenset(json.dumps(x, sort_keys=True) for x in (SCHEMA, SCHEMA_BAYS))
 
 
 class ContainmentError(Exception):
@@ -113,6 +160,7 @@ class Image:
 class Turn:
     image: Image
     text: str
+    tiles: tuple[Image, ...] = ()  # enlarged parts of the same crop (prep.tiles), sent after it
 
 
 @dataclass(frozen=True)
@@ -167,8 +215,15 @@ def _image(crop: prep.WallCrop) -> Image:
     return Image(crop.png, crop.sha256, crop.pixels)
 
 
+def _turn(crop: prep.WallCrop, text: str, tiles: bool) -> Turn:
+    return Turn(_image(crop), text,
+                tuple(Image(t.png, t.sha256, t.pixels) for t in prep.tiles(crop)) if tiles else ())
+
+
 def build(wall_id: str, target: Pair, worked: Sequence[Pair], deny: prep.DenyList,
-          worked_deny: Mapping[str, prep.DenyList] | None = None) -> WallRequest:
+          worked_deny: Mapping[str, prep.DenyList] | None = None, *, instructions: str = INSTRUCTIONS,
+          schema: Mapping[str, Any] = SCHEMA, notes: Mapping[tuple[str, int], str] | None = None,
+          tiles: bool = False, worked_tiles: bool = True) -> WallRequest:
     """
     The request for target, with worked walls from other jobs; raises ContainmentError. deny is the
     target job's deny list; worked_deny gives each worked wall's job its own (deny when absent), as
@@ -177,25 +232,29 @@ def build(wall_id: str, target: Pair, worked: Sequence[Pair], deny: prep.DenyLis
     for w in worked:
         if w.case == target.case or w.crop.sha256 == target.crop.sha256:
             raise ContainmentError(f"{wall_id}: a worked wall must be held out of the target's job")
-    examples = tuple(Example(w.case, Turn(_image(w.crop), wall_text(w.crop)),
+    def text(w: Pair) -> str:
+        note = (notes or {}).get((w.case, w.crop.page))
+        return wall_text(w.crop) + (f"\nHow it was read: {note}" if note else "")
+    examples = tuple(Example(w.case, _turn(w.crop, text(w), tiles and worked_tiles),
                              json.dumps(answer_of(w), separators=(",", ":")),
                              (worked_deny or {}).get(w.case, deny)) for w in worked)
-    req = WallRequest(wall_id, INSTRUCTIONS, examples, Turn(_image(target.crop), wall_text(target.crop)),
-                      SCHEMA, deny)
+    req = WallRequest(wall_id, instructions, examples, _turn(target.crop, wall_text(target.crop), tiles),
+                      schema, deny)
     assert_contained(req)
     return req
 
 
 def assert_contained(req: WallRequest) -> None:
     """Raise ContainmentError unless every image is a prepared crop and no text hits the deny list."""
-    images = [("target", req.target.image)] + [(f"worked wall {k + 1}", e.turn.image)
-                                                for k, e in enumerate(req.examples)]
+    images = [("target", req.target.image), *(("target tile", t) for t in req.target.tiles)]
+    for k, e in enumerate(req.examples):
+        images += [(f"worked wall {k + 1}", e.turn.image), *((f"worked wall {k + 1} tile", t) for t in e.turn.tiles)]
     for where, image in images:
         if hashlib.sha256(image.png).hexdigest() != image.sha256:
             raise ContainmentError(f"{req.wall_id}: the {where} image's bytes do not match its hash")
         if not prep.was_prepared(image.sha256):
             raise ContainmentError(f"{req.wall_id}: the {where} image was not prepared and checked here")
-    if req.instructions != INSTRUCTIONS or json.dumps(req.schema, sort_keys=True) != json.dumps(SCHEMA, sort_keys=True):
+    if req.instructions not in REVIEWED_INSTRUCTIONS or json.dumps(req.schema, sort_keys=True) not in REVIEWED_SCHEMAS:
         raise ContainmentError(f"{req.wall_id}: the instructions or the schema are not the reviewed text")
     texts = [("target text", req.target.text, req.deny)]
     for k, e in enumerate(req.examples):
@@ -215,9 +274,11 @@ def dry_run(req: WallRequest, settings: str = "") -> str:
         img = e.turn.image
         out += [f"--- worked wall {k} (job {e.case}) ---",
                 f"[image: {img.pixels[0]} x {img.pixels[1]} px PNG, {len(img.png)} bytes, sha256 {img.sha256}]",
+                *(f"[tile: {t.pixels[0]} x {t.pixels[1]} px PNG, sha256 {t.sha256}]" for t in e.turn.tiles),
                 e.turn.text, "--- its answer ---", e.answer]
     img = req.target.image
     out += ["--- the wall to read ---",
             f"[image: {img.pixels[0]} x {img.pixels[1]} px PNG, {len(img.png)} bytes, sha256 {img.sha256}]",
+            *(f"[tile: {t.pixels[0]} x {t.pixels[1]} px PNG, sha256 {t.sha256}]" for t in req.target.tiles),
             req.target.text, "--- schema ---", json.dumps(req.schema, indent=1)]
     return "\n".join(out)

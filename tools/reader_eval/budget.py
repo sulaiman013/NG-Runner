@@ -24,6 +24,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import threading
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -44,6 +45,8 @@ class SpendLedger:
         self.path = Path(path)
         self.cap = float(cap_usd)
         self._pending: float | None = None
+        self._held = 0.0  # this process's outstanding reservations (reserve_more), all counted as pending
+        self._lock = threading.Lock()
 
     def _load(self) -> dict:
         if not self.path.is_file():
@@ -102,16 +105,107 @@ class SpendLedger:
         self._pending = None
         return charged
 
+    def reserve_more(self, worst_case_usd: float) -> None:
+        """One more call's worst case, while others are outstanding: every one counts as pending."""
+        with self._lock:
+            data = self._load()
+            if self._held == 0 and self._pending is None and data["pending_usd"]:  # left by a run that died
+                data["spent_usd"] += data["pending_usd"]
+                data["history"].append({"at": datetime.now(UTC).isoformat(), "charged": data["pending_usd"],
+                                        "note": "calls that never settled, charged their worst case"})
+                data["pending_usd"] = 0.0
+            if data["spent_usd"] + data["pending_usd"] + worst_case_usd > min(self.cap, data["cap_usd"]) + 1e-12:
+                self._save(data)
+                raise CapReached(f"the next call could cost up to ${worst_case_usd:.4f}, and "
+                                 f"${data['spent_usd'] + data['pending_usd']:.4f} of the ${data['cap_usd']:.2f} "
+                                 "total is spent or outstanding")
+            data["pending_usd"] += float(worst_case_usd)
+            self._save(data)
+            self._held += float(worst_case_usd)
+
+    def settle_part(self, reserved_usd: float, actual_usd: float | None) -> float:
+        """Charge one of the outstanding calls; returns what was charged."""
+        with self._lock:
+            data = self._load()
+            known = actual_usd is not None and math.isfinite(actual_usd) and actual_usd >= 0
+            charged = float(actual_usd) if known else float(reserved_usd)
+            data["pending_usd"] = max(0.0, data["pending_usd"] - reserved_usd)
+            data["spent_usd"] += charged
+            data["calls"] += 1
+            data["history"].append({"at": datetime.now(UTC).isoformat(), "charged": charged,
+                                    "note": "reported cost" if known else "cost unknown: worst case charged"})
+            self._save(data)
+            self._held = max(0.0, self._held - reserved_usd)
+            return charged
+
+    def release_part(self, reserved_usd: float) -> None:
+        """Drop one outstanding reservation without charging it: the call was never made."""
+        with self._lock:
+            data = self._load()
+            data["pending_usd"] = max(0.0, data["pending_usd"] - reserved_usd)
+            self._save(data)
+            self._held = max(0.0, self._held - reserved_usd)
+
+    def release(self) -> None:
+        """Drop this process's reservation without charging it: the call was never made."""
+        if self._pending is None:
+            return
+        data = self._load()
+        data["pending_usd"] = 0.0
+        self._save(data)
+        self._pending = None
+
 
 class CostGuard:
-    def __init__(self, cap_usd: float = DEFAULT_CAP_USD, *, ledger: SpendLedger | None = None) -> None:
+    """
+    One run's cap, and any ledgers on disk beside it (the evaluation's total, a round's): a call
+    goes ahead only when every one of them allows its worst case. When one refuses, the
+    reservations the others made for it are released, so nothing is charged for a call not made.
+    """
+
+    def __init__(self, cap_usd: float = DEFAULT_CAP_USD, *, ledger: SpendLedger | None = None,
+                 ledgers: tuple[SpendLedger, ...] = ()) -> None:
         if not (isinstance(cap_usd, int | float) and 0 < cap_usd <= MONTHLY_BUDGET_USD):
             raise ValueError(f"a run's cap is above $0 and at most the ${MONTHLY_BUDGET_USD:g} monthly budget")
         self.cap = float(cap_usd)
         self.spent = 0.0
         self.calls = 0
         self.ledger = ledger
+        self.ledgers = ((ledger,) if ledger is not None else ()) + tuple(ledgers)
         self._pending: float | None = None
+        self._outstanding = 0.0  # reserve()/settle(): several calls at once
+        self._lock = threading.Lock()
+
+    def reserve(self, worst_case_usd: float) -> float:
+        """Allow one more call while others are outstanding; returns the amount to settle() it with."""
+        if not (isinstance(worst_case_usd, int | float) and math.isfinite(worst_case_usd) and worst_case_usd >= 0):
+            raise CapReached("the call's worst-case cost is unknown")
+        with self._lock:
+            if self.spent + self._outstanding + worst_case_usd > self.cap + 1e-12:
+                raise CapReached(f"the next call could cost up to ${worst_case_usd:.4f}, and "
+                                 f"${self.spent + self._outstanding:.4f} of the ${self.cap:.2f} cap is spent "
+                                 "or outstanding")
+            done: list[SpendLedger] = []
+            try:
+                for ledger in self.ledgers:
+                    ledger.reserve_more(worst_case_usd)
+                    done.append(ledger)
+            except CapReached:
+                for ledger in done:
+                    ledger.release_part(worst_case_usd)
+                raise
+            self._outstanding += float(worst_case_usd)
+            return float(worst_case_usd)
+
+    def settle(self, reserved_usd: float, actual_usd: float | None) -> None:
+        """Charge one call reserve() allowed: its actual cost, or its worst case when unknown."""
+        known = actual_usd is not None and math.isfinite(actual_usd) and actual_usd >= 0
+        with self._lock:
+            self.spent += float(actual_usd) if known else reserved_usd
+            self._outstanding = max(0.0, self._outstanding - reserved_usd)
+            for ledger in self.ledgers:
+                ledger.settle_part(reserved_usd, actual_usd if known else None)
+            self.calls += 1
 
     def before(self, worst_case_usd: float) -> None:
         """Allow one call whose cost is at most worst_case_usd, or raise CapReached."""
@@ -122,8 +216,15 @@ class CostGuard:
         if self.spent + worst_case_usd > self.cap + 1e-12:
             raise CapReached(f"the next call could cost up to ${worst_case_usd:.4f}, and ${self.spent:.4f} "
                              f"of the ${self.cap:.2f} cap is spent")
-        if self.ledger is not None:
-            self.ledger.reserve(worst_case_usd)
+        reserved: list[SpendLedger] = []
+        try:
+            for ledger in self.ledgers:
+                ledger.reserve(worst_case_usd)
+                reserved.append(ledger)
+        except CapReached:
+            for ledger in reserved:
+                ledger.release()
+            raise
         self._pending = float(worst_case_usd)
 
     def after(self, actual_usd: float | None) -> None:
@@ -132,7 +233,7 @@ class CostGuard:
             raise CapReached("no call was allowed")
         known = actual_usd is not None and math.isfinite(actual_usd) and actual_usd >= 0
         self.spent += float(actual_usd) if known else self._pending
-        if self.ledger is not None:
-            self.ledger.settle(actual_usd if known else None)
+        for ledger in self.ledgers:
+            ledger.settle(actual_usd if known else None)
         self.calls += 1
         self._pending = None

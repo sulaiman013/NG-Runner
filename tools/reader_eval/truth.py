@@ -28,11 +28,12 @@ by rule, and a wall can carry several, each scored apart:
 """
 from __future__ import annotations
 
+import html
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
-from tools.reader_eval.prep import name_key_hash
+from tools.reader_eval.prep import name_key, name_key_hash
 
 MM = 25.4
 PANEL = re.compile(r"^(FM ?84|FM 90|WM Panel 48|WM 48 REA|Wall Mount)")  # Jim's regression.py
@@ -130,10 +131,12 @@ class Wall:
 class RoomTruth:
     key: str  # name_key_hash of the room's Name: compared with a design's, never shown
     walls: tuple[Wall, ...]
+    name_key: str = field(default="", repr=False, compare=False)  # in memory only, for pairing.py
 
 
 def _attrs(tag: bytes) -> dict[str, str]:
-    return {k.decode("utf-8"): v.decode("utf-8") for k, v in _ATTRS.findall(tag)}
+    """A tag's attributes, XML escapes undone (Mozaik writes 26&quot;deep for 26"deep)."""
+    return {k.decode("utf-8"): html.unescape(v.decode("utf-8")) for k, v in _ATTRS.findall(tag)}
 
 
 def _num(attrs: dict[str, str], key: str, where: str) -> float:
@@ -173,4 +176,5 @@ def read_room(data: bytes) -> RoomTruth:
     walls = tuple(Wall(i, number, length, height,
                        tuple(sorted(panels[i], key=lambda p: (p.x_mm, p.elev_mm))), tuple(products[i]))
                   for i, (number, length, height) in enumerate(sizes, 1))
-    return RoomTruth(name_key_hash(_attrs(room.group(0)).get("Name", "")), walls)
+    name = _attrs(room.group(0)).get("Name", "")
+    return RoomTruth(name_key_hash(name), walls, name_key(name))

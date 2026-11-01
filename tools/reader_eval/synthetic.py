@@ -179,7 +179,8 @@ def summary_pdf(*, layout: str = "portrait", walls: Sequence[WallSpec] = DEFAULT
                 second_drawing: bool = False, form_over_drawing: bool = False,
                 notes: Sequence[str] = (NOTE,), description_extra: str | None = None,
                 wrap_last_description: str | None = None, split_table: bool = False,
-                company: str = "Madeup Holdings", page1_note: Sequence[str] = ()) -> bytes:
+                company: str = "Madeup Holdings", page1_note: Sequence[str] = (),
+                project: str = PROJECT) -> bytes:
     """
     A made-up summary: page 1 with the contact block, a WALL/AREA page, then one elevation page per
     wall (in `layout`), each with its parts table, and the store footer on every page.
@@ -203,16 +204,16 @@ def summary_pdf(*, layout: str = "portrait", walls: Sequence[WallSpec] = DEFAULT
     def heading(page: Page) -> None:
         if portrait:
             page.text(60, 733, 14, f"Design: {design}")
-            page.text(399.2, 733, 14, f"Project: {PROJECT}")
+            page.text(399.2, 733, 14, f"Project: {project}")
         else:
             page.text(20.4, 574.6, 14, f"Design: {design}")
-            page.text(576.9, 574.6, 14, f"Project: {PROJECT}")
+            page.text(576.9, 574.6, 14, f"Project: {project}")
 
     cover = new_page()
     cover.text(113.5, 564, 12, DESIGNER)
     cover.text(112.5, 542, 10, "(555) 010-0142")
     rows = (("CONTACT ADDRESS", ADDRESS), ("CONTACT NAME", (f"Pat {CLIENT}",)), ("COMPANY", (company,)),
-            ("EMAIL", (EMAIL,)), ("LEAD SOURCE", ("Web Lead",)), ("PROJECT NAME", (PROJECT,)),
+            ("EMAIL", (EMAIL,)), ("LEAD SOURCE", ("Web Lead",)), ("PROJECT NAME", (project,)),
             ("DESIGNS IN PROJECT", (f"{design} - (Walk In Closet)",)), ("HOME", (PHONE,)))
     if page1_note:
         rows += (("PROJECT NOTES", tuple(page1_note)),)
