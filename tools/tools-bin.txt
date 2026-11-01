@@ -1,0 +1,13 @@
+# The tools' programs: what Jim's scripts start by name and no package carries. elev_panels.py (gate 6, RULES
+# 320-322) renders a summary page with poppler's pdftoppm (its line 23), so poppler is pinned here: one exact
+# tagged release of the poppler-windows build, oschwartz10612/poppler-windows on GitHub, never "latest".
+# Pinned 2026-11-01 for gate 6's renderer (docs/decisions.md, "P5a builder, slice 3"). Its SHA-256 was computed
+# after download and equals the digest GitHub publishes for that release asset (43,709,956 bytes).
+#
+# tools/make_tools_venv.py fetches each line's file, refuses it unless its SHA-256 is the one here, and unpacks it
+# under %LOCALAPPDATA%\NGRunnerDev\tools\<name>-<version>\ (or the folder given). Nothing here ever goes on the
+# system PATH: NG Runner puts the bin folder first on PATH only for the subprocess that runs Jim's script
+# (gates.measure_wall through toolkit.run_tool), found by NG Runner's pdftoppm setting.
+#
+# name version url sha256=<hex> bin=<the bin folder inside the zip>
+poppler 26.09.0-0 https://github.com/oschwartz10612/poppler-windows/releases/download/v26.09.0-0/Release-26.09.0-0.zip sha256=7a6f256a0ddf7536182246a5733331bf4677cbcc34f4663774947ad34556c8d0 bin=poppler-26.09.0/Library/bin

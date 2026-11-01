@@ -123,11 +123,19 @@ def written(frozen, template, library, colours) -> dict[str, list[tuple[built.Ro
     return out
 
 
+def renderer() -> Path | str:
+    """Gate 6's pdftoppm: NGR_PDFTOPPM when set (as NG Runner's pdftoppm setting would name the pinned poppler that
+    tools/make_tools_venv.py unpacks), else PATH, where this PC has none. Unset by default: running the downloaded
+    program is for Sulaiman to allow (2026-11-01, docs/decisions.md "P5a builder, slice 3")."""
+    given = os.environ.get("NGR_PDFTOPPM", "").strip()
+    return gt.find_pdftoppm(Path(given) if given else None)
+
+
 @pytest.fixture(scope="module")
 def measured(adopted, jobs, world, written) -> dict[tuple[str, str], dict[str, gt.Measured]]:
     """Each written wall's drawing as Jim's elev_panels.py measures it, from the adopted copy."""
     python = tools_python()
-    pdftoppm = gt.find_pdftoppm()  # no setting here, so PATH: on this PC there is none (2026-11-01)
+    pdftoppm = renderer()
     pages = {(c, cr.design, cr.wall): cr for c in "XZ" for cr in world.preps[c].crops}
     out = {}
     for case in "XZ":
@@ -192,30 +200,43 @@ def test_jims_regression_compare_reproduces_x_and_z_and_finds_y_not_rebuilt(adop
     assert (said["Y"].exit_code, said["Y"].stdout.strip()) == (1, "1. Room1.des: missing from the rebuild")
 
 
-def test_every_gate_on_x_and_z_passes_but_gate_6_which_jims_script_cant_measure_here(
+def test_every_gate_on_x_and_z_passes_but_gate_6_which_needs_poppler_and_x_s_pages_a_box(
         written, template, library, measured) -> None:
-    pdftoppm = gt.find_pdftoppm()
+    """Without pdftoppm (this PC's suite, 2026-11-01) his script is never run and gate 6 could not verify on every
+    wall. With the pinned poppler named, X's portrait pages still have no wall box his finder reads (Jim's question
+    42), and Z's rooms are expected to pass every gate, as slice 2's probe measured Z's walls."""
+    pdftoppm = renderer()
     for case in "XZ":
         for r, walls, room in written[case]:
             gates = gt.gate_room(room, r.model, walls, template, library, measured[(case, r.room)])
-            assert {g.name: g.status for g in gates.not_passed()} == {"gate 6": "could not verify"}, gt.report(gates)
             assert gates.gate("colour").status == "passed" and len(gates.gates) == len(gt.REQUIRED) == 21
             whys = gates.gate("gate 6").items
-            if isinstance(pdftoppm, str):  # this PC, 2026-11-01: none, and his script is never run
+            if isinstance(pdftoppm, str):
+                assert {g.name: g.status for g in gates.not_passed()} == {"gate 6": "could not verify"}, gt.report(gates)
                 assert pdftoppm == gt.NO_PDFTOPPM and whys and all(w.endswith(gt.NO_PDFTOPPM) for w in whys), whys
-            else:  # given one, X's portrait pages still have no wall box his finder can find
-                assert case == "X" and all("a portrait page" in w for w in whys), whys
+            elif case == "X":
+                assert {g.name: g.status for g in gates.not_passed()} == {"gate 6": "could not verify"}, gt.report(gates)
+                assert whys and all("a portrait page" in w for w in whys), whys
+            else:
+                assert gates.passed, gt.report(gates)
 
 
-def test_nothing_of_x_or_z_reaches_even_the_shadow_copy_while_gate_6_could_not_verify(
+def test_a_room_reaches_the_shadow_copy_only_when_gate_6_passed_on_every_wall(
         written, template, library, measured, tmp_path: Path) -> None:
     shadow = cm.p5_shadow_roots(tmp_path / "data")
+    poppler = isinstance(renderer(), Path)
     for case in "XZ":
         rooms = [cm.Gated(room, gt.gate_room(room, r.model, walls, template, library, measured[(case, r.room)]))
                  for r, walls, room in written[case]]
         result = cm.commit_rooms(case, rooms, roots=shadow, interlock=lambda paths: None)
-        assert not result.ok and "gate 6 could not verify" in result.reason
-    assert not list(shadow.mozaik_shared.rglob("*"))
+        if poppler and case == "Z":  # into the test's own copy only
+            assert result.ok, result.reason
+            assert sorted(p.name for p in (shadow.mozaik_shared / "Jobs" / "Z").iterdir()) == [
+                "Room1.des", "Room2.des", "Room3.des", "Room4.des"]
+        else:
+            assert not result.ok and "gate 6 could not verify" in result.reason
+    if not poppler:
+        assert not list(shadow.mozaik_shared.rglob("*"))
 
 
 def test_jims_own_checkers_find_nothing_to_change_in_the_written_rooms(adopted, written, tmp_path: Path) -> None:
