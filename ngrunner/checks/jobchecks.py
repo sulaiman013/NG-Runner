@@ -10,6 +10,12 @@ later "Sections done? [Yes, check it] [Not yet]", at most once per job every 3 h
 amber and goes in the digest. Check now is always on the board. These are the defaults the design gives,
 taken as they are.
 
+A later close asks only when the job holds a change no check has looked at (P3, "Close prompt and Check
+now"): no finished run, a stale one, or rooms the guards' listing saw change at or after the newest run
+began, and whenever that can't be told. A close with nothing saved since its check asks nothing, and nor
+does one with a check already asked, which runs once the job is closed. The first close always asks, as
+its answers are also Jim's word that the job opened fine (design 3.4, "Jim's recorded clicks").
+
 Group 2, built on what is there and marked so: a close is MozaikJob.LCK going from a job's folder, as
 the guards keep it (guards/kept.py, held_locks). ASSUMPTION: Mozaik holds that lock while a job is open and
 removes it on close; no real .LCK has been read, and the Mozaik lab settles it. So does how long after a
@@ -64,7 +70,7 @@ from ngrunner.checks.findings import (
 )
 from ngrunner.checks import settled as settled_list
 from ngrunner.checks.readers import NO_LIBRARY, NO_REFERENCE, STOPPED
-from ngrunner.clock import to_iso
+from ngrunner.clock import from_iso, to_iso
 from ngrunner.guards.bak import DesignUnreadable
 from ngrunner.guards.design import room_identity
 from ngrunner.guards.facts import COULD_NOT_VERIFY, FAILED, PASSED
@@ -603,16 +609,21 @@ def _closes(ctx: Any, now: datetime, toast: Callable[[ToastMessage], object] | N
     for folder in closed:
         job = _job_of(ctx.store, folder)
         if job is not None:
-            _prompt(ctx, job, folder, now, toast)
+            _prompt(ctx, job, folder, now, toast, rooms=said[folder].get("rooms"))
     _keep_seen(ctx.store, {**seen, "held": held})
 
 
 def _prompt(ctx: Any, job: JobRecord, folder: str, now: datetime,
-            toast: Callable[[ToastMessage], object] | None) -> None:
+            toast: Callable[[ToastMessage], object] | None, *, rooms: Mapping[str, Any] | None = None) -> None:
     earlier = list_prompts(ctx.store, job.studio_id)
     if earlier and now - earlier[-1].closed_at < PROMPT_EVERY:
         return
-    first = not earlier and not any(run.kind == "check" for run in list_check_runs(ctx.store, job.studio_id))
+    runs = list_check_runs(ctx.store, job.studio_id)
+    if any(run.state in ("asked", "running") for run in runs):
+        return                                          # a check is coming, once the job is closed
+    first = not earlier and not any(run.kind == "check" for run in runs)
+    if not first and not unchecked_change(runs, rooms):
+        return
     prompt = add_prompt(ctx.store, studio_id=job.studio_id, folder=folder, closed_at=now, first=first)
     if ctx.mode == "shadow" or toast is None:
         return
@@ -621,6 +632,22 @@ def _prompt(ctx: Any, job: JobRecord, folder: str, now: datetime,
     toast(ToastMessage("close_prompt", message.title, message.lines,
                        tuple(Choice(label, f"{PROMPT_ARG} {prompt.id} {n}") for n, label in enumerate(choices, 1)),
                        sticky=True))
+
+
+def unchecked_change(runs: Sequence[CheckRunRecord], rooms: Mapping[str, Any] | None) -> bool:
+    """Whether a job holds a change no finished run has looked at, from the store and what the guards'
+    listing kept of its rooms ({"seen", "since", "read"}), never a file. True when it can't be told."""
+    done = [run for run in runs if run.state == "done"]
+    if not done:
+        return True
+    newest = done[-1]
+    since = (rooms or {}).get("since")
+    if newest.stale_at is not None or newest.started_at is None or not since:
+        return True
+    try:
+        return from_iso(since) >= newest.started_at
+    except (TypeError, ValueError):
+        return True
 
 
 def _audits(ctx: Any, now: datetime) -> None:

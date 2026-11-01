@@ -255,7 +255,7 @@ def test_an_audit_reads_only_the_panel_set_top_line_operations_and_parameters() 
     result = found(sections, flagged=("notch_check", "op_schema_check"), kind="audit",
                    rooms={"Room0.des": room(), "Room1.des": room()})
 
-    assert {v.checker for v in result.verdicts} == set(f.AUDIT_CHECKERS) | {f.ROOM_FILES}
+    assert {v.checker for v in result.verdicts} == set(f.AUDIT_CHECKERS) | {f.ROOM_FILES, f.ROOM_TOP}
     assert [i.checker for i in items(result, "fix")] == ["op_schema_check"]      # never the sections' checks
     assert result.code == FAILED
     assert f.AUDIT_CHECKERS == ("panel_xcheck", "top_line", "op_schema_check", "parm_check")

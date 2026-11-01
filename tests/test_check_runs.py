@@ -594,6 +594,82 @@ def test_not_yet_runs_nothing_and_an_error_goes_to_sulaiman(world) -> None:
                             channel="board") == templates.PROMPT_ANSWERED
 
 
+def kept_rooms(world, *, held: bool, since: datetime) -> None:
+    """What the guards keep of the job: its lock files, and when its rooms last changed as listings saw."""
+    entry = [["MozaikJob.LCK", "JDELA", to_iso(world.ctx.clock.now())]] if held else []
+    rooms = {"seen": "x", "since": to_iso(since), "read": "x"}
+    set_state(world.ctx.store, NEST_FILES, json.dumps({JOB: {"opts": {}, "rooms": rooms, "locks": {},
+                                                               "held": entry}}))
+
+
+def opened_and_closed(world, *, rooms_since: datetime) -> None:
+    kept_rooms(world, held=True, since=rooms_since)
+    tick(world)
+    kept_rooms(world, held=False, since=rooms_since)
+    tick(world)
+
+
+def test_a_later_close_with_nothing_saved_since_its_check_asks_nothing(world) -> None:
+    adopted(world)
+    built(world)
+    opened_and_closed(world, rooms_since=NOW)                   # the first close asks, always
+    first, = list_prompts(world.ctx.store, SID)
+    jc.answer_prompt(world.ctx, first.id, templates.CHECK_CLOSE_FIRST[0], words="1", channel="toast")
+    tick(world)
+    assert latest(world).state == "done"
+
+    world.ctx.clock.advance(3 * 3600)
+    opened_and_closed(world, rooms_since=NOW)                   # opened, looked at, closed: nothing saved
+
+    assert len(list_prompts(world.ctx.store, SID)) == 1 and len(world.told.toasts) == 2   # the prompt, the result
+
+
+def test_a_later_close_after_a_save_asks_sections_done_with_two_answers(world) -> None:
+    adopted(world)
+    job = built(world)
+    _, run = checked(world)
+    world.ctx.clock.advance(3600)
+
+    (job / "Room1.des").write_bytes(room(width=400))            # Jim saves a change while the job is open
+    saved = world.ctx.clock.now()
+    opened_and_closed(world, rooms_since=saved)
+
+    prompt, = list_prompts(world.ctx.store, SID)
+    assert not prompt.first and get_check_run(world.ctx.store, run.id).stale_at is not None
+    toast = world.told.toasts[-1]
+    assert toast.kind == "close_prompt" and [c.label for c in toast.choices] == list(templates.CHECK_CLOSE)
+    assert toast.lines == ("Sections done?",) and toast.title.startswith(f"{JOB} closed")
+
+
+def test_a_change_the_listing_saw_after_the_check_began_asks_even_before_the_run_goes_stale(world) -> None:
+    from ngrunner.store import CheckRunRecord
+
+    done = CheckRunRecord(1, SID, JOB, "check", "check_now", "done", NOW, NOW, NOW, "passed", "", "", "", {}, {},
+                          {}, None, (), False, None, None)
+    after = {"seen": "y", "since": to_iso(NOW + jc.timedelta(minutes=1)), "read": None}
+    before = {"seen": "x", "since": to_iso(NOW - jc.timedelta(minutes=1)), "read": "x"}
+
+    assert jc.unchecked_change([done], after) and not jc.unchecked_change([done], before)
+    assert jc.unchecked_change([], before) and jc.unchecked_change([done], None)       # can't tell: ask
+
+
+def test_a_close_while_a_check_waits_for_it_asks_nothing_and_the_check_runs(world) -> None:
+    adopted(world)
+    job = built(world)
+    (job / "MozaikJob.LCK").write_bytes(b"JDELA\r\n")
+    kept_rooms(world, held=True, since=NOW)
+    jc.ask(world.ctx, SID)
+    tick(world)
+    assert latest(world).words == jc.WAITING
+
+    (job / "MozaikJob.LCK").unlink()
+    kept_rooms(world, held=False, since=NOW)
+    tick(world)
+    tick(world)
+
+    assert list_prompts(world.ctx.store, SID) == [] and latest(world).state == "done"
+
+
 def test_in_shadow_mode_no_close_prompt_toast_shows(world) -> None:
     world.ctx.mode = "shadow"
     built(world)

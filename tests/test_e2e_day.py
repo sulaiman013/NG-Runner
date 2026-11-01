@@ -3695,6 +3695,46 @@ def test_scenario_79_a_close_left_unanswered_checks_nothing_and_is_in_the_digest
     assert lint(Message("digest", digest.subject, digest.lines)) == []
 
 
+def test_scenario_96_a_later_close_asks_only_when_jim_saved_a_change_no_check_has_looked_at(make_world):
+    from helpers_checks import room
+
+    world = make_world()
+    job = checks_ready(world, fault=False)
+    close_in_mozaik(world, job)                         # the first close always asks: did it open fine?
+    first, = check_toasts(world, "close_prompt")
+    world.sup.toast_choice(first.choices[0].argument)
+    world.run(minutes=2)
+    checked = check_of(world).run
+    assert checked.trigger == "sections_done" and checked.state == "done"
+
+    # Three hours on, Jim opens the job, looks, and closes it with nothing saved: nothing is asked.
+    world.run(minutes=180)
+    close_in_mozaik(world, job)
+    assert len(check_toasts(world, "close_prompt")) == 1
+    assert not any("Sections done?" in item.text for item in world.board().your_list)
+
+    # Three hours on again, he saves a change before closing: "Sections done?" with the later two answers.
+    world.run(minutes=180)
+    (job / "MozaikJob.LCK").write_bytes(b"JDELA\r\n")
+    world.run(minutes=2)
+    (job / "Room1.des").write_bytes(room(width=400))
+    world.run(minutes=2)
+    (job / "MozaikJob.LCK").unlink()
+    world.run(minutes=2)
+    later = check_toasts(world, "close_prompt")[-1]
+    assert len(check_toasts(world, "close_prompt")) == 2
+    assert later.lines == ("Sections done?",) and later.title.startswith(f"{GUARD_JOB} closed")
+    assert [c.label for c in later.choices] == list(templates.CHECK_CLOSE)
+    assert check_of(world).state == "stale" and world.tray_state().colour == "amber"
+
+    # "Yes, check it": the check runs on the change, and the board's row counts it.
+    world.sup.toast_choice(later.choices[0].argument)
+    world.run(minutes=2)
+    again = check_of(world)
+    assert again.run.id != checked.id and again.run.trigger == "sections_done" and again.counts
+    assert world.board_row(GUARD_JOB).check.state == again.state
+
+
 # ----- P4's lock and fixes, in shadow until P4 goes live
 #
 # A batch, a fix, a lease and a job sheet go only to NG Runner's own copies on this PC (config.shadow_roots):

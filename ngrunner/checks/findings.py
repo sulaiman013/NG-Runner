@@ -35,6 +35,12 @@ ends, or a file that doesn't read as a design, are to fix (FAILURES 17: that is 
 shows). Legal WM names (also 3.5) are left out: which names are legal is one of the docs'
 contradictions (stage map D5), for Jim.
 
+NG Runner's own top line (topline.py, P5's placement rule read as it is): one T per room and every WM
+panel on it (RULES 330-339), with gate 5's Elev grid (RULES 319), on both kinds of run. Jim's top_line
+--check says the same of a room it would change, so where his item names a room, NG Runner's own
+"off the top line" items for that room are left out: one item per fault. Its Elev grid, which his
+check never looks at, always stands.
+
 Q1: until Jim settles how the top is numbered (RULES 580-582 against BUILD 170-180), parm_check can't
 pass or fail on the top. A parameter file that matches the template proves nothing about the top while
 the template's own value is the question, and a top that differs is could not verify, never a settle.
@@ -57,6 +63,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ngrunner.checks.crosscheck import LEFT_OUT, Crosscheck
+from ngrunner.checks import topline
 from ngrunner.checks.readers import BY_HAND, NG_RUNNER_FLAGS, SPECS
 from ngrunner.guards.bak import DesignUnreadable, parse_room
 from ngrunner.guards.facts import COULD_NOT_VERIFY, FAILED, PASSED
@@ -65,6 +72,7 @@ FIX, MOZAIK, CNV, ADVISORY = "fix", "mozaik", "could_not_verify", "advisory"
 ITEM_KINDS = (FIX, MOZAIK, CNV, ADVISORY)
 AUDIT_CHECKERS = ("panel_xcheck", "top_line", "op_schema_check", "parm_check")
 ROOM_FILES = "room_files"                 # NG Runner's own: each room as Mozaik writes it
+ROOM_TOP = "room_top"                     # NG Runner's own: one top line per room (topline.py)
 HINGE = "hinge_check"
 Q1_SETTLED = False                        # docs/decisions.md, P3: Q1 is tested live in Mozaik first
 TOP_PARAMETERS = frozenset({"BTop", "WTop", "BotNail"})     # RULES 637-640, Q1
@@ -181,8 +189,8 @@ class Findings:
 def findings_of(result: Crosscheck, *, kind: str = "check", room_files: Mapping[str, bytes] | None = None,
                 garage: bool = False, q1_settled: bool | None = None) -> Findings:
     """What result found, as items. kind "audit" reads only AUDIT_CHECKERS. room_files: each room's bytes
-    as they ran, for NG Runner's own check of how they are written. garage: say the hinge count wasn't
-    checked."""
+    as they ran, for NG Runner's own checks of how they are written and of their top line. garage: say
+    the hinge count wasn't checked."""
     if kind not in ("check", "audit"):
         raise ValueError("a run is a check or an audit")
     q1_settled = Q1_SETTLED if q1_settled is None else q1_settled
@@ -202,6 +210,9 @@ def findings_of(result: Crosscheck, *, kind: str = "check", room_files: Mapping[
     if room_files is not None:
         code, items = _room_files(room_files)
         verdicts.append(Verdict(ROOM_FILES, code))
+        found += items
+        code, items = _room_top(room_files, found)
+        verdicts.append(Verdict(ROOM_TOP, code))
         found += items
     if garage:
         verdicts.append(Verdict(HINGE, COULD_NOT_VERIFY, why="not run"))
@@ -326,6 +337,34 @@ def _room_files(rooms: Mapping[str, bytes]) -> tuple[str, list[Item]]:
     if any(item.kind == FIX for item in items):
         return FAILED, items
     return (COULD_NOT_VERIFY if items else PASSED), items
+
+
+def _room_top(rooms: Mapping[str, bytes], found: Sequence[Item]) -> tuple[str, list[Item]]:
+    """Each product room's top line (topline.py). A room Jim's top_line item already names keeps only
+    what his check doesn't look at: the Elev grid."""
+    his = {tag for item in found if (item.checker, item.what) == ("top_line", "top_line") for tag in item.tags}
+    items: list[Item] = []
+    codes = []
+    for top in topline.rooms_top(rooms):
+        codes.append(top.code)
+        room = f"R{top.room}"
+        said = [room, f"{top.t_mm}", *(f"C{cab} {elev:.2f} {height:.2f}" for cab, elev, height in top.hung)]
+        if topline.OFF_TOP in top.found and room not in his:
+            items.append(_own(FIX, topline.OFF_TOP, tuple(f"{room}C{c}" for c in top.off_top), said))
+        if topline.TWO_TOPS in top.found and room not in his:
+            items.append(_own(FIX, topline.TWO_TOPS, (room,), said))
+        if topline.ELEV_GRID in top.found:
+            items.append(_own(FIX, topline.ELEV_GRID, tuple(f"{room}C{c}" for c in top.off_grid), said))
+        if topline.AS_BUILT in top.found:
+            items.append(_own(CNV, topline.AS_BUILT, (room,), said))
+    if FAILED in codes:
+        return FAILED, items
+    return (COULD_NOT_VERIFY if COULD_NOT_VERIFY in codes else PASSED), items
+
+
+def _own(kind: str, what: str, tags: tuple[str, ...], said: Sequence[str]) -> Item:
+    return Item(0, kind, ROOM_TOP, what, tags, count=len(tags), settles=kind == FIX,
+                fingerprint=_fingerprint(ROOM_TOP, what, [*tags, *said]))
 
 
 def _overall(verdicts: Sequence[Verdict]) -> str:

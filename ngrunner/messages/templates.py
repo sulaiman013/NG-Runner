@@ -813,7 +813,7 @@ CHECKER_WORDS = {   # each checker as Jim reads it: a checker's own name has an 
     "notch_check": "notch face and WM banding", "eb_tops": "countertop banding", "top_line": "top line",
     "parm_check": "parameters", "panel_xcheck": "panel set", "ic_code_check": "IC codes",
     "hinge_check": "hinge count", "room_files": "room files", "sheet_size_check": "sheet size",
-    "br_cam_check --nest": "nest cam",
+    "br_cam_check --nest": "nest cam", "room_top": "room top line",
 }
 # A fault's kind: what is wrong, and what Jim's chat is to do about it ({tags} the parts). None: only
 # Jim in Mozaik can fix it, and the words say so.
@@ -852,6 +852,12 @@ _CHECK_FIXES = {
     "banding": ("the countertop or second-colour banding isn't as Jim's banding rules say",
                 "band each countertop in {tags} on all four edges, and each second-colour part in its own colour"),
     "top_line": ("WM panels are off the room's top line", "put the WM panels in {tags} on the room's top line"),
+    # NG Runner's own top line (checks/topline.py): RULES' one top line per room, and gate 5's Elev grid.
+    "off_top": ("the WM panel isn't on the room's one top line", "hang {tags} on the room's one top line"),
+    "two_tops": ("the room's WM panels hang on more than one top line, and nothing beside them says which is"
+                 " right", "hang every WM panel in {tags} on one top line"),
+    "elev_grid": ("the WM panel's elevation is off the bore grid, so its height is off the height grid",
+                  "put {tags} on a height and an elevation on the grids"),
 }
 _CHECK_UNVERIFIED = {   # could not verify: what wasn't checked, after "Could not verify <subject>: "
     "q1": "how the top is numbered waits for Jim's answer to Q1",
@@ -865,6 +871,7 @@ _CHECK_UNVERIFIED = {   # could not verify: what wasn't checked, after "Could no
     "op_by_hand": "an operation has no Mozaik-written example to compare with, so a person must check it",
     "variant_deferred": "the WM variant check waits for sections on the wall",
     "version": "the room file is in a version NG Runner hasn't seen",
+    "top_as_built": "the room's top line, as built, is off the height grid, which Jim's rules leave to him",
 }
 _TAGS_SHOWN = 8
 CHECK_CLOSE_FIRST = ("Opened fine, sections done: check it", "Opened fine, not done yet", "It showed an error")

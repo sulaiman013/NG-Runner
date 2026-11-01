@@ -589,6 +589,71 @@ Measured 2026-11-01 (`tests/test_build_room_real.py` pins it):
 - **Left for Jim**, besides questions 31 and 32: FM 84 or FM 90 for a floor panel over 84 in; which wins when geometry and the drill codes disagree (RULES 62 or 372); and, for a floor line drawn hanging, the line or the drawing.
 - **Not in this slice, and what each needs.** Writing Room#.des: the plan (a plan reader, or a person's), then each room seeded from the template job's Room1 with Products, Walls and WallJoints stripped by a balanced scanner, `UniqueID` 50001 up, Name, `IdTagCount` as SCHEMA 32-37, the cloned `<Wall>`/`<WallJoint>` attribute set, coordinates as `f"{v:.3f}"` stripped (BUILD 145-150, 283-291), CRLF and the version line. Cloning products: the model's product names map to his 19 templates (read from the adopted toolkit copy at run time, never committed), resized (the groove's cached X = height − 191.9, RULES 400-404; an REA's slant, RULES 419-421), line bores stripped except on REA (RULES 423-427, BUILD 288), WM banding (RULES 431-450), `SourceLib` from the template (BUILD 289). The gates on the written room: RULES 313-322 (gate 6 by `elev_panels.py`), legal names (RULES 388), the notch face, WM banding, REA drilling untouched, then `regression.py compare` on the 3 frozen jobs, the exit test. And `commit_write` with the interlock, into NG Runner's own copy until P5 goes live (AGENTS.md rule 1).
 
+## P3: the replay trial and the audit (2026-11-01)
+
+What P3 could do without Jim: replay NG Runner's check against what Jim's chat reported on the same real jobs, audit every real chat-built job, and make the close prompt ask only when there is something new to check. NG Runner's check ran as the app runs it: Jim's crosscheck from a staged copy of his toolkit, in the tools' Python, on a staged copy of each job (R1), its IC Conversion read from NG Jobs, and his template job, `Lux Closet Template Claude`, staged beside it for `parm_check` (it came in his answers of 2026-10-31, `.local-fixtures\answers20261031\`). The jobs: Cases A to J, the 40 P5 jobs (P-tags; Case K is P39) and his 3 frozen jobs. Tests: `tests/test_trial_real.py`, `tests/test_checks_topline_real.py` (both `fixtures`), `tests/test_checks_trial.py`, `tests/test_checks_topline.py`, `tests/test_check_runs.py` and day-simulation scenario 96. Each row is a default, and Sulaiman can overrule any of them.
+
+### The replay trial (`checks/trial.py`)
+
+| Question | Ruling | Why |
+|---|---|---|
+| What the chat reported | Jim's crosscheck file as the chat saved it (Cases C to G), read by NG Runner's own readers, so nothing is transcribed. The chat's own reports (panel checks and crosschecks it wrote itself, 20 jobs) read by a person into NG Runner's vocabulary, as each report's last word to Jim stood; that reading is in the test, by job code. An item about what no checker looks at (materials, the tracker, prices, the nest) is counted as outside the check | Its delivery's act items are what Jim acted on (RULES 0) |
+| The unit | One finding: a checker, the kind of fault (`findings.py`'s codes) and one part (R2C3, R2, or a size for the panel set). Only the checkers the chat's output speaks for are compared | Finding by finding, as the brief asks; a panel check says nothing of notches |
+| NG Runner could not verify the checker the chat found something on | Neither a miss nor a clean: "unverified" | Could not verify is no verdict (rule 8) |
+| The rooms | The fixtures hold each job as Jim last saved it, days or weeks after most reports. A chat finding NG Runner doesn't raise on rooms saved since, where NG Runner reads them fixed, is "since", never a miss | 23 of the 25 chat-only findings are so, each with its evidence in the test |
+| Who is right | A person's reading of Jim's docs, line cited, or "can't tell"; the test fails on any disagreement without one | Code compares; it never decides who is right |
+| How many of the 15 it stands for | **4** (Cases C, E, F, G): their crosscheck files print what NG Runner's run prints on 13 of 14 checkers (`tests/test_checks_real.py`), so the rooms are the same, every checker is compared, and the two agree on every finding. The other 21 replays compare one or a few checkers on rooms saved since, and stand for none | Design 7's exit is "15 checks compared with chat"; only a same-rooms, all-checker comparison is one |
+
+**Measured.** 25 jobs replayed: the 5 crosscheck files and 20 of the chat's own reports (P34's has no IC Conversion to check against; Case I has no report).
+
+| | Both | NG Runner only | Chat only | Unverified | Outside |
+|---|---|---|---|---|---|
+| Crosscheck files, C to G | 1 | 1 | 1 | 0 | 0 |
+| The chat's own reports | 4 | 108 | 25 | 17 | 17 |
+
+- **Crosscheck files.** C, F and G agree, clean. E: both raise `parm_check`, its `SysHolesW` of 4, which RULES 604-611 makes Jim's own setting for sparse uppers and the design names known noise; the chat's delivery left it out, NG Runner shows it as an item to fix. D (its rooms changed after the chat's run): NG Runner alone raises a doubled housing on R1C5, right by RULES 536-539, whose line 538 names this very job; the chat's crosscheck alone flagged a bore depth on R1C1, which its own delivery logged as no defect.
+- **NG Runner only, 108.** 76 real by a rule made after the chat's check: 69 doubled housings on three jobs (RULES 524-541), 5 notch faces (RULES 404-409, from 2026-09-22), 1 WM banding (BUILD 516, from 2026-09-21) and 1 `JointFast2` (RULES 527-535). 5 real by rules in force (two stale bore rows, BUILD 416-422; a worksurface 2.7 mm off, RULES 666; a vertical at the wrong depth). 1 Jim's word on that job (an extra toe kick he said is fine). 9 can't tell. **17 noise, on 6 jobs:** P20 8 (two bridges not named BR, so Jim's checkers can't see them, BUILD 8b, 4 bore depths and 2 panel lines; a hamper front built as a door, 2, RULES 659-661), P28 4 (a cleat counted under another family and a hook board built up a size, RULES 258-264 and 659-661, BUILD 373-374), P35 2 (TR Base 4.1, RULES 266-268, on an older IC Conversion that `panel_xcheck`'s 4x96 rule can't read), P26 1 (LED strips, RULES 103 and 667), P30 and P39 1 each (Hang Rail, RULES 245-247). Every one is printed by Jim's `panel_xcheck` or `drill_depth_check` as they are, and NG Runner reads them as printed.
+- **Chat only, 25.** 23 fixed in the rooms since, 1 superseded (a rail cover, RULES 245-247, Jim 2026-10-19), 1 Jim's word on that job (a section he set aside for the count).
+- **Unverified, 17.** All on the panel set, where Jim's `panel_xcheck` stops on an older IC Conversion (`KeyError`): it does on 17 of the 32 audited P5 jobs, Cases A, H and J, and one frozen job. 16 are Case J's, a closet and garage job, which stays in chat (R4).
+
+**Against design 7's exit:** 0 missed act items; 0 false cleans (NG Runner passed no job the chat found a fault on); noise at most 1 a job fails on P20 (8), P28 (4) and P35 (2), plus E's `SysHolesW` on both sides. The live trial on Jim's PC still makes the 15.
+
+**Not built, for a ruling (rule 4: his rules come from his toolkit).** The design's known-noise list (rail covers, TR Base 4x96, `SysHolesW`) is not in NG Runner's readers, so those reach Jim as items, which he settles once per job or for all jobs. RULES disagrees with itself on the Hang Rail: lines 245-247 "never ... in a panel check", lines 662-665 "the COUNT is checked", and his `panel_xcheck` prints Mozaik's Hang Rails as extra parts. Bridges not named BR are invisible to every checker of his. Each is a question for Jim, or a reader change for Sulaiman.
+
+### The audit of chat-built jobs (`findings.AUDIT_CHECKERS`, `checks/topline.py`)
+
+| Question | Ruling | Why |
+|---|---|---|
+| What it reads | crosscheck's `panel_xcheck`, `top_line`, `op_schema_check` and `parm_check`, with NG Runner's own room files and its own top line. Unchanged otherwise | Design 7, P3 |
+| `parm_check`'s template | `Mozaik Shared\Jobs\Lux Closet Template Claude` on Jim's PC, staged beside the job, as before. Measured with his copy: it compares on all 45 jobs with an IC Conversion. It passes on C, D, F and G, the four the chat fixed in its cam fix; on 41 a parameter differs: `JointFast2` on 40 (RULES 527-535: since the doubled cams it is 1; an existing job keeps its own, and on a job built from today's template a difference is a real fault, RULES 637-640) and E's `SysHolesW`. `BTop`, `WTop` and `BotNail` differ on 33 and stay could not verify for Q1: the template's own `BTop` is 0 where `parm_check` says it wants 1 | Answered from Jim's files, 24 |
+| NG Runner's own top line | One T per room by P5's rule, read as it is (`placement.top_line`, RULES 333-339); every WM panel on it (RULES 330-331, and no FM panel beside a run with two tops is the defect); gate 5's Elev on 32k (RULES 319). A top as built off the height grid is could not verify, as P5a placement left it for Jim. Which products are panels is his `top_line.py`'s, tied by `ast`. Where his `top_line` item names a room, NG Runner's own "off the top line" item for it is left out: one item per fault | His check picks the commonest top where no FM panel sets it, and never reads the Elev grid |
+| A job with no IC Conversion | Not audited: crosscheck refuses to run, as before | A chat-built job always has one (RULES 1) |
+
+**Measured** (items, and in brackets the parts or rooms they name):
+
+| | A to J | P5 | Frozen |
+|---|---|---|---|
+| Audited / no IC Conversion | 10 / 0 | 32 / 8 | 3 / 0 |
+| Panel set: missing, extra | 1 (1), 2 (2) | 9 (42), 7 (22) | 1 (1), 1 (1) |
+| Panel set could not verify (`panel_xcheck` stopped) | 3 | 17 | 1 |
+| Top line to fix (his `top_line`) | 1 (1 room) | 4 (7 rooms) | 0 |
+| Top as built off the grid, could not verify (NG Runner's) | 1 | 3 | 1 |
+| Operations to fix (`op_schema_check`) | 0 | 0 | 0 |
+| Operations by hand, could not verify | 2 | 7 | 1 |
+| Parameters to fix | 6 | 32 | 3 |
+| Parameters for Q1, could not verify | 9 | 25 | 3 |
+| Room files | all pass | all pass | all pass |
+
+No audit passes whole while Q1 is open. On the 99 product rooms of the 45 audited jobs, NG Runner's own top line and Jim's `top_line` agree on every one: 8 off the top line on both, 47 on it, 39 with nothing hung, and 5 whose top as built is off the grid, which his passes and NG Runner leaves to Jim. On all 112 product rooms, none hangs on two tops or has its Elev off the grid.
+
+### The close prompt (`jobchecks._prompt`)
+
+| Question | Ruling | Why |
+|---|---|---|
+| When a later close asks | Only when the job holds a change no check has looked at: no finished run, a stale one, rooms the guards' listing saw change at or after the newest run began, or any of it not known. Never while a check is already asked for it, which runs once the job is closed | A close with nothing saved has nothing new for "sections done?" (P3, "Close prompt and Check now") |
+| The first close | Always asks, with its three answers | Its answers are also Jim's word that the job opened fine (design 3.4, "Jim's recorded clicks") |
+| Its words | Unchanged: "<Job> closed 9:40 PM", "Sections done?", [Yes, check it] [Not yet]; pinned to Your list, the tray amber and the digest while unanswered; Check now on every row | Design 4, "The close prompt" |
+
 ## Matching (settled)
 
 | Decision | Ruling | Why |
