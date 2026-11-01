@@ -23,7 +23,8 @@ write rule at once. A commit guarantees:
   P4's build ("P4 shadow") adds a room's .des fix, which replaces a file Mozaik wrote at the
   hash its caller read and never makes one, a tracker batch and the job sheet, each written
   once. It writes only on this PC's own disk, never in a folder named like the tracker's own
-  or Mozaik Shared: shadow copies, until "P4", which has no rules yet, goes live.
+  or Mozaik Shared: shadow copies, until "P4", which has no rules yet, goes live. P5's build
+  ("P5 shadow") writes a design's new Room<n>.des the same way, into NG Runner's own copy only.
 - When it writes. NG Runner's data folder and its record of its own files are checked
   first. The Mozaik interlock is asked next, when the write is planned, and again once the
   temp files are written. Every folder on the way is pinned by identity when planned and
@@ -923,9 +924,38 @@ def _p1a_tracker_rules(where: str, rel: tuple[str, ...]) -> str | None:
     return _p1a_rules(where, rel)
 
 
+# P5a (design 3.2): the rooms its builder writes, each a new Room<n>.des in a job's folder in Mozaik Shared.
+# Its build writes shadow copies only, into NG Runner's own copy on this PC's disk, as P4's does; "P5"
+# itself, the real write, has no rules yet. A room it wrote may be written again (owned()); one it didn't
+# never is, and Room0 is the job's, never a design's.
+_ROOM_DESIGN_FILE = re.compile(r"Room[1-9][0-9]*\.des", re.IGNORECASE)
+
+
+def _p5_rules(where: str, rel: tuple[str, ...]) -> str | None:
+    name = rel[-1]
+    if where != "mozaik_shared":
+        return f"{name}: P5's build writes only rooms, in its own copy of Mozaik Shared."
+    if len(rel) == 3 and rel[0].casefold() == _MOZAIK_JOBS and _ROOM_DESIGN_FILE.fullmatch(name):
+        return None
+    return f"{name}: in Mozaik Shared P5's build writes only Jobs\\<Job>\\Room<n>.des, n of 1 or more."
+
+
+def _p5_shadow_root(root: _Root) -> str | None:
+    """P5's build writes only into its own copy: on this PC's own disk, never a folder named Mozaik Shared."""
+    from ngrunner.toolkit import on_local_disk  # here: toolkit is heavy, and only P4 and P5 ask
+
+    if root.name == "mozaik_shared" and root.path.name.casefold() == _REAL_MOZAIK_FOLDER:
+        return "The real Mozaik Shared gets no room until P5 goes live; NG Runner writes only its own copy until then."
+    if not on_local_disk(root.path):
+        return (f"Until P5 goes live NG Runner writes its rooms on this PC's own disk only, and"
+                f" {_LABELS[root.name]} is on a cloud or network drive.")
+    return None
+
+
 _PHASE_RULES: dict[str, _Phase] = {
     "P1a": _Phase(_p1a_tracker_rules),
     "P4 shadow": _Phase(_p4_rules, _p4_replaces, _p4_shadow_root),
+    "P5 shadow": _Phase(_p5_rules, root_problem=_p5_shadow_root),
 }
 
 
