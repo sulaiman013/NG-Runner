@@ -167,21 +167,20 @@ def test_the_digest_clause_for_a_takeoff():
         "takeoff: could not verify 2 lines")
 
 
-# ----- white with something 1in or thicker: RULES makes its room AMWH, and rooms aren't known
+# ----- white with something 1in or thicker: the whole job's white is AMWH (question 10, Jim's yes awaited)
 
 
-def test_white_on_a_takeoff_with_a_white_part_1in_or_thicker_names_both_brands_never_one():
+def test_white_on_a_takeoff_with_a_white_part_1in_or_thicker_is_amwh_throughout():
     one_inch = {**WH_3_4, "thk_in": 1.0, "sheets_with_waste": 1, "tape_lf": 4.0}
     lines = t.takeoff_lines([WH_3_4, one_inch, AP_3_4])
 
-    assert lines[:3] == ("2 sheets 3/4 AMWH or Egger Classic White (IC WH)",
-                         '1 sheet 1" AMWH or Egger Classic White (IC WH)',
-                         "1 sheet 3/4 Tafisa (IC AP)")
-    assert t.takeoff_material("WH", thick_white=True) == "AMWH or Egger Classic White (IC WH)"
+    assert lines[:3] == ("2 sheets 3/4 AMWH (IC WH)", '1 sheet 1" AMWH (IC WH)', "1 sheet 3/4 Tafisa (IC AP)")
+    assert t.takeoff_material("WH", thick_white=True) == "AMWH (IC WH)"
+    assert t.takeoff_material("WH") == "Egger Classic White"
     assert t.takeoff_material("AP", thick_white=True) == "Tafisa (IC AP)"
     message = clean(t.takeoff_heads_up(JOB, buckets=[WH_3_4, one_inch], flags=(),
                                        waste_percent=10, revised=False))
-    assert "AMWH or Egger Classic White (IC WH)" in message.text
+    assert "AMWH (IC WH)" in message.text and "Egger" not in message.text
 
 
 # ----- a heads-up from the chat's takeoff says so (Sulaiman's ruling, 2026-10-31)

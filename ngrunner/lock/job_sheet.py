@@ -1,9 +1,9 @@
 r"""
 The CNC job sheet before a lock (RULES section 7; design 3.5's Lock stage): Jim's cnc_job_sheet.py run
 on a staged copy of the job, what it really wrote read back, and its sheet counts set against NG
-Runner's own reading of the same nests. Filed in the job's NG Jobs folder only when every count agrees
-and there is no sheet there yet (design 3.2: "the job sheet when absent"; RULES: "Never overwrite one
-Jim already made").
+Runner's own reading of the same nests. Filed in the job's NG Jobs folder only when every count agrees,
+every sheet it calls a flip sheet is one, and there is no sheet there yet (design 3.2: "the job sheet
+when absent"; RULES: "Never overwrite one Jim already made").
 
 Why compare. The sheet is what the CNC operator cuts from, and its counts come from the nests by
 pattern matching (his script reads them with regular expressions, his comment says "never from the
@@ -11,6 +11,15 @@ takeoff"). NG Runner reads the very same nests with its own reader (guards/opt.p
 nests settled): the sheets per nest, flip passes not counted (RULES 716-721), and each nest's thickness
 from its own header, not its name. Where the two disagree, or the template has no line for a nest (it
 has two 3/4 lines, one 1/4 and one 1in line), that is an item for Jim. Nothing is ever corrected.
+
+Flip sheets. His script's Special Notes list "Flip sheets": every sheet block holding more than one
+G-code run. RULES 716-722 say a flip is a Flipped="True" block, the same board turned over for its
+second side, and that programs are counted apart from sheets: so a sheet with an extra run and no
+flip pass (a remake, say) is no flip sheet. Measured on the 83 real nests here (2026-10-31): his rule
+names 28 sheets, of which 9 have a flip pass, and 4 of the 10 real jobs A to J would get a sheet with a
+wrong one on it. So every sheet the note names must have a Flipped="True" block in its nest, or the sheet
+is an item for Jim and isn't filed (answered from Jim's own files, docs/decisions.md, 18). NG Runner
+reads only that part of the notes, and keeps none of it.
 
 How it runs (ruling R1). The job's JobDat.dat and nests and the IC Conversion are copied into a folder
 of NG Runner's own on this PC's disk, his script runs from the adopted toolkit copy in a Job Object, and
@@ -26,6 +35,7 @@ import re
 import shutil
 import tempfile
 import zipfile
+from collections import defaultdict
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from io import BytesIO
@@ -50,15 +60,20 @@ _THICKNESS_MM = (("3/4", 18.5, 20.5), ("1/4", 5.0, 7.5), ("1", 24.5, 27.0))
 _WORD = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
 _ONE_INCH = re.compile(r"\s*1[”\"″]\s*:\s*(.*)")
 _ONE_INCH_COUNT = re.compile(r"([0-9]+) (\S.*)")
+_NOTES = re.compile(r"\s*Special Notes:\s*(.*)", re.DOTALL)
+_FLIP_NOTE = "Flip sheets: "
+_FLIP_ENTRY = re.compile(r"(?P<stem>\S.*) sheet (?P<n>[0-9]+)")
 
 
 @dataclass(frozen=True)
 class NestCount:
-    """One nest as NG Runner reads it: its file's stem, its thickness from its own header, its sheets."""
+    """One nest as NG Runner reads it: its file's stem, its thickness from its own header, its sheets,
+    and the PatternNumber of each sheet with a flip pass (a Flipped="True" block, RULES 716)."""
 
     stem: str
     thickness: str
     sheets: int
+    flips: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -112,7 +127,9 @@ def make_job_sheet(snapshot: Snapshot, job: Path, conversion: Path, *, work: Pat
         sheet = read_job_sheet(out)
         if sheet is None or not sheet.counts:
             return _not_verified("What Jim's job sheet script wrote isn't a job sheet NG Runner can read")
-        items = compare(sheet, _one_inch_line(docx), counts)
+        paragraphs = _paragraphs(docx)
+        items = compare(sheet, _one_inch_line(paragraphs), counts)
+        flips = flip_items(_flip_note(paragraphs), counts)
     except (ToolkitError, OSError, Unreadable) as exc:
         return _not_verified(f"The job sheet could not be made: {exc}")
     except _NotVerified as exc:
@@ -120,7 +137,9 @@ def make_job_sheet(snapshot: Snapshot, job: Path, conversion: Path, *, work: Pat
     finally:
         shutil.rmtree(stage, ignore_errors=True)        # made by this call
     if items:
-        return JobSheetRun(MISMATCH, items, docx, "The job sheet's counts don't all match the nests")
+        return JobSheetRun(MISMATCH, items + flips, docx, "The job sheet's counts don't all match the nests")
+    if flips:
+        return JobSheetRun(MISMATCH, flips, docx, "The job sheet calls sheets flip sheets that have no flip pass")
     return JobSheetRun(MATCHES, (), docx, "The job sheet's counts match the nests")
 
 
@@ -134,7 +153,9 @@ def nest_counts(nests: Mapping[str, bytes]) -> list[NestCount]:
         except OptUnreadable as exc:
             raise _NotVerified(f"A nest could not be read: {exc}") from exc
         if facts.physical_sheets:
-            found.append(NestCount(stem, _thickness(root.get("Thickness")), facts.physical_sheets))
+            flips = sorted({block.get("PatternNumber", "") for block in root.iter()
+                            if _local(block.tag) == "OptimizeSheet" and block.get("Flipped") == "True"})
+            found.append(NestCount(stem, _thickness(root.get("Thickness")), facts.physical_sheets, tuple(flips)))
     return found
 
 
@@ -169,6 +190,29 @@ def compare(sheet: JobSheet, one_inch: str | None, counts: list[NestCount]) -> t
     return tuple(items)
 
 
+def flip_items(listed: list[tuple[str, str]], counts: list[NestCount]) -> tuple[SheetItem, ...]:
+    """Each nest whose sheets the job sheet calls flip sheets though the nest has no flip pass for
+    them: a second G-code run is a program, not a flip (RULES 716-722). listed: (nest stem, sheet
+    number) as the note names them."""
+    nests = {count.stem: count for count in counts}
+    wrong: dict[str, list[str]] = defaultdict(list)
+    for stem, number in listed:
+        if stem not in nests:
+            raise _NotVerified("The job sheet's flip sheets note names a nest NG Runner didn't count")
+        if number not in nests[stem].flips:
+            wrong[stem].append(number)
+    items = []
+    for stem, numbers in wrong.items():
+        nest, colour = nests[stem], _colour(stem)
+        said = (f"sheet {numbers[0]} a flip sheet, and the nest has no flip pass for it" if len(numbers) == 1
+                else f"sheets {', '.join(numbers[:-1])} and {numbers[-1]} flip sheets, and the nest has no flip pass"
+                     " for them")
+        items.append(SheetItem(nest.thickness, colour, None, None,
+                               f"{_inches(nest.thickness)} {colour}: the job sheet calls {said}, only another G-code"
+                               " run, which is a program, not a flip"))
+    return tuple(items)
+
+
 def write_job_sheet(folder: str, made: JobSheetRun, *, store: Store, roots: Roots,
                     interlock: Callable[[list[Path]], str | None], clock: Clock) -> CommitResult:
     """File a sheet whose counts all match, as <Job> CNC Job Sheet.docx, only where there is none."""
@@ -182,19 +226,42 @@ def write_job_sheet(folder: str, made: JobSheetRun, *, store: Store, roots: Root
 # ----- reading
 
 
-def _one_inch_line(docx: bytes) -> str | None:
-    """The 1in line's text: its counts are typed with their colours, which read_job_sheet leaves."""
+def _paragraphs(docx: bytes) -> list[str]:
+    """Each paragraph's text, in order."""
     try:
         with zipfile.ZipFile(BytesIO(docx)) as document:
             root = ElementTree.fromstring(document.read("word/document.xml"))
     except (KeyError, zipfile.BadZipFile, ElementTree.ParseError) as exc:
         raise _NotVerified("What Jim's job sheet script wrote isn't a job sheet NG Runner can read") from exc
-    for paragraph in root.iter(f"{_WORD}p"):
-        text = "".join(run.text or "" for run in paragraph.iter(f"{_WORD}t"))
+    return ["".join(run.text or "" for run in paragraph.iter(f"{_WORD}t")) for paragraph in root.iter(f"{_WORD}p")]
+
+
+def _one_inch_line(paragraphs: list[str]) -> str | None:
+    """The 1in line's text: its counts are typed with their colours, which read_job_sheet leaves."""
+    for text in paragraphs:
         found = _ONE_INCH.fullmatch(text)
         if found:
             return found[1].strip()
     return None
+
+
+def _flip_note(paragraphs: list[str]) -> list[tuple[str, str]]:
+    """(nest stem, sheet number) for each sheet the Special Notes call a flip sheet, as his script
+    writes them: notes joined by "; ", this one "Flip sheets: <nest> sheet <n>, ...". Nothing else of
+    the notes is read or kept, as they can say anything."""
+    notes = next((found[1] for text in paragraphs if (found := _NOTES.fullmatch(text))), "")
+    flips = [note for note in notes.split("; ") if note.startswith(_FLIP_NOTE)]
+    if not flips:
+        return []
+    if len(flips) > 1:
+        raise _NotVerified("The job sheet's flip sheets note could not be read")
+    listed = []
+    for entry in flips[0][len(_FLIP_NOTE):].split(", "):
+        found = _FLIP_ENTRY.fullmatch(entry)
+        if found is None:
+            raise _NotVerified("The job sheet's flip sheets note could not be read")
+        listed.append((found["stem"], found["n"]))
+    return listed
 
 
 def _one_inch_counts(text: str | None) -> list[tuple[str, str, int | None]]:
@@ -215,6 +282,10 @@ def _thickness(text: str | None) -> str:
         if low <= mm <= high:
             return name
     raise _NotVerified("A nest's sheets are a thickness the job sheet has no line for")
+
+
+def _local(tag: str) -> str:
+    return tag.rsplit("}", 1)[-1]
 
 
 def _colour(stem: str) -> str:

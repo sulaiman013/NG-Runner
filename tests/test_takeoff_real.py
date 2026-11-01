@@ -6,9 +6,10 @@ pair: a failure says its index. The client's details come from the pair's own co
 (its client fields, as guards/headsup.py reads them), and none of them may reach anything the
 takeoff makes. The job's folder is a made-up name, so the job's own name can't hide a leak.
 
-Measured 2026-10-31 on the 52 pairs: 34 complete closets, 12 closets with lines the rules don't
-place (1 to 7 lines each), and 6 garage or mixed jobs that stay in chat. None failed. A count here
-is a floor or a measured fact, never a target: when one moves, find why before changing it.
+Measured 2026-10-31 on the 52 pairs: 36 complete closets, 10 closets with lines the rules don't
+place (1 to 7 lines each), and 6 garage or mixed jobs that stay in chat. None failed. (34 and 12 until
+two pairs were completed by answers read from Jim's own files that day: docs/decisions.md.) A count
+here is a floor or a measured fact, never a target: when one moves, find why before changing it.
 """
 from __future__ import annotations
 
@@ -73,7 +74,7 @@ def test_every_real_summary_goes_through_the_takeoff_worker_and_none_fails():
     counts = {state: states.count(state) for state in set(states)}
 
     assert len(index) == 52
-    assert counts == {"complete": 34, "incomplete": 12, "in_chat": 6}
+    assert counts == {"complete": 36, "incomplete": 10, "in_chat": 6}
     assert [i for i, s in enumerate(states) if s == "failed"] == []
 
 
@@ -86,7 +87,7 @@ def test_garage_and_mixed_pairs_stay_in_chat_and_closets_are_made():
 def test_no_real_takeoff_says_more_than_7_lines_could_not_be_verified():
     counts = [len(_made(i).takeoff.could_not_verify) for i in range(len(_index()))
               if _made(i).takeoff is not None and not _made(i).takeoff.complete]
-    assert len(counts) == 12 and max(counts) <= 7 and min(counts) >= 1
+    assert len(counts) == 10 and max(counts) <= 7 and min(counts) >= 1
 
 
 def test_nothing_the_takeoff_makes_from_a_real_summary_carries_its_clients_details(tmp_path):

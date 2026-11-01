@@ -338,7 +338,7 @@ Over Chrome Remote Desktop, with Mozaik closed, into Sulaiman's private Drive fo
 
 **One line each from Jim, by card or in window 1:**
 - Were the 2 Tafisa folders at 59.75 × 107.75 mistakes?
-- Does George open shared Mozaik jobs (decision 4)?
+- Does George open shared Mozaik jobs (decision 4)? Answered 2026-10-31 from Jim's INDEX (line 79): yes, he runs Mozaik too, so a second name on a lock is normal (`docs/decisions.md`, "Answered from Jim's own files", question 19).
 
 **Sulaiman, not Jim:** George's and Will's addresses for Script Properties; Jim's Pushover account.
 
@@ -398,7 +398,7 @@ In `docs/decisions.md`'s form, each with the default adopted, chosen by its test
 **On Jim's PC:**
 - Mozaik's process names there, and whether a post reaches G: in one step or file by file.
 - How fast G: shows a new program. The 2.2 s walk and 27 s read were measured on this PC only.
-- `JDELA` as the only owner; the 7-byte sizes are from July and are weak evidence. Whether George opens shared jobs.
+- `JDELA` as the only owner; the 7-byte sizes are from July and are weak evidence. George does open shared jobs (question 19), and what his lock holds is still unseen.
 
 **Programs:**
 - What a doubled housing does in a merged program; those aren't checked.

@@ -8,25 +8,29 @@ J, and against Jim's own crosscheck files of Cases C to G (tests/test_checks_rea
 whole, never searched in.
 
 Why crosscheck's own verdict isn't enough. It flags a checker that exits non-zero or prints a line with
-!!, MISSING, EXTRA, "drifted" or "differ", and calls everything else clean. Measured on the real cases,
-that passes things that are not passes:
+!!, MISSING, EXTRA, "drifted" or "differ" (its FLAG pattern), and calls everything else clean. Measured
+on the real cases, that passes things that are not passes. Each was answered from Jim's own files on
+2026-10-31 (docs/decisions.md, "Answered from Jim's own files", the question's number in brackets):
 - outset_check prints FLAG and "N product(s) NOT at Outset 0 - review" and exits 0, so it is never
   flagged. eb_tops --check and top_line --check print "would change: N" and exit 0. Each is a rule
-  of his (RULES: Outset 0, banding, the top line) that crosscheck doesn't flag: could_not_verify here,
-  and a question for Jim, as only he can say whether crosscheck should.
-- parm_check with no reference job prints "-- no counterpart" for every file and "RESULT: CLEAN". The
-  template job isn't in the zip, so on this PC it compares nothing, and says clean.
-- wm_variant_check's library is a Linux path, /mnt/user-data/uploads/...: on Windows it isn't there,
-  so its library check is skipped and it still prints "notch equation matches library". It counts
-  only for what it could see, the geometry, so a fault there fails and a clean read is no pass.
+  of his (RULES: Outset 0, banding, the top line) that crosscheck's pattern misses, and Outset is one
+  he always wants flagged: NG Runner flags them itself, failed, in words of its own (26).
+- parm_check with no reference job prints "-- no counterpart" for every file and "RESULT: CLEAN" (its
+  lines 63 and 82). A clean that compared nothing is could_not_verify, never clean (24).
+- wm_variant_check's library is a Linux path, /mnt/user-data/uploads/... (its line 26): on Windows it
+  isn't there, so its library check is skipped and it still prints "notch equation matches library".
+  It counts only for what it could see, the geometry, so a fault there fails and a clean read is no
+  pass: its library comparison wasn't run (23).
 - A checker that stops with a traceback is flagged as if it found a fault (panel_xcheck on three real
-  conversions it can't read). Here that is could_not_verify: it found nothing either way.
+  conversions it can't read, at its lines 87-89). Here that is could_not_verify, never "no findings":
+  it found nothing either way (25).
 - ?? lines, a NOTE that asks for the job to be opened, and a deferred check say a person must look.
 
 So a pass needs: not flagged, every line one the source prints on a clean run, its own clean line for
 every room it was given, and what it compares with in reach. A flag with a line that names a fault
-is failed. Anything else, a line not seen there included, is could_not_verify. ic_code_check is
-advisory, as in crosscheck, and is read the same way but never decides the job.
+is failed, and so is a finding crosscheck doesn't flag. Anything else, a line not seen there included,
+is could_not_verify. ic_code_check is advisory, as in crosscheck, and is read the same way but never
+decides the job.
 
 A person sees only NG Runner's own words: the checkers print room and client names.
 """
@@ -46,7 +50,7 @@ _BLANK = r"\s*"
 FOUND_A_FAULT = "found something to fix"
 STOPPED = "stopped without saying what it found"
 UNFLAGGED_FAULT = "said something is wrong that Jim's crosscheck doesn't flag"
-NOT_FLAGGED = "found something Jim's crosscheck doesn't flag"
+NG_RUNNER_FLAGS = "found something to fix that Jim's crosscheck doesn't flag, so NG Runner flags it"
 BY_HAND = "said a person must check something by hand"
 UNKNOWN_LINE = "printed a line NG Runner doesn't know"
 NOT_EVERY_ROOM = "didn't name every room it was given"
@@ -77,8 +81,9 @@ class _Spec:
     ok: lines of a clean run. room: the line that opens a room's block. rooms: which rooms crosscheck
     gives it: "product" (Room0 apart), "all", or "none" (it names none). pass_line: a line a pass must
     print, once per room when per_room. counts_rooms: pass_line's first group is how many rooms it
-    read. fault: lines naming a fault. not_flagged: findings crosscheck doesn't flag. by_hand: lines
-    asking a person to look. needs: a line a pass must print at least once, with its own words."""
+    read. fault: lines naming a fault. not_flagged: findings crosscheck doesn't flag, which NG Runner
+    flags itself (failed). by_hand: lines asking a person to look. needs: a line a pass must print at
+    least once, with its own words."""
 
     ok: tuple[str, ...]
     fault: tuple[str, ...]
@@ -206,10 +211,13 @@ def read_checker(name: str, text: str, *, flagged: bool, product_rooms: int, all
     if flagged:
         return _verdict(name, FAILED if "fault" in kinds else COULD_NOT_VERIFY,
                         FOUND_A_FAULT if "fault" in kinds else STOPPED, text, advisory)
-    for kind, words in (("fault", UNFLAGGED_FAULT), (None, UNKNOWN_LINE), ("not_flagged", NOT_FLAGGED),
-                        ("by_hand", BY_HAND)):
+    for kind, words in (("fault", UNFLAGGED_FAULT), (None, UNKNOWN_LINE)):
         if kind in kinds:
             return _verdict(name, COULD_NOT_VERIFY, words, text, advisory)
+    if "not_flagged" in kinds:
+        return _verdict(name, FAILED, NG_RUNNER_FLAGS, text, advisory)
+    if "by_hand" in kinds:
+        return _verdict(name, COULD_NOT_VERIFY, BY_HAND, text, advisory)
     why = _why_not_a_pass(spec, name, text, product_rooms, all_rooms, library_found)
     return _verdict(name, COULD_NOT_VERIFY if why else PASSED, why, text, advisory)
 

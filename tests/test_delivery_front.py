@@ -180,8 +180,8 @@ def test_the_lines_it_prints_say_what_it_could_not_verify(summary: Path, tmp_pat
 
 def test_a_bucket_with_no_sheet_size_is_said_as_a_bucket_not_a_line(tmp_path: Path) -> None:
     path = tmp_path / "s.pdf"
-    path.write_bytes(summary_pdf(parts=[("SH-WH", 2, "SH 14x24x1 FIX WH"), ("BP-WH", 1, "BP 14x96x3/8 WH")]))
+    path.write_bytes(summary_pdf(parts=[("SH-CC", 2, "SH 14x24x3/4 FIX CC"), ("BP-CC", 1, "BP 14x96x3/8 CC")]))
     conv = front.convert_summary(path, job=None, scripts=his(tmp_path, path.read_bytes()))
     lines = front.said(conv, tmp_path / f"{JOB}_IC_Conversion.json")
     assert lines[1] == "Takeoff not complete: 1 bucket has no sheet size, and it is never filled in:"
-    assert lines[2] == "1. No sheet size for 1/4 AMWH or Egger Classic White (IC WH): could not verify its sheets."
+    assert lines[2] == "1. No sheet size for 1/4 Egger Black U999: could not verify its sheets."

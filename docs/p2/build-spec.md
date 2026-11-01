@@ -45,7 +45,7 @@ Status: working spec for Phases 2 to 5 (design section 7: P2 18, P3 18, P4 16, P
 | P3 | Audit of chat-built jobs (panel set, top line, `op_schema`) | **1**, needs the run ruling | Jobs A to J and the frozen jobs. `parm_check` needs the template job (above). Q1 for the top |
 | P3 | Trial checks: 15 compared with chat | **2** | Live jobs. A replay of Jobs A to J against their crosscheck files in NG Jobs can start under the run ruling |
 | P3 | Repair items with a ready chat line | **1** | Text from findings. Needs the check runner |
-| P3 | Takeoff on intake, and the order email from it | **1. Built** (store migration 5, notes schema 3) | On the 52 pairs: 34 complete closets, 12 closets with 1 to 7 lines it could not verify, and 6 garage or mixed jobs that stay in chat; none failed (`tests/test_takeoff_real.py`). An incomplete takeoff sends the chat's whole list instead. As built: `docs/decisions.md`, "The takeoff on intake" |
+| P3 | Takeoff on intake, and the order email from it | **1. Built** (store migration 5, notes schema 3) | On the 52 pairs: 36 complete closets, 10 closets with 1 to 7 lines it could not verify (34 and 12 before the answers read from Jim's files on 2026-10-31), and 6 garage or mixed jobs that stay in chat; none failed (`tests/test_takeoff_real.py`). An incomplete takeoff sends the chat's whole list instead. As built: `docs/decisions.md`, "The takeoff on intake" |
 | P3 | "Takeoff equals the chat's on 10 jobs" | **1** | Section 3.2: 20 of 24 by area. With the converter as built, 17 of 23 top-level closets by board parts (above). The exit itself is on 10 live jobs |
 | P3 | Settle, and "I already told chat" | **1** on fakes; **2** for the RULES line | Store and board work. Jim's chat reads the settled list through a RULES line he approves |
 | P4 | Leases | **1** on fakes; **2** for the chat side | The lease file's RULES line needs Jim's approval |
@@ -215,11 +215,12 @@ class Unplaced: line: SummaryLine; reason: str          # the "could not verify"
 
 def board_part(line: SummaryLine) -> BoardPart | Unplaced | None: ...   # None: not a board line
 ```
-- Rules from `rules.py` only: BP under 1/2 is built 1/4; TR Rail Cover is 3/4; a rail cover hardware line is built 3.5×96 at 3/4; a closet WS at 1-1/8 is built 3/4; glass doors, Scribe and Quarter Round are not board.
+- Rules from `rules.py` only: BP under 1/2 is built 1/4; TR Rail Cover is 3/4; a rail cover hardware line is built 3.5×96 at 3/4; a closet WS at 1-1/8 is built 3/4, in the colour IC prints on it; a white shelf at 1-1/8 is built 1in; a white part built 1in or thicker makes the whole job's white AMWH, its 1/4 backs White 1/4 Vinyl; glass doors, glass shelves (`SHG`), Scribe and Quarter Round are not board. The last four were answered from Jim's own files on 2026-10-31 (`docs/decisions.md`), the whole-job AMWH awaiting his yes.
 - `Unplaced`, never a guess:
   - a board kind with no `a×b×t`;
   - a thickness of 0.6;
-  - a 1in part in a colour other than white;
+  - a 1in part in a colour other than white, and a 1-1/8 shelf in one;
+  - a colour no material in Jim's library carries, named (Navy, IC MS), never swapped for another;
   - the `Shelf` and nominal `DW` forms;
   - any kind not in the list.
 

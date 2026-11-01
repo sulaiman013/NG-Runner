@@ -93,8 +93,10 @@ def runs(offered, python: Path, tmp_path_factory) -> dict[int, tuple]:
 def test_from_the_adopted_copy_it_writes_every_real_closet_and_refuses_every_garage(runs) -> None:
     codes = {i: said.exit_code for i, (said, _) in runs.items()}
     assert len(codes) == 52
-    assert sum(c == front.WRITTEN for c in codes.values()) == 34
-    assert sum(c == front.NOT_COMPLETE for c in codes.values()) == 12
+    # 36 and 10 since 2026-10-31, when two pairs became complete: a second-colour worksurface built in its
+    # own colour, and white 1-1/8in shelves built 1in AMWH (answered from Jim's own files, questions 2, 9, 10).
+    assert sum(c == front.WRITTEN for c in codes.values()) == 36
+    assert sum(c == front.NOT_COMPLETE for c in codes.values()) == 10
     refused = {i: runs[i][0].stdout for i, c in codes.items() if c == front.REFUSED}
     assert len(refused) == 6 and all("garage job" in said for said in refused.values()), refused
     assert all(said.stderr == "" for said, _ in runs.values())

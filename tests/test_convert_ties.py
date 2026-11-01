@@ -189,6 +189,15 @@ def test_a_rail_cover_buckets_at_three_quarter_and_sheets_are_rounded_then_ceile
 # ----- material_lookup.py: which brand each IC colour code is
 
 
+def test_a_colour_no_material_carries_is_none_of_his_colours() -> None:
+    """Navy (IC MS) maps to no material in his material_lookup (question 3). The day he adds one, it is a
+    colour of his and leaves rules.NO_MATERIAL."""
+    aliases = ast.literal_eval(_assigned(_tree("material_lookup.py"), "ALIASES"))
+    assert rules.NO_MATERIAL == {"MS": "Navy"}
+    assert not set(rules.NO_MATERIAL) & {code for code, _texture, _brand in aliases.values()}
+    assert "navy" not in aliases
+
+
 def test_the_colour_codes_and_brands_are_his() -> None:
     aliases = ast.literal_eval(_assigned(_tree("material_lookup.py"), "ALIASES"))
     brands = {}

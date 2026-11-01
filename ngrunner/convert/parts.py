@@ -170,6 +170,12 @@ def _read(line: SummaryLine, desc: str, kind: str) -> BoardPart | Unplaced | Non
     codes = tuple(t for t in desc[:size.start()].split()[1:] + after if _CODE.fullmatch(t))
     colour = next((t for t in after if _COLOUR_CANDIDATE.fullmatch(t) and t not in rules.FLAG_CODES),
                   None)
+    if colour in rules.NO_MATERIAL:
+        # RULES 146: say so and name it, never substitute. Named from rules' own table, never echoed.
+        name = rules.NO_MATERIAL[colour]
+        return Unplaced(line, f"a {kind} in {name} (IC {colour}). {name} can't be placed: no material in"
+                              " the library carries it and it has no price; never swapped for another"
+                              " colour")
     if colour is not None and colour not in rules.COLOUR_BRANDS:
         # Not echoed: two capitals in a description may be anything, a state's among them.
         return Unplaced(line, f"a {kind} in a colour code the rules don't know")
@@ -198,6 +204,8 @@ def _built(kind: str, printed: float | None, text: str, colour: str | None) -> t
         if colour is not None and colour != rules.WHITE:
             return 0.0, f"a 1in {kind} in {colour}: 1in exists only in white (RULES 217)"
         return rules.ONE_INCH, ""
+    if kind == "SH" and printed == rules.WHITE_SHELF_PRINTED and colour == rules.WHITE:
+        return rules.WHITE_SHELF_BUILT, ""         # RULES 217 and 214: 1in AMWH (rules.job_brand)
     return 0.0, f"a {kind} printed {text}in thick, which the rules don't name for it"
 
 
@@ -207,17 +215,22 @@ def _built(kind: str, printed: float | None, text: str, colour: str | None) -> t
 def settle_colours(judged: Sequence[tuple[SummaryLine, BoardPart | Unplaced]],
                    designs: Mapping[str, Sequence[SummaryLine]]) -> tuple[BoardPart | Unplaced, ...]:
     """
-    Gives a worksurface and a rail cover printed with no colour their room's colour.
+    Gives a rail cover printed with no colour its room's colour.
 
-    RULES 221 builds a closet worksurface in its room's own colour, and RULES 224 puts a rail
-    cover in its room's 3/4 bucket. On a job whose other 3/4 parts share one colour, that is the
-    colour. On a job with more, the design lists say which rooms hold the row: rows printed alike
-    are taken together, and each room that lists them gives its own colour to as many as it lists,
-    when every such room's other 3/4 parts share one colour. What no room lists, or a room of two
-    colours holds, is Unplaced, since any colour would be a guess.
+    RULES 224 puts a rail cover in its room's 3/4 bucket. On a job whose other 3/4 parts share one
+    colour, that is the colour. On a job with more, the design lists say which rooms hold the row:
+    rows printed alike are taken together, and each room that lists them gives its own colour to as
+    many as it lists, when every such room's other 3/4 parts share one colour. What no room lists,
+    or a room of two colours holds, is Unplaced, since any colour would be a guess.
+
+    A worksurface keeps the colour IC prints on it, which every placed one has (_read). RULES 190
+    builds a part in a second colour in ITS OWN colour, its tape bucketed with that colour, and RULES
+    221's "room's own colour" is for a worksurface IC prints no second colour on, where the two are
+    the same (answered from Jim's own files, 2026-10-31: a real job's second-colour counter tops are
+    nested on their own colour's sheet, not the room's). A worksurface doesn't say what colour its
+    room is, so it never counts towards one.
     """
-    colours = {p.colour for _, p in judged
-               if isinstance(p, BoardPart) and not _needs_room(p) and p.built_thk == 0.75}
+    colours = {p.colour for _, p in judged if isinstance(p, BoardPart) and _shows_room(p)}
     rooms = _room_colours(designs) if len(colours) > 1 else []
     groups: dict[str, list[tuple[SummaryLine, BoardPart]]] = defaultdict(list)
     for line, found in judged:
@@ -228,17 +241,23 @@ def settle_colours(judged: Sequence[tuple[SummaryLine, BoardPart | Unplaced]],
         if not isinstance(found, BoardPart) or not _needs_room(found):
             out.append(found)
         elif len(colours) == 1:
-            out.append(_in_room(line, found, next(iter(colours))))
+            out.append(replace(found, colour=next(iter(colours))))
         elif not colours:
-            out.append(found if found.colour else Unplaced(
-                line, "a rail cover printed with no colour, on a job with no 3/4 board colour"))
+            out.append(Unplaced(line, "a rail cover printed with no colour, on a job with no 3/4 board"
+                                      " colour"))
         elif groups[line.desc.strip()][0][0] is line:
             out.extend(_split_by_room(groups[line.desc.strip()], rooms))
     return tuple(out)
 
 
 def _needs_room(part: BoardPart) -> bool:
-    return part.kind == "WS" or (part.kind == "TR Rail Cover" and not part.colour)
+    return part.kind == "TR Rail Cover" and not part.colour
+
+
+def _shows_room(part: BoardPart) -> bool:
+    """A 3/4 part whose colour is its room's: not a worksurface (RULES 190, 221), nor a rail cover
+    waiting for one."""
+    return part.kind != "WS" and not _needs_room(part) and part.built_thk == rules.THREE_QUARTER
 
 
 def _room_colours(designs: Mapping[str, Sequence[SummaryLine]]
@@ -252,7 +271,7 @@ def _room_colours(designs: Mapping[str, Sequence[SummaryLine]]
         for line in lines:
             held[line.desc.strip()] += line.qty
             found = board_part(line)
-            if isinstance(found, BoardPart) and not _needs_room(found) and found.built_thk == 0.75:
+            if isinstance(found, BoardPart) and _shows_room(found):
                 own.add(found.colour)
         rooms.append((next(iter(own)) if len(own) == 1 else None, held))
     return rooms
@@ -267,33 +286,19 @@ def _split_by_room(group: list[tuple[SummaryLine, BoardPart]],
     by_colour: dict[str, int] = defaultdict(int)
     for colour, held in rooms:
         if held[desc] and colour is None:
-            return [_unsettled(l, p) for l, p in group]
+            return [_unsettled(l) for l, _ in group]
         if held[desc] and colour is not None:
             by_colour[colour] += held[desc]
     listed = sum(by_colour.values())
     if not listed or listed > total:
-        return [_unsettled(l, p) for l, p in group]
-    out = [_in_room(replace(line, qty=qty), replace(part, qty=qty), colour)
-           for colour, qty in by_colour.items()]
+        return [_unsettled(l) for l, _ in group]
+    out: list[BoardPart | Unplaced] = [replace(part, qty=qty, colour=colour)
+                                       for colour, qty in by_colour.items()]
     if listed < total:
-        out.append(_unsettled(replace(line, qty=total - listed), part))
+        out.append(_unsettled(replace(line, qty=total - listed)))
     return out
 
 
-def _in_room(line: SummaryLine, part: BoardPart, room: str) -> BoardPart | Unplaced:
-    """The part in its room's colour. A worksurface printed in another colour is Unplaced: RULES
-    221 builds a closet worksurface in its room's own colour, and RULES 190 builds a part in a
-    second colour in its own, so which one wins is Jim's call."""
-    if part.kind == "WS" and part.colour != room:
-        return Unplaced(line, f"a worksurface printed {part.colour} in a room built {room}: RULES"
-                              " 221 builds it in the room's colour, RULES 190 a second colour in"
-                              " its own")
-    return replace(part, colour=room)
-
-
-def _unsettled(line: SummaryLine, part: BoardPart) -> Unplaced:
-    if part.kind == "WS":
-        return Unplaced(line, "a worksurface on a job with more than one colour, whose room's"
-                              " colour the design lists don't settle (RULES 221)")
+def _unsettled(line: SummaryLine) -> Unplaced:
     return Unplaced(line, "a rail cover printed with no colour, on a job with more than one"
                           " colour, whose room the design lists don't settle (RULES 224)")

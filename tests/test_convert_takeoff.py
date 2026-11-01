@@ -50,7 +50,7 @@ def closet(parts: list[BoardPart | Unplaced], **kw: object) -> Takeoff:
     ("WH", 0.75, (49.0, 97.0), 3),      # RULES 122: Egger Classic White
     ("WH", 1.0, (49.0, 97.0), 3),
     ("WH", 0.25, (61.0, 109.0), 2),     # RULES 133: 1-4 Egger
-    ("CC", 0.75, (61.0, 109.0), 2),     # RULES 123: Egger Black U999
+    ("CC", 0.75, (61.0, 109.0), 2),     # RULES 123: Egger Black U999, as RULES says today (question 12 open)
     ("CC", 1.0, (49.0, 97.0), 3),
     ("AP", 0.75, (49.0, 97.0), 3),      # RULES 124: Tafisa
     ("AP", 0.25, (49.0, 97.0), 3),      # RULES 134: 1-4 Tafisa in that colour
@@ -65,11 +65,25 @@ def test_each_rules_table_line_gives_its_sheet(colour: str, thk: float, sheet: t
     assert bucket.sheets_with_waste == sheets
 
 
-def test_a_white_part_built_one_inch_leaves_the_white_backs_without_a_sheet() -> None:
-    t = closet([bp("SH", 2, 22, 46, 1.0), bp("BP", 3, 24, 48, 0.25)])
-    backs = next(b for b in t.buckets if b.thk_in == 0.25)
-    assert (backs.sheet_in, backs.sheets_with_waste) == (None, None)
-    assert t.could_not_verify == ("No sheet size for 1/4 WH: could not verify its sheets.",)
+def test_a_white_part_built_one_inch_makes_the_whole_jobs_white_amwh() -> None:
+    """Question 10: one white part built 1in or thicker makes the whole job's white AMWH (RULES 214,
+    and the RULES of 2026-10-06; Jim's yes awaited), so its 1/4 white backs go on White 1/4 Vinyl at
+    49x97 (RULES 135), not 1-4 Egger at 61x109, wherever they are on the job."""
+    parts = [bp("SH", 2, 22, 46, 1.0), bp("BP", 3, 24, 48, 0.25), bp("VT", 4, 14, 84, 0.75)]
+    t = closet(parts)
+    assert [(b.thk_in, b.sheet_in, b.sheets_with_waste) for b in t.buckets] == [
+        (0.25, (49.0, 97.0), 1), (0.75, (49.0, 97.0), 2), (1.0, (49.0, 97.0), 1)]
+    assert t.could_not_verify == () and t.complete
+    assert rules.thick_white(parts) and rules.job_brand("WH", amwh=True) == "AMWH"
+    assert rules.job_brand("AP", amwh=True) == "Tafisa"              # only white is pushed to AMWH
+
+
+def test_without_a_thick_white_part_white_backs_are_1_4_egger_at_61x109() -> None:
+    """Question 11: Egger Classic White backs go on 1-4 Egger, 5x9 (RULES 133)."""
+    parts = [bp("BP", 3, 24, 48, 0.25), bp("VT", 4, 14, 84, 0.75)]
+    t = closet(parts)
+    assert [(b.thk_in, b.sheet_in) for b in t.buckets] == [(0.25, (61.0, 109.0)), (0.75, (49.0, 97.0))]
+    assert not rules.thick_white(parts) and rules.job_brand("WH", amwh=False) == "Egger Classic White"
 
 
 def test_a_colour_the_rules_dont_size_has_no_sheet_never_49x97() -> None:
@@ -303,7 +317,7 @@ def test_old_misses_are_rail_covers_their_conversions_left_out_but_two_named_fil
 def test_the_spec_s_named_pairs_give_exactly_their_unplaced_rows() -> None:
     by = {r["index"]: r for r in _scored()}
     assert by[PAN]["branch"] == "mixed"
-    assert _reasons(by[PAO]) == {"0.6in thick": 4, "a kind the rules don't name": 2}
+    assert _reasons(by[PAO]) == {"0.6in thick": 4}          # its 2 glass shelves are bought in (question 8)
     assert _reasons(by[PAV]) == {"0.6in thick": 1}
     assert _reasons(by[PBA]) == {"the Shelf form": 10, "a nominal size": 8}
 

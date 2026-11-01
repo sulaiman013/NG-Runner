@@ -24,7 +24,7 @@ import pytest
 from conftest import FIXTURES
 from helpers_toolkit import CASES, conversion, job_folder, stage_tree, tools_python
 from ngrunner.checks import LEFT_OUT, Planned, library_found, planned, read_crosscheck, run_crosscheck
-from ngrunner.checks.readers import NO_LIBRARY, NO_REFERENCE, NOT_FLAGGED, STOPPED, UNKNOWN_LINE
+from ngrunner.checks.readers import NG_RUNNER_FLAGS, NO_LIBRARY, NO_REFERENCE, STOPPED, UNKNOWN_LINE
 from ngrunner.clock import FakeClock
 from ngrunner.guards.facts import COULD_NOT_VERIFY, FAILED, PASSED, ToolRun
 from ngrunner.toolkit import take_snapshot
@@ -34,19 +34,20 @@ pytestmark = pytest.mark.fixtures
 NOW = datetime(2026, 10, 31, 10, 0, tzinfo=timezone.utc)
 CNV = COULD_NOT_VERIFY
 EVERY_CASE = {"wm_variant_check": CNV, "parm_check": CNV}
-# Every checker that isn't a pass, by case, as measured on 2026-10-31. The rest pass.
+# Every checker that isn't a pass, by case, as measured on 2026-10-31. The rest pass. eb_tops and top_line
+# fail where they would change something: crosscheck doesn't flag that, and NG Runner does (question 26).
 MEASURED = {
-    "A": {**EVERY_CASE, "br_cam_check": FAILED, "notch_check": FAILED, "eb_tops": CNV, "panel_xcheck": CNV},
+    "A": {**EVERY_CASE, "br_cam_check": FAILED, "notch_check": FAILED, "eb_tops": FAILED, "panel_xcheck": CNV},
     "B": {**EVERY_CASE, "br_cam_check": FAILED, "panel_xcheck": FAILED},
     "C": EVERY_CASE,
     "D": {**EVERY_CASE, "br_cam_check": FAILED, "op_schema_check": CNV},
     "E": EVERY_CASE,
     "F": {**EVERY_CASE, "op_schema_check": CNV},
     "G": EVERY_CASE,
-    "H": {**EVERY_CASE, "drill_depth_check": FAILED, "eb_tops": CNV, "panel_xcheck": CNV},
+    "H": {**EVERY_CASE, "drill_depth_check": FAILED, "eb_tops": FAILED, "panel_xcheck": CNV},
     "I": {**EVERY_CASE, "drill_depth_check": FAILED, "panel_xcheck": FAILED},
-    "J": {**EVERY_CASE, "section_align": FAILED, "br_cam_check": FAILED, "notch_check": FAILED, "eb_tops": CNV,
-          "top_line": CNV, "panel_xcheck": CNV},
+    "J": {**EVERY_CASE, "section_align": FAILED, "br_cam_check": FAILED, "notch_check": FAILED, "eb_tops": FAILED,
+          "top_line": FAILED, "panel_xcheck": CNV},
 }
 FOURTEEN = ("section_align", "section_span", "drill_depth_check", "outset_check", "part_geom_check", "br_cam_check",
             "op_schema_check", "wm_variant_check", "notch_check", "eb_tops", "top_line", "parm_check",
@@ -108,7 +109,9 @@ def test_why_each_could_not_verify(results) -> None:
 
     assert {why for checker, why in whys if checker == "wm_variant_check"} == {NO_LIBRARY}
     assert {why for checker, why in whys if checker == "parm_check"} == {NO_REFERENCE}
-    assert {why for checker, why in whys if checker in ("eb_tops", "top_line")} == {NOT_FLAGGED}
+    flagged = {(v.checker, v.why) for result in results.values() for v in result.verdicts
+               if v.checker in ("eb_tops", "top_line") and v.code == FAILED}
+    assert {why for _, why in flagged} == {NG_RUNNER_FLAGS} and not [w for c, w in whys if c in ("eb_tops", "top_line")]
     assert {why for checker, why in whys if checker == "panel_xcheck"} == {STOPPED}    # it crashed on 3
 
 
@@ -228,15 +231,16 @@ def test_in_ng_runners_own_python_the_checks_read_the_same(copy, results, tmp_pa
 # ----- P3: what each real case's check comes to for Jim, as items naming parts by tag
 
 
-ITEMS_TO_FIX = {   # (kind of fault, the parts it names), as measured on 2026-10-31
-    "A": [("doubled_holes", ("R1C8", "R1C10")), ("notch_face", ("R1C9", "R1C11"))],
+ITEMS_TO_FIX = {   # (kind of fault, the parts it names), as measured on 2026-10-31; banding and top_line: question 26
+    "A": [("banding", ("R1",)), ("doubled_holes", ("R1C8", "R1C10")), ("notch_face", ("R1C9", "R1C11"))],
     "B": [("doubled_holes", ("R2C4", "R2C8", "R2C10", "R2C12")), ("extra_part", ())],
     "C": [], "E": [], "F": [], "G": [],
     "D": [("doubled_holes", ("R1C5",))],
-    "H": [("bore_depth", ("R1C3", "R1C5", "R1C7", "R1C8", "R2C3"))],
+    "H": [("banding", ("R1",)), ("bore_depth", ("R1C3", "R1C5", "R1C7", "R1C8", "R2C3"))],
     "I": [("bore_depth", ("R1C5",)), ("extra_part", ()), ("missing_part", ())],
-    "J": [("bridge_cams", ("R1C25",)), ("doubled_holes", ("R2C2", "R2C4", "R2C6", "R2C14", "R2C16")),
-          ("notch_face", ("R2C1", "R2C3", "R2C5", "R2C13", "R2C15")),
+    "J": [("banding", ("R3", "R4")), ("bridge_cams", ("R1C25",)),
+          ("doubled_holes", ("R2C2", "R2C4", "R2C6", "R2C14", "R2C16")),
+          ("notch_face", ("R2C1", "R2C3", "R2C5", "R2C13", "R2C15")), ("top_line", ("R2",)),
           ("top_off", ("R1C2", "R1C4", "R1C7", "R1C11", "R1C13", "R1C21", "R1C23", "R2C10")), ("wm_banding", ("R2",))],
 }
 

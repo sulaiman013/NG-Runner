@@ -59,8 +59,8 @@ TAPE_RULE = ("One long edge (IC's second dimension) on FM VT, SH, DK and TR Base
              " none on CK, FF Cleat and BP (takeoff.py's eb_lf).")
 MATERIAL_RULE = ("Sheets by IC colour and built thickness from RULES' sheet table (NG Runner ruling R5:"
                  " the library is not read for sizes until Jim answers item 5). Arctic White (WH) is"
-                 " Egger Classic White, or AMWH or Egger Classic White when a white part is 1in or"
-                 " thicker (RULES 214), which leaves its 1/4 backs with no sheet size.")
+                 " Egger Classic White, or AMWH on the whole job when a white part is 1in or thicker"
+                 " (RULES 214), its 1/4 backs then White 1/4 Vinyl at 49x97 (RULES 135).")
 NOT_MADE = ("client", "designer", "address", "verticals", "runs", "each part's design and wall",
             "the estimate's lines other than its total")
 
@@ -108,7 +108,7 @@ def conversion(data: bytes, *, summary_name: str, job: str | None = None,
         raise ConversionRefused(f"{why} Nothing was converted.") from why
     placed, unplaced, shares = _settled(lines, designs)
     _must_add_up(t, [p for p, _ in placed], unplaced)
-    thick_white = any(p.colour == rules.WHITE and p.built_thk >= rules.ONE_INCH for p, _ in placed)
+    thick_white = rules.thick_white(p for p, _ in placed)
     buckets = [_bucket(b, [p for p, _ in placed], thick_white) for b in t.buckets]
     names = {(b["ic_colour"], b["thk_in"]): b["material"] for b in buckets}
     lost = [_unplaced(u) for u in unplaced]
@@ -319,11 +319,11 @@ def _board_note(p: BoardPart) -> str:
 def material_name(colour: str, *, thick_white: bool) -> str:
     """NG Runner's name for a bucket's material (messages.templates.takeoff_material, which the tests
     hold this to): the brand when one IC colour maps to it, else the brand and the IC code."""
-    brand = rules.COLOUR_BRANDS.get(colour)
+    brand = rules.job_brand(colour, amwh=thick_white)
     if brand is None:
         return f"IC colour {colour}"
-    if thick_white and colour == rules.WHITE:
-        return f"AMWH or {brand} (IC {colour})"
+    if brand == "AMWH":
+        return f"AMWH (IC {colour})"
     many = sum(1 for other in rules.COLOUR_BRANDS.values() if other == brand) > 1
     return f"{brand} (IC {colour})" if many else brand
 

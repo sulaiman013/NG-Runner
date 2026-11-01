@@ -169,16 +169,31 @@ def test_a_library_on_a_linux_path_says_so() -> None:
     assert "a path this PC doesn't have" in templates.check_item_words(item)
 
 
-def test_a_finding_jims_crosscheck_doesnt_flag_is_could_not_verify_naming_where() -> None:
-    top = ("   Room2.des    WM Panel 48 Thru Radius    H=756     Elev  1371.1 ->  1376.0  (top 2127 -> 2132)\n\n"
-           "would change: 1 WM panels")
-    result = found({**CLEAN, "top_line": top})
+@pytest.mark.parametrize("checker, text, tags, words, chat", [
+    ("top_line", "   Room2.des    WM Panel 48 Thru Radius    H=756     Elev  1371.1 ->  1376.0  (top 2127 -> 2132)\n\n"
+                 "would change: 1 WM panels",
+     ("R2",), "R2: WM panels are off the room's top line",
+     f"{JOB}: put the WM panels in R2 on the room's top line, then run crosscheck"),
+    ("outset_check", "  FLAG Room1.des     C7    wall 2_1    Testerson Special          Outset=12.7\n\n"
+                     "1 product(s) NOT at Outset 0 - review",
+     ("R1C7",), "R1C7: the product isn't at Outset 0, so it sits off the wall",
+     f"{JOB}: set R1C7 to Outset 0, then run crosscheck"),
+    ("eb_tops", "   Room3.des    COUNTERTOP 24.000in x 96.000in  four edges, slot 1\n\nwould change: 1 part(s)/slot(s)",
+     ("R3",), "R3: the countertop or second-colour banding isn't as Jim's banding rules say",
+     f"{JOB}: band each countertop in R3 on all four edges, and each second-colour part in its own colour, then"
+     " run crosscheck"),
+], ids=["top line", "outset", "banding"])
+def test_a_finding_jims_crosscheck_doesnt_flag_is_one_to_fix_naming_where(checker, text, tags, words, chat) -> None:
+    """Question 26: NG Runner flags these itself, as items to fix with a chat line, which Jim may settle
+    for a job (an Outset on purpose, say)."""
+    result = found({**CLEAN, checker: text})
 
-    item, = [i for i in items(result) if i.checker == "top_line"]
-    assert (item.kind, item.tags) == ("could_not_verify", ("R2",))
-    assert templates.check_item_words(item) == (
-        "Could not verify R2: the top line check would move WM panels to the room's top line, which"
-        " Jim's crosscheck doesn't flag")
+    item, = [i for i in items(result) if i.checker == checker]
+    assert (item.kind, item.tags, item.settles) == ("fix", tags, True)
+    assert templates.check_item_words(item) == words
+    assert templates.check_chat_line(JOB, item) == chat
+    assert lint(Message("check_result", f"{JOB} checked 9:42 PM", (f"1. {templates.check_item_line(JOB, item)}",))) == []
+    assert result.code == FAILED
 
 
 def test_a_crosscheck_that_couldnt_be_read_is_one_item_for_the_whole_run() -> None:

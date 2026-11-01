@@ -65,10 +65,13 @@ def test_every_other_difference_on_a_complete_closet_has_its_named_cause() -> No
 
 
 def test_on_older_formats_the_board_parts_differ_only_by_the_rail_cover_rule() -> None:
-    """Before Jim's rail-cover rule (2026-09-01) a rail cover printed as hardware wasn't counted."""
+    """Before Jim's rail-cover rule (2026-09-01) a rail cover printed as hardware wasn't counted. Pair
+    15 joined these on 2026-10-31, complete once its 1-1/8in white shelves were built 1in AMWH (question 9):
+    81 board parts, as the chat counted."""
     older = {r["index"]: r["fields"]["board_parts"] for r in _rows()
              if r["made"] and r["complete"] and r.get("format") == "other" and r.get("fields")}
-    assert len(older) == 13 and sum(f["ok"] for f in older.values()) == 10
+    assert len(older) == 14 and sum(f["ok"] for f in older.values()) == 11
+    assert older[15]["ok"]
     for i in (34, 39, 47):
         conv = conversion((PAIRS / str(i) / "summary.pdf").read_bytes(), summary_name="summary.pdf")
         rails = sum(p["qty"] for p in conv["parts"] if p["type"] == "TR Rail Cover")

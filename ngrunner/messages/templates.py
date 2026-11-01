@@ -572,21 +572,22 @@ def order_heads_up(job: str, *, sheets: Sequence[tuple[int, str]],
 # A bucket here is one entry of a stored takeoff's "buckets" (store/takeoffs.py): an IC colour
 # code, a built thickness, and numbers. A colour is named from rules.COLOUR_BRANDS, which mirrors
 # Jim's material_lookup: the brand when only one IC colour maps to it, else the brand and the IC
-# code, as NG Runner has no name for a Tafisa colour of its own. RULES makes a white room AMWH
-# when it holds anything 1in or thicker, and the takeoff can't tell rooms, so on such a job white
-# is named as both, never as one. Nothing else of a row is said.
+# code, as NG Runner has no name for a Tafisa colour of its own. A white part built 1in or thicker
+# makes the whole job's white AMWH (rules.job_brand: RULES 214 and the RULES of 2026-10-06), so on
+# such a job white is named AMWH. Nothing else of a row is said.
 
 TAKEOFF_ESTIMATE = "takeoff estimate; the nest decides"     # guards/headsup.py's ESTIMATE too
 
 
 def takeoff_material(colour: str, *, thick_white: bool = False) -> str:
     """Egger Classic White; Tafisa (IC AP) for a brand of many colours; IC colour ZZ for a code
-    the rules have no brand for. thick_white: the takeoff has a white part 1in or thicker."""
-    brand = takeoff_rules.COLOUR_BRANDS.get(colour)
+    the rules have no brand for; AMWH (IC WH) for white when the takeoff has a white part 1in or
+    thicker (thick_white), which makes the whole job's white AMWH."""
+    brand = takeoff_rules.job_brand(colour, amwh=thick_white)
     if brand is None:
         return f"IC colour {colour}"
-    if thick_white and colour == takeoff_rules.WHITE:
-        return f"AMWH or {brand} (IC {colour})"
+    if brand == "AMWH":
+        return f"AMWH (IC {colour})"
     many = sum(1 for other in takeoff_rules.COLOUR_BRANDS.values() if other == brand) > 1
     return f"{brand} (IC {colour})" if many else brand
 
@@ -613,7 +614,7 @@ def takeoff_lines(buckets: Iterable[Mapping[str, Any]]) -> tuple[str, ...]:
 
 
 def thick_white(buckets: Iterable[Mapping[str, Any]]) -> bool:
-    """Whether a takeoff holds a white part built 1in or thicker (RULES: that room is AMWH)."""
+    """Whether a takeoff holds a white part built 1in or thicker, which makes its white AMWH."""
     return any(b["colour"] == takeoff_rules.WHITE and b["thk_in"] >= takeoff_rules.ONE_INCH
                for b in buckets)
 
@@ -846,10 +847,16 @@ _CHECK_FIXES = {
                    "tape and lock the WM panel banding in {tags}"),
     "room_file": ("the room file isn't written the way Mozaik writes it",
                   "write the room file of {tags} again the way Mozaik writes it"),
+    # Findings Jim's crosscheck doesn't flag, which NG Runner flags itself (answered from his files, 26).
+    "outset": ("the product isn't at Outset 0, so it sits off the wall", "set {tags} to Outset 0"),
+    "banding": ("the countertop or second-colour banding isn't as Jim's banding rules say",
+                "band each countertop in {tags} on all four edges, and each second-colour part in its own colour"),
+    "top_line": ("WM panels are off the room's top line", "put the WM panels in {tags} on the room's top line"),
 }
 _CHECK_UNVERIFIED = {   # could not verify: what wasn't checked, after "Could not verify <subject>: "
     "q1": "how the top is numbered waits for Jim's answer to Q1",
     "not_run": "Jim's crosscheck doesn't run his hinge check",
+    # outset, banding and top_line: only in runs stored before 2026-10-31, when NG Runner didn't flag them.
     "outset": "the outset check found {products} not at outset 0, which Jim's crosscheck doesn't flag",
     "banding": "the countertop banding check would change the countertop banding, which Jim's crosscheck"
                " doesn't flag",

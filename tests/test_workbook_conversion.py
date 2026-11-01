@@ -148,13 +148,22 @@ def test_a_line_that_could_not_be_verified_never_becomes_a_part() -> None:
 
 
 def test_a_bucket_with_no_sheet_size_has_no_sheet_count_and_says_so() -> None:
-    conv = made(summary([("SH-WH", 2, "SH 14x24x1 FIX WH"), ("BP-WH", 1, "BP 14x96x3/8 WH")]))
-    backs = next(b for b in conv["buckets"] if b["thk_in"] == 0.25)
+    conv = made(summary([("SH-CC", 2, "SH 14x24x3/4 FIX CC"), ("BP-CC", 1, "BP 14x96x3/8 CC")]))
+    backs = next(b for b in conv["buckets"] if b["thk_in"] == 0.25)       # RULES lists no 1/4 Egger Black
     assert backs["sheets_with_waste"] is None and backs["sheet_in"] is None
     assert backs["sheet_math"] == "could not verify: RULES' sheet table gives no size for it here (ruling R5)"
-    assert backs["material"] == "AMWH or Egger Classic White (IC WH)"
+    assert backs["material"] == "Egger Black U999"
     assert conv["sheet_size_in"] == "by bucket"
-    assert "No sheet size for 1/4 AMWH or Egger Classic White (IC WH): could not verify its sheets." in conv["flags"]
+    assert "No sheet size for 1/4 Egger Black U999: could not verify its sheets." in conv["flags"]
+
+
+def test_a_white_part_built_1in_makes_the_whole_jobs_white_amwh_with_its_backs_on_vinyl() -> None:
+    """Question 10 (RULES 214 and the RULES of 2026-10-06; Jim's yes awaited): the 1/4 white backs go on
+    White 1/4 Vinyl at 49x97 (RULES 135), and every white bucket is named AMWH."""
+    conv = made(summary([("SH-WH", 2, "SH 14x24x1 FIX WH"), ("BP-WH", 1, "BP 14x96x3/8 WH")]))
+    assert [(b["thk_in"], b["material"], b["sheet_in"], b["sheets_with_waste"]) for b in conv["buckets"]] == [
+        (0.25, "AMWH (IC WH)", [49.0, 97.0], 1), (1.0, "AMWH (IC WH)", [49.0, 97.0], 1)]
+    assert conv["ng_convert"]["complete"] and conv["sheet_size_in"] == "49 x 97"
 
 
 def test_a_complete_closet_says_so_and_has_nothing_unplaced() -> None:

@@ -13,6 +13,7 @@ import pytest
 from ngrunner.convert import rules
 from ngrunner.convert.parts import BoardPart, Unplaced, board_part, settle_colours
 from ngrunner.convert.summary_lines import SummaryLine
+from ngrunner.convert.takeoff import takeoff
 
 
 def line(desc: str, qty: int = 1, item: str = "", *, page: int = 9) -> SummaryLine:
@@ -106,11 +107,33 @@ def test_a_white_one_inch_part_stays_one_inch() -> None:
     assert part("SH 22.4x46.5x1 ADJ WH").built_thk == 1.0
 
 
+def test_a_white_shelf_printed_1_1_8_is_built_one_inch_white() -> None:
+    """Answered from Jim's files (question 9): RULES 217, 1in+ exists only in white, and RULES 214,
+    white with something 1in+ is AMWH (rules.job_brand names it so on the job)."""
+    shelf = part("SH 19.1x23.9x1-1/8 ADJ WH", qty=4)
+    assert (shelf.kind, shelf.qty, shelf.printed_thk, shelf.built_thk, shelf.colour) == (
+        "SH", 4, 1.125, 1.0, "WH")
+    assert shelf.tape_ft == pytest.approx(23.9 / 12 * 4)
+
+
+def test_a_coloured_shelf_printed_1_1_8_is_still_unplaced() -> None:
+    """Only a white one is settled: what a coloured 1-1/8in shelf is built in is still Jim's (9)."""
+    assert "1-1/8" in unplaced("SH 19.1x23.9x1-1/8 ADJ LG").reason
+
+
+@pytest.mark.parametrize("desc", ["TR BASE 4x96x3/4 FL WH", "TR base 4x96x3/4 FL WH", "TR Base 4x96x3/4 FL WH"])
+def test_a_tr_base_is_one_in_any_case(desc: str) -> None:
+    """Question 14: TR BASE in capitals is a TR Base, though takeoff.py's match is case-sensitive."""
+    found = part(desc)
+    assert (found.kind, found.tape_ft) == ("TR Base", 8.0)
+
+
 # ----- not board
 
 
 @pytest.mark.parametrize("desc", [
     "DR 19.8x54.1x3/4 SH-G WH",                    # a glass door
+    "SHG 13x23.7x1/4 CLR",                         # a glass shelf: bought in (RULES 243, question 8)
     "Scribe Molding 1-3/16 x 96\" WH",             # disregarded (RULES 251)
     "Quarter Round 3/4 x 96 WH",
     "DB 15.2x17.5x1/4 MP",                         # drawer bottom
@@ -139,11 +162,11 @@ def test_a_line_not_cut_from_a_sheet_is_not_board(desc: str) -> None:
     ("CK DBack 3.6x22.2x0.6 NN WH", "0.6"),
     ("TR 5x96x0.6 COVE WH", "0.6"),
     ("SH 22.4x46.5x1 ADJ LG", "1in"),                             # 1in only exists in white
-    ("SHG 13x23.7x1/4 CLR", "kind"),                              # a kind not in the list
+    ("QQ 13x23.7x3/4 WH", "kind"),                                # a kind not in the list
     ("HP 30.5x22.6x3/4 FL WH", "edge banding"),                   # no tape rule
     ("TR 4x96x3/4 FL WH", "trim"),                                # TR, neither base nor cover
     ("VT 14x76.4x0.7 FD WH", "0.7"),                              # a thickness never named
-    ("SH 19.1x23.9x1-1/8 ADJ WH", "1-1/8"),                       # 1-1/8 only for a WS
+    ("VT 19.1x23.9x1-1/8 FD WH", "1-1/8"),                        # 1-1/8: a WS, or a white shelf
     ("SH 14x23.9x1/4 FIX WH", "1/4"),                             # only backs are 1/4
     ("SH 14x23.9x3/4 FIX", "colour"),                             # no colour code
 ])
@@ -169,7 +192,7 @@ def test_the_named_line_says_page_quantity_and_item_and_no_description() -> None
 
 
 def test_an_item_that_is_not_a_code_is_left_out_of_the_name() -> None:
-    found = board_part(SummaryLine("CTO", "Testerson Lane", 1, "SHG 13x23.7x1/4 CLR", 3, 0))
+    found = board_part(SummaryLine("CTO", "Testerson Lane", 1, "QQ 13x23.7x3/4 WH", 3, 0))
     assert isinstance(found, Unplaced)
     assert "Testerson" not in found.named()
 
@@ -198,7 +221,7 @@ def test_area_is_quantity_times_the_face() -> None:
     assert part("SH 12x24x3/4 FIX WH", qty=3).sqft == pytest.approx(6.0)
 
 
-# ----- the room's colour (RULES 221 and 224)
+# ----- the room's colour (RULES 224), and a worksurface's own (RULES 190, 221)
 
 
 def _judged(*descs: tuple[str, int]) -> list[tuple[SummaryLine, BoardPart | Unplaced]]:
@@ -238,14 +261,15 @@ def test_on_a_two_colour_job_a_rail_cover_the_designs_dont_list_is_unplaced() ->
     assert len(lost) == 1 and "rail cover" in lost[0].reason
 
 
-def test_a_worksurface_in_a_room_of_two_colours_is_unplaced() -> None:
+def test_a_worksurface_in_a_room_of_two_colours_keeps_its_printed_colour() -> None:
     judged = _judged(("VT 14x84x3/4 FD AP", 4), ("SH 14x24x3/4 FIX LG", 2),
                      ("WS LG 101 20x40x1-1/8 LG", 1))
     designs = {"one": [line("VT 14x84x3/4 FD AP", 4), line("SH 14x24x3/4 FIX LG", 2),
                        line("WS LG 101 20x40x1-1/8 LG", 1)]}
     settled = settle_colours(judged, designs)
-    lost = [p for p in settled if isinstance(p, Unplaced)]
-    assert len(lost) == 1 and "worksurface" in lost[0].reason
+    assert not [p for p in settled if isinstance(p, Unplaced)]
+    top, = [p for p in settled if isinstance(p, BoardPart) and p.kind == "WS"]
+    assert (top.colour, top.built_thk) == ("LG", 0.75)
 
 
 def test_a_rail_cover_on_a_job_with_no_three_quarter_colour_is_unplaced() -> None:
@@ -289,13 +313,45 @@ def test_a_door_style_code_is_not_read_as_a_colour() -> None:
     assert part("DW 12x24x3/4 SH WH").colour == "WH"           # SH: the Shaker style
 
 
-def test_a_worksurface_printed_in_another_colour_than_its_room_is_unplaced() -> None:
+def test_a_worksurface_printed_in_a_second_colour_is_built_in_its_own_colour() -> None:
+    """Question 2, answered from Jim's files: RULES 190 builds a part in a second colour in ITS OWN
+    colour, its tape bucketed with it; RULES 221's room colour is for one IC prints no second colour on.
+    A real job's second-colour counter tops are nested on their own colour's sheet."""
     judged = _judged(("VT 14x84x3/4 FD IV", 4), ("WS SU 101 15.5x50.1x3/4 SU", 2),
                      ("WS IV 101 15.5x23.9x3/4 IV", 1))
     settled = settle_colours(judged, {})
-    assert isinstance(settled[1], Unplaced)
-    assert "RULES 221" in settled[1].reason and "RULES 190" in settled[1].reason
-    assert isinstance(settled[2], BoardPart) and settled[2].colour == "IV"
+    assert [(p.kind, p.colour, p.qty) for p in settled if isinstance(p, BoardPart)] == [
+        ("VT", "IV", 4), ("WS", "SU", 2), ("WS", "IV", 1)]
+    t = takeoff(settled, sheet_size=rules.job_sheet_size([p for p in settled if isinstance(p, BoardPart)]),
+                branch="closet")
+    by = {(b.colour, b.thk_in): (b.parts, b.tape_lf, b.sheets_with_waste) for b in t.buckets}
+    assert by[("SU", 0.75)] == (2, round(2 * 2 * (15.5 + 50.1) / 12, 1), 1)       # its own tape and sheet
+    assert t.complete
+
+
+def test_a_second_colour_worksurface_never_decides_its_rooms_colour() -> None:
+    """Its colour is its own, not the room's: a rail cover on a job whose other 3/4 parts are one colour
+    still takes that colour."""
+    judged = _judged(("VT 14x84x3/4 FD IV", 4), ("WS SU 101 15.5x50.1x3/4 SU", 1), ("White Rail Cover", 2))
+    settled = settle_colours(judged, {})
+    cover, = [p for p in settled if isinstance(p, BoardPart) and p.kind == "TR Rail Cover"]
+    assert (cover.colour, cover.qty) == ("IV", 2)
+
+
+def test_navy_cant_be_placed_and_says_so_by_name_never_swapped() -> None:
+    """Question 3: Navy (IC MS) has textures in Jim's library but no material carries it and it has no
+    price, so the line is named and never placed, never built in another colour (RULES 146). Nothing
+    else on the job waits for it."""
+    found = unplaced("WS MS 101 24.9x90x1-1/8 MS", item="WS-MS")
+    assert found.reason == ("a WS in Navy (IC MS). Navy can't be placed: no material in the library carries"
+                            " it and it has no price; never swapped for another colour")
+    assert found.named().startswith("Page 10: 1 of item WS-MS, a WS in Navy (IC MS). ")
+    judged = _judged(("VT 14x84x3/4 FD AP", 4), ("WS AP 101 20x40x1-1/8 AP", 1))
+    judged.append((line("WS MS 101 24.9x90x1-1/8 MS", 1, "WS-MS"), found))
+    settled = settle_colours(judged, {})
+    assert [(p.kind, p.colour) for p in settled if isinstance(p, BoardPart)] == [("VT", "AP"), ("WS", "AP")]
+    assert [p for p in settled if isinstance(p, Unplaced)] == [found]
+    assert "MS" not in {p.colour for p in settled if isinstance(p, BoardPart)}
 
 
 def test_a_colour_code_the_rules_dont_know_is_unplaced_without_echoing_it() -> None:

@@ -10,9 +10,10 @@ through `ast` (never by import) and fails when any value mirrored here moves: th
 reach this code. His source is never copied here, since the repo is public.
 
 What takeoff.py leaves out comes from RULES section 2 and BUILD step 2, each line cited where it is
-used. Two departures from takeoff.py are deliberate (ruling R4): a bucket with no sheet size in
-RULES' table has no sheet count, never 49x97 by default; and a part the rules don't name (a kind,
-a thickness, a colour) is Unplaced by parts.py instead of counted with no tape.
+used, and from the answers read from Jim's own files on 2026-10-31 (docs/decisions.md, "Answered from
+Jim's own files"). Two departures from takeoff.py are deliberate (ruling R4): a bucket with no sheet
+size in RULES' table has no sheet count, never 49x97 by default; and a part the rules don't name (a
+kind, a thickness, a colour) is Unplaced by parts.py instead of counted with no tape.
 """
 from __future__ import annotations
 
@@ -75,8 +76,9 @@ BOARD_KINDS = frozenset({*TAPE, "HP"})
 # An item code's kind (the code before its colour, SH-WH; classify.py's BOARD_TYPES).
 ITEM_BOARD_CODES = frozenset({"VT", "SH", "DK", "DR", "DW", "CK", "FF", "WS", "TR", "BP", "HP"})
 # Lines that are not cut from a sheet, though they print a size: drawer boxes and bottoms, glass
-# inserts and aluminium-frame doors (BUILD 79; classify.py's drawer-hardware and glass rules).
-NOT_BOARD_CODES = frozenset({"DB", "DF", "DD", "INS", "DRAF", "DWAF"})
+# inserts and aluminium-frame doors (BUILD 79; classify.py's drawer-hardware and glass rules), and a
+# glass shelf, SHG ... CLR, which RULES 243 lists among the genuine buyouts (glass): bought in, not cut.
+NOT_BOARD_CODES = frozenset({"DB", "DF", "DD", "INS", "DRAF", "DWAF", "SHG"})
 NOT_BOARD_WORDS = re.compile(r"^(Wrap|Bottom|Basket)\b")
 GLASS_DOOR_CODE = "SH-G"                           # a DR with this code is a glass door (BUILD 79)
 # The rail cover printed as hardware: White Rail Cover, item 400000570 (RULES 224). It must start
@@ -84,9 +86,18 @@ GLASS_DOOR_CODE = "SH-G"                           # a DR with this code is a gl
 RAIL_COVER_LINE = re.compile(r"^(?:[A-Z][a-z]+ )?Rail Cover\b")
 RAIL_COVER_FACE = (3.5, 96.0)                      # RULES 224: 3.5 x 96 = 2.333 SqFt
 CLOSET_WS_PRINTED = (0.75, 1.0, 1.125)             # RULES 221: a closet WS printed so ...
-CLOSET_WS_BUILT = 0.75                             # ... is built 3/4, in the room's own colour
+CLOSET_WS_BUILT = 0.75                             # ... is built 3/4 (its colour: parts.settle_colours)
 QUARTER, THREE_QUARTER, ONE_INCH = 0.25, 0.75, 1.0
 WHITE = "WH"                                       # RULES 217: 1in+ exists only in white
+# A white shelf printed 1-1/8 is built 1in, AMWH: RULES 217 (1in+ exists only in white) and 214
+# ("White with something 1in+ -> AMWH"). A shelf printed 1-1/8 in a colour is still Jim's.
+WHITE_SHELF_PRINTED, WHITE_SHELF_BUILT = 1.125, ONE_INCH
+
+# IC colour codes that no material in Jim's library carries, and that have no price: RULES 146 says a
+# colour that can't be built is said so and named, never substituted. Navy (IC MS): his library has
+# Navy textures, but no panel stock carries one (his own notes on the job that printed it, where the
+# chat built Ore instead). What Navy is built in is Jim's to say; until then the line is never placed.
+NO_MATERIAL: dict[str, str] = {"MS": "Navy"}
 
 # Description codes that are not a colour (SCHEMA's list, and those read on the 52 real pairs).
 # SH among them is a door's or drawer face's style (Shaker), in SCHEMA's Style field.
@@ -95,7 +106,7 @@ FLAG_CODES = frozenset({"FD", "RH", "LH", "FN", "NN", "RN", "LN", "GV", "HV", "F
 
 # IC colour code -> the brand row of RULES' tables. Mirrored from material_lookup.ALIASES (its
 # code and brand columns; tests/test_convert_ties.py holds them to his file). Arctic White is
-# Egger Classic White there, unless a white part is built 1in or thicker (RULES 214).
+# Egger Classic White there, unless a white part is built 1in or thicker: then AMWH (job_brand).
 Brand = Literal["Egger Classic White", "Egger Black U999", "Tafisa", "Arauco", "AMWH"]
 COLOUR_BRANDS: dict[str, Brand] = {
     "SU": "Tafisa", "WF": "Tafisa", "RR": "Tafisa", "SW": "Tafisa", "LG": "Tafisa",
@@ -125,7 +136,7 @@ SheetSize = Callable[[str, float], tuple[float, float] | None]
 
 def sheet_size(colour: str, thk_in: float) -> tuple[float, float] | None:
     """The sheet RULES' tables give an IC colour code at a built thickness, in inches, or None.
-    White is read as Egger Classic White; job_sheet_size says when that can't be known."""
+    White is read as Egger Classic White; job_sheet_size reads it as AMWH where a job makes it so."""
     brand = COLOUR_BRANDS.get(colour)
     return None if brand is None else RULES_SHEETS.get((brand, thk_in))
 
@@ -135,17 +146,30 @@ class _Built(Protocol):
     built_thk: float
 
 
+def thick_white(parts: Iterable[_Built]) -> bool:
+    """Whether a job holds a white part built 1in or thicker, which makes all its white AMWH."""
+    return any(p.colour == WHITE and p.built_thk >= ONE_INCH for p in parts)
+
+
+def job_brand(colour: str, *, amwh: bool) -> Brand | None:
+    """The brand row an IC colour code takes on one job. amwh: the job holds a white part built 1in
+    or thicker (thick_white). Then every white part of the job is AMWH, its 1/4 backs included:
+    RULES 214 ("White with something 1in+ -> AMWH"), and the RULES of 2026-10-06, which states it of
+    the whole job ("one thick white part pushes the whole job to AMWH", about white sheet stock).
+    Jim's yes on the whole job is awaited (docs/decisions.md, 2026-10-31)."""
+    if amwh and colour == WHITE:
+        return "AMWH"
+    return COLOUR_BRANDS.get(colour)
+
+
 def job_sheet_size(parts: Iterable[_Built]) -> SheetSize:
-    """sheet_size for one job. A white part built 1in or thicker makes white AMWH (RULES 214,
-    material_lookup's note on Arctic White). Whether that takes the whole job or only its room
-    the two disagree, so a job with one has no size for its 1/4 white backs (Egger's 61x109 or
-    the vinyl's 49x97): could not verify."""
-    thick_white = any(p.colour == WHITE and p.built_thk >= ONE_INCH for p in parts)
+    """sheet_size for one job. On a job with a white part built 1in or thicker, white is AMWH
+    (job_brand), so its 1/4 white backs go on White 1/4 Vinyl at 49x97 (RULES 135), not 1-4 Egger."""
+    amwh = thick_white(parts)
 
     def size(colour: str, thk_in: float) -> tuple[float, float] | None:
-        if thick_white and colour == WHITE and thk_in == QUARTER:
-            return None
-        return sheet_size(colour, thk_in)
+        brand = job_brand(colour, amwh=amwh)
+        return None if brand is None else RULES_SHEETS.get((brand, thk_in))
 
     return size
 
@@ -189,5 +213,9 @@ def fingerprint() -> str:
         "flags": sorted(FLAG_CODES), "brands": COLOUR_BRANDS,
         "sheets": [[*key, *size] for key, size in sorted(RULES_SHEETS.items())],
         "ws": [*CLOSET_WS_PRINTED, CLOSET_WS_BUILT], "items": sorted(ITEM_BOARD_CODES),
+        # 2026-10-31, from Jim's own files: a worksurface in its own printed colour, a white 1-1/8
+        # shelf at 1in, a thick white part making the whole job's white AMWH, and Navy unplaced.
+        "ws_colour": "printed", "white_shelf": [WHITE_SHELF_PRINTED, WHITE_SHELF_BUILT],
+        "thick_white": "whole job AMWH", "no_material": NO_MATERIAL,
     }
     return hashlib.sha256(json.dumps(tables, sort_keys=True).encode("utf-8")).hexdigest()

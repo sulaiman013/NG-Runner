@@ -11,13 +11,15 @@ room, its cabinet number, a size, and which kind of fault it is (a table here, f
 statements in the checkers' source and their real output on Cases A to J). Words are templates.py's.
 
 What an item is:
-    fix               Jim's chat fixes it: it has a ready chat line.
+    fix               Jim's chat fixes it: it has a ready chat line. A finding Jim's crosscheck doesn't
+                      flag (a product off Outset 0, banding or a top line its checkers would change) is
+                      one too: NG Runner flags it itself (readers.py, answered from Jim's files, 26).
     mozaik            Only Jim in Mozaik can fix it (a bore row left from an old section height, a line
                       bore off the panel): the item says so, and has no chat line.
     could_not_verify  What wasn't checked, and why: a library on a path this PC doesn't have, no
-                      reference job, a crash, a line not known, a finding Jim's crosscheck doesn't flag,
-                      a check his crosscheck doesn't run (the hinge count, on a garage), or the top's
-                      numbering waiting for Q1. Never settled: it is a fact about the run.
+                      reference job, a crash, a line not known, a check his crosscheck doesn't run (the
+                      hinge count, on a garage), or the top's numbering waiting for Q1. Never settled:
+                      it is a fact about the run.
     advisory          ic_code_check's, as in crosscheck: shown, never to fix, never deciding.
 
 Failing closed: a fault line no table here names is still an item ("found something to fix"), with the
@@ -55,7 +57,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ngrunner.checks.crosscheck import LEFT_OUT, Crosscheck
-from ngrunner.checks.readers import BY_HAND, NOT_FLAGGED, SPECS
+from ngrunner.checks.readers import BY_HAND, NG_RUNNER_FLAGS, SPECS
 from ngrunner.guards.bak import DesignUnreadable, parse_room
 from ngrunner.guards.facts import COULD_NOT_VERIFY, FAILED, PASSED
 
@@ -119,7 +121,7 @@ _EXPLAINS: Mapping[str, tuple[str, ...]] = {
                         r"  checked \d+ user-written operation element\(s\) across \d+ file\(s\): \d+ REJECTED"),
     "parm_check": (r"  !! \S.* \d+ parameter\(s\) differ", r"RESULT: \d+ parameter file\(s\) drifted - fix before building"),
 }
-# What crosscheck doesn't flag (could not verify, a question for Jim), and what asks a person to look.
+# What crosscheck doesn't flag, which NG Runner flags itself as a fault (26), and what asks a person to look.
 _UNFLAGGED: Mapping[str, tuple[tuple[str, str], ...]] = {
     "outset_check": ((r"  FLAG .*?Room(?P<r>\d+)\.des +C(?P<c>\d+) .*", "outset"),),
     "eb_tops": ((r"   Room(?P<r>\d+)\.des +(?!already )\S.*", "banding"),),
@@ -222,13 +224,13 @@ def _read_verdict(verdict: Any, q1_settled: bool) -> tuple[str, list[Item]]:
         return _parameters_before_q1(verdict)
     if code == PASSED:
         return code, []
+    if code == FAILED and verdict.why == NG_RUNNER_FLAGS and checker in _UNFLAGGED:
+        return code, _matched(checker, verdict.text, _UNFLAGGED[checker], FIX) or [
+            _item(CNV, checker, "checker", why="found something to fix, and NG Runner could not tell what")]
     if code == FAILED:
         return code, _faults(checker, verdict.text)
-    if verdict.why == NOT_FLAGGED and checker in _UNFLAGGED:
-        return code, _matched(checker, verdict.text, _UNFLAGGED[checker], verdict.why) or [
-            _item(CNV, checker, "checker", why=verdict.why)]
     if verdict.why == BY_HAND and checker in _BY_HAND:
-        return code, _matched(checker, verdict.text, _BY_HAND[checker], verdict.why) or [
+        return code, _matched(checker, verdict.text, _BY_HAND[checker], CNV, why=verdict.why) or [
             _item(CNV, checker, "checker", why=verdict.why)]
     return COULD_NOT_VERIFY, [_item(CNV, checker, "checker", why=verdict.why)]
 
@@ -258,7 +260,8 @@ def _faults(checker: str, text: str) -> list[Item]:
     return [group.item() for group in groups.values()]
 
 
-def _matched(checker: str, text: str, table: Sequence[tuple[str, str]], why: str) -> list[Item]:
+def _matched(checker: str, text: str, table: Sequence[tuple[str, str]], kind: str, *, why: str = ""
+             ) -> list[Item]:
     spec = SPECS.get(checker)
     groups: dict[str, _Group] = {}
     room: int | None = None
@@ -268,7 +271,7 @@ def _matched(checker: str, text: str, table: Sequence[tuple[str, str]], why: str
             match = re.fullmatch(pattern, line)
             if match:
                 at = int(match["r"]) if "r" in match.groupdict() and match["r"] else room
-                groups.setdefault(what, _Group(checker, what, CNV, why=why)).add(line, match, at)
+                groups.setdefault(what, _Group(checker, what, kind, why=why)).add(line, match, at)
     return [group.item() for group in groups.values()]
 
 

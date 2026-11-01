@@ -20,6 +20,7 @@ import pytest
 from ngrunner.clock import FakeClock
 from ngrunner.guards.facts import ToolRun
 from ngrunner.lock.job_sheet import JOB_SHEET_SCRIPT, make_job_sheet, nest_counts, write_job_sheet
+from ngrunner.messages.lint import check_line
 from ngrunner.store import open_store
 from ngrunner.toolkit import Snapshot
 from ngrunner.writes import Roots
@@ -49,10 +50,32 @@ def docx(lines: list[str]) -> bytes:
     return out.getvalue()
 
 
-def sheet_lines(q1="7", c1="Egger Classic White", q2="", c2="", q4="1", c4="Egger Classic White", qi=""):
+def sheet_lines(q1="7", c1="Egger Classic White", q2="", c2="", q4="1", c4="Egger Classic White", qi="",
+                notes=""):
     return ["Job Name : made up", "Job Abbr : TES", "Install Date : Friday", "10/30",
             f"¾”: {q1}", f"Color: {c1}", f"¾”: {q2}", f"Color: {c2}", f"¼”: {q4}", f"Color {c4}",
-            f"1”: {qi}", "Special Notes: "]
+            f"1”: {qi}", f"Special Notes: {notes}"]
+
+
+def runs_nest(thickness: str, *blocks: tuple[int, int, int, bool]) -> bytes:
+    """A nest as the real ones hold sheets: (pattern, quan, extra runs, flipped) per board block. A
+    flipped one carries its flip pass as a further run holding a copy of the header and a Flipped="True"
+    block of the same pattern (Cases C and D); an extra run with no such block is a program only, a
+    remake say."""
+    size = 'Width="1244.6" Length="2463.8"'
+    sheets = ""
+    for pattern, quan, extra, flipped in blocks:
+        runs = f'<OptimizeGCodeRun Filename="TES{pattern:02}.tap" />'
+        runs += "".join(f'<OptimizeGCodeRun Filename="TES{pattern:02}R{n}.tap" />' for n in range(extra))
+        if flipped:
+            runs += (f'<OptimizeGCodeRun Filename="TES{pattern:02}-Flip.tap"><OptimizeMaterial Thickness="{thickness}"'
+                     f' {size}><OptimizeSheet Quan="1" Flipped="True" PatternNumber="{pattern}" {size} />'
+                     '</OptimizeMaterial></OptimizeGCodeRun>')
+        sheets += f'<OptimizeSheet Quan="{quan}" Flipped="False" PatternNumber="{pattern}" {size}>{runs}</OptimizeSheet>'
+    return ('8\r\n<?xml version="1.0" encoding="utf-8"?>\r\n'
+            f'<OptimizeMaterial Thickness="{thickness}" {size}>'
+            '<OptimizePart PartID="1" Quan="1" Name="Shelf" AssyNo="R1C1" Width="300" Length="600" />'
+            f'{sheets}</OptimizeMaterial>').encode("utf-8")
 
 
 class FakeScript:
@@ -144,6 +167,57 @@ def test_a_one_inch_line_is_read_from_its_count_and_colour(job, conversion, tmp_
     (job / "1 in Am Lam Wh.opt").write_bytes(opt("25.6", 5))
     assert make(job, conversion, tmp_path, FakeScript(sheet_lines(qi="5 Am Lam Wh"))).code == "matches"
     assert make(job, conversion, tmp_path, FakeScript(sheet_lines(qi="4 Am Lam Wh"))).code == "mismatch"
+
+
+# ----- flip sheets (answered from Jim's files, question 18: RULES 716-722)
+
+FLIP_NEST = runs_nest("19.304", (1, 1, 0, True), (2, 1, 1, False), (3, 5, 0, False))     # 7 sheets, 1 flip
+
+
+def test_a_flip_sheets_note_naming_only_real_flip_passes_matches(job, conversion, tmp_path) -> None:
+    (job / "3-4 Egger Classic White.opt").write_bytes(FLIP_NEST)
+    notes = "LED lighting; Flip sheets: 3-4 Egger Classic White sheet 1"
+
+    result = make(job, conversion, tmp_path, FakeScript(sheet_lines(notes=notes)))
+
+    assert result.code == "matches" and result.items == ()
+    assert [c.flips for c in nest_counts({"3-4 Egger Classic White": FLIP_NEST})] == [("1",)]
+
+
+def test_a_sheet_with_only_another_g_code_run_called_a_flip_sheet_is_an_item_and_never_filed(
+        job, conversion, tmp_path) -> None:
+    """His cnc_job_sheet lists every sheet with more than one G-code run. A remake run is a program,
+    not a flip: a flip is a Flipped="True" block, the same board turned over (RULES 716-722)."""
+    (job / "3-4 Egger Classic White.opt").write_bytes(FLIP_NEST)
+    notes = "Flip sheets: 3-4 Egger Classic White sheet 1, 3-4 Egger Classic White sheet 2"
+
+    result = make(job, conversion, tmp_path, FakeScript(sheet_lines(notes=notes)))
+
+    assert result.code == "mismatch"
+    item, = result.items
+    assert (item.thickness, item.colour, item.sheet_count, item.nest_count) == ("3/4", "Egger Classic White", None, None)
+    assert item.words == ('3/4" Egger Classic White: the job sheet calls sheet 2 a flip sheet, and the nest has no'
+                          " flip pass for it, only another G-code run, which is a program, not a flip")
+    assert result.words == "The job sheet calls sheets flip sheets that have no flip pass"
+    assert check_line(item.words) == []
+
+
+def test_several_wrong_flip_sheets_are_one_item_per_nest(job, conversion, tmp_path) -> None:
+    (job / "3-4 Egger Classic White.opt").write_bytes(
+        runs_nest("19.304", (1, 1, 1, False), (2, 1, 1, False), (3, 5, 0, False)))
+    notes = "Flip sheets: 3-4 Egger Classic White sheet 1, 3-4 Egger Classic White sheet 2"
+
+    item, = make(job, conversion, tmp_path, FakeScript(sheet_lines(notes=notes))).items
+    assert "calls sheets 1 and 2 flip sheets, and the nest has no flip pass for them," in item.words
+
+
+@pytest.mark.parametrize("notes", ["Flip sheets: sheet one", "Flip sheets: 3-4 Made Up sheet 1",
+                                   "Flip sheets: 3-4 Egger Classic White sheet 1; Flip sheets: x sheet 2"])
+def test_a_flip_sheets_note_that_cant_be_read_or_names_another_nest_could_not_verify(
+        job, conversion, tmp_path, notes) -> None:
+    (job / "3-4 Egger Classic White.opt").write_bytes(FLIP_NEST)
+    result = make(job, conversion, tmp_path, FakeScript(sheet_lines(notes=notes)))
+    assert result.code == "could_not_verify" and result.docx is None
 
 
 @pytest.mark.parametrize("script", [FakeScript(None), FakeScript(sheet_lines(), exit_code=1),

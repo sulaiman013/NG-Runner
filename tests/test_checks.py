@@ -5,9 +5,10 @@ guards/tool_checks.py does for his two nest checks.
 
 What a pass needs here: crosscheck didn't flag the checker, and every line it printed is one its source
 prints on a clean run, with its own clean line for every room it was given. A flag with a line that
-names a fault is failed. Anything else is could_not_verify: a line not known, a "??", a fault Jim's
-crosscheck doesn't flag (outset_check's FLAG, eb_tops' and top_line's "would change"), a checker that
-stopped with an error, or one that couldn't see what it compares with. The output here is synthetic, in
+names a fault is failed, and so is a fault Jim's crosscheck doesn't flag (outset_check's FLAG, eb_tops'
+and top_line's "would change"), which NG Runner flags itself (answered from Jim's files, question 26).
+Anything else is could_not_verify: a line not known, a "??", a checker that stopped with an error, or
+one that couldn't see what it compares with. The output here is synthetic, in
 the shapes his source prints, with made-up names; tests/test_checks_real.py runs the real ones.
 """
 from __future__ import annotations
@@ -23,6 +24,7 @@ from ngrunner.checks import (
     LEFT_OUT, Planned, read_checker, read_crosscheck, run_crosscheck, stage_job,
 )
 from ngrunner.checks import crosscheck as cc
+from ngrunner.checks.readers import NG_RUNNER_FLAGS
 from ngrunner.clock import FakeClock
 from ngrunner.guards.facts import COULD_NOT_VERIFY, FAILED, PASSED, ToolRun
 from ngrunner.toolkit import ToolkitError, take_snapshot
@@ -168,11 +170,13 @@ def test_a_line_no_reader_knows_is_could_not_verify(checker: str, line: str) -> 
     ("top_line", "   Room1.des    WM Panel 48 Thru Radius    H=1216    Elev   1184.0 ->  1222.4  (top 2400 -> 2438)\n\n"
                  "would change: 1 WM panels"),
 ], ids=["outset FLAG", "eb_tops would change", "top_line would change"])
-def test_a_fault_jims_crosscheck_doesnt_flag_is_could_not_verify_never_a_pass(checker: str, text: str) -> None:
+def test_a_fault_jims_crosscheck_doesnt_flag_is_flagged_by_ng_runner(checker: str, text: str) -> None:
+    """Question 26: crosscheck's FLAG pattern misses these, and they exit 0, so crosscheck calls them
+    clean. NG Runner fails them itself: Outset is one Jim always wants flagged."""
     result = read({**CLEAN, checker: text})
 
     verdict = next(v for v in result.verdicts if v.checker == checker)
-    assert verdict.code == COULD_NOT_VERIFY and "doesn't flag" in verdict.why
+    assert verdict.code == FAILED and verdict.why == NG_RUNNER_FLAGS and result.code == FAILED
 
 
 @pytest.mark.parametrize("checker, text", [
