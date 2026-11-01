@@ -6,8 +6,9 @@ from pixels. Only TURN DIRECTIONS come from the plan. Author every wall in the t
 height." So the table settles each wall's length and height, and the plan settles the rest: the chain's
 order (the walls head to tail between the plan's two free ends, gen_rooms.py 41-73, which is not always
 the table's: frozen job Z's second room runs 5, 1, 2, 3, 4 and its fourth 4, 1, 2, 3, 5) and each wall's
-angle. Nothing in NG Runner reads the plan view yet, so without a Plan every value it settles reads
-"could not verify". Ported from Jim's toolkit of 2026-10-31, never copied:
+angle. plan.py reads the plan view; given its reading, a plan it could not read leaves every value the
+plan settles "could not verify" with the reader's reason. Ported from Jim's toolkit of 2026-10-31, never
+copied:
 
   length, height  the table's inches x 25.4, rounded to 4 places (gen_rooms.py 78)
   IDTag           the wall's number, as WallNumber (gen_rooms.py 87-88, SCHEMA 14-15); a wall named
@@ -29,13 +30,16 @@ import math
 import re
 from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
+from typing import TYPE_CHECKING
 
 from ngrunner.build.placement import MM, Finding
 from ngrunner.build.room import Fact, Plan, TableRow, WallSpec, given, unverified
 
+if TYPE_CHECKING:
+    from ngrunner.build.plan import PlanReading
+
 _INCHES = re.compile(r'^\s*(?P<whole>\d+(?:\.\d+)?)(?: (?P<num>\d+)/(?P<den>\d+))?"?\s*$')
-NO_PLAN = ("the plan view gives the chain's order and each wall's angle (BUILD 201-202), and nothing in "
-           "NG Runner reads the plan yet")
+NO_PLAN = "the plan view gives the chain's order and each wall's angle (BUILD 201-202), and no plan was read"
 CHAINED = "head to tail from (0, 0): end = start + Len x (cos Ang, sin Ang) (BUILD 204-205)"
 
 
@@ -81,17 +85,20 @@ def _plan_problem(rows: Sequence[TableRow], plan: Plan) -> str | None:
     return None
 
 
-def build_walls(rows: Sequence[TableRow], plan: Plan | None = None
+def build_walls(rows: Sequence[TableRow], plan: Plan | PlanReading | None = None
                 ) -> tuple[tuple[WallSpec, ...], Fact[tuple[tuple[int, int], ...]], Fact[float], tuple[Finding, ...]]:
     """The room's walls (in chain order with a usable plan, else the table's), its joints, its H_Walls,
-    and what the chain's gates found."""
+    and what the chain's gates found. A plan reading (plan.py) gives its plan, or why it read none."""
+    unread = NO_PLAN
+    if plan is not None and not isinstance(plan, Plan):
+        plan, unread = plan.plan, plan.why or NO_PLAN
     findings: list[Finding] = []
     twice = sorted(n for n, k in Counter(r.name for r in rows).items() if k > 1)
     if twice:
         problem: str | None = (f"the WALL/AREA table names wall {', '.join(twice)} more than once, so no plan "
                                "can be laid on it")
     else:
-        problem = NO_PLAN if plan is None else _plan_problem(rows, plan)
+        problem = unread if plan is None else _plan_problem(rows, plan)
     if problem is not None and problem != NO_PLAN:
         findings.append(Finding("chain", "could not verify", None, problem))
     by_name = {r.name: r for r in rows}

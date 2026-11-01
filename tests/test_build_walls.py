@@ -1,8 +1,8 @@
 """
 P5a's walls (ngrunner/build/walls.py): a room's walls from its design's WALL/AREA table, as Jim's
 gen_rooms.py makes them. The table settles each wall's length and height; the plan view settles the
-chain's order and each wall's angle (BUILD 199-221), and nothing reads the plan yet, so without one those
-could not verify. Every room here is made up.
+chain's order and each wall's angle (BUILD 199-221), and without a plan (plan.py reads it) those could not
+verify. Every room here is made up.
 """
 from __future__ import annotations
 

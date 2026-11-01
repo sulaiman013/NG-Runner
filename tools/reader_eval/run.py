@@ -9,6 +9,7 @@ The reader evaluation's command line (docs/p2/build-spec.md 5.7; design 3.6, dec
     .venv\Scripts\python.exe -m tools.reader_eval.run score --provider openai [--tol-x 1] [--tol-y 1.5]
     .venv\Scripts\python.exe -m tools.reader_eval.run place --provider anthropic
     .venv\Scripts\python.exe -m tools.reader_eval.run build --provider anthropic
+    .venv\Scripts\python.exe -m tools.reader_eval.run plans
 
 Everything it writes goes under .local-fixtures\reader\ (gitignored): the crops, prep.json,
 truth.json, the cached answers and the reports. What it prints names case letters and pages only.
@@ -23,6 +24,8 @@ can re-score with other tolerances for free. place re-scores the cached answers 
 rules (placed.py) and checks the rules on Jim's frozen jobs; it reads no key and never calls. build
 builds P5a's room model (ngrunner/build/) from the same cached answers and from Jim's frozen jobs, and
 compares it with the as-cut rooms value by value (built.py); it too reads no key and never calls.
+plans reads every real room's plan view with P5a's plan reader and compares the chain with the room Jim
+built (plans.py); build also rebuilds the frozen jobs with their plans as read. Neither calls anything.
 """
 from __future__ import annotations
 
@@ -36,7 +39,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-from tools.reader_eval import (budget, built, cases, diagnose, keys, pairing, payload, placed, prep, providers,
+from tools.reader_eval import (budget, built, cases, diagnose, keys, pairing, payload, placed, plans, prep, providers,
                                scoring, truth)
 
 DEFAULT_WORKED = 4  # worked walls per request: decision 17 says 3 to 5
@@ -396,11 +399,14 @@ def cmd_build(args: argparse.Namespace) -> int:
     summaries = {c: cases.summary(c) for c in world.preps}
     rooms = built.load_rooms(world.preps)
     frozen = built.build_frozen({c: r.pairs for c, r in world.pairings.items()}, crops, summaries, rooms)
+    frozen_read = built.build_frozen({c: r.pairs for c, r in world.pairings.items()}, crops, summaries, rooms,
+                                     read_plans=True)
     dev = [(p, r) for p, r in result.readings if not p.case.startswith("P")]
     new = [(p, r) for p, r in result.readings if p.case.startswith("P")]
     text = "\n".join([
         f"Provider {provider.name}, model {provider.model}, effort {provider.effort}; walls with no cached answer: "
         f"{result.not_run}.", built.report_frozen(frozen),
+        built.report_frozen(frozen_read, "the plan as P5a's plan reader reads it"),
         built.report_read(built.build_read(dev, crops, summaries, rooms),
                           "DEV, Jobs A to J, from Claude's cached readings with no plan (x 1/8 in, Elev and top 1/4 in, "
                           "height 0.65 in, depth 0.5 mm):"),
@@ -416,12 +422,28 @@ def cmd_build(args: argparse.Namespace) -> int:
     return 0 if not leaks else 1
 
 
+def cmd_plans(_: argparse.Namespace) -> int:
+    """P5a's plan reader on every real room, compared with the rooms Jim built (plans.py)."""
+    text = plans.report(plans.score_all())
+    leaks = _self_check(text) + ["an answers job" for name in plans.answers_names()
+                                 if name.split("_")[0].casefold() in text.casefold()]
+    text += "\nSelf-check against the local case key: " + ("no job name or surname found." if not leaks
+                                                          else f"FOUND {', '.join(sorted(set(leaks)))}")
+    out = cases.reader_dir() / "reports"
+    out.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    (out / f"{stamp}-plans.txt").write_text(text + "\n", encoding="utf-8")
+    print(text)
+    return 0 if not leaks else 1
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m tools.reader_eval.run")
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("collect")
     sub.add_parser("prep")
     sub.add_parser("pair")
+    sub.add_parser("plans")
     for name in ("place", "build"):
         offline = sub.add_parser(name)
         offline.add_argument("--provider", choices=sorted(providers.PROVIDERS), required=True)
@@ -443,6 +465,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         p.add_argument("--tol-y", type=float, default=scoring.TOL_Y_IN)
     args = parser.parse_args(argv)
     commands = {"collect": cmd_collect, "prep": cmd_prep, "pair": cmd_pair, "place": cmd_place, "build": cmd_build,
+                "plans": cmd_plans,
                 "dry-run": cmd_dry_run, "eval": lambda a: _evaluate(a, call=True),
                 "score": lambda a: _evaluate(a, call=False)}
     return commands[args.command](args)

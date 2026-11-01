@@ -8,8 +8,8 @@ rules or the inputs don't settle it, never a guess (AGENTS.md rule 8). Nothing h
 file. walls.py builds the walls, schedule.py the panels and the room; this module is only their types.
 
   sources     "table"    the design's WALL/AREA table on the summary (lengths and heights, BUILD 201-202)
-              "plan"     the plan view: the chain's order and each wall's angle (BUILD 201-202). Nothing
-                         in NG Runner reads the plan yet, so without one these could not verify
+              "plan"     the plan view: the chain's order and each wall's angle (BUILD 201-202), as
+                         plan.py reads it; where it reads none, these could not verify
               "reading"  the elevation drawing as the reader gave it (x, the drawn run, radius)
               "IC line"  the wall's own parts lines (height, depth, mount, REA, drill code)
               "rule"     one of Jim's rules applied by code (placement.py, and the rules in schedule.py)

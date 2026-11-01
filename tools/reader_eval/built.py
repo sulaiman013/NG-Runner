@@ -10,10 +10,12 @@ by value, so every difference and every could-not-verify shows. Nothing here cal
   frozen  build_frozen(): each frozen room from its design's WALL/AREA table (NG Runner's own summary check
           reads it), each paired wall's own as-cut panels standing in for the reading (payload.answer_of,
           as the reader's worked walls show them), and the room's own wall order and angles standing in
-          for the plan, which nothing in NG Runner reads yet. So the reading and the plan hold by
-          construction, and the test is everything the builder adds: the walls from the table, the chain,
-          and every panel's height, depth, mount, Elev, notch side, radius, REA and product
-  DEV     build_read(): the first 26 walls (Jobs A to J) from Claude's cached readings, with no plan.
+          for the plan, or, with read_plans, the plan as ngrunner/build/plan.py reads it from the summary.
+          So the reading (and the plan, without read_plans) holds by construction, and the test is
+          everything the builder adds: the walls from the table, the chain, and every panel's height,
+          depth, mount, Elev, notch side, radius, REA and product
+  DEV     build_read(): the first 26 walls (Jobs A to J) from Claude's cached readings, with no plan
+          (or, with read_plans, the plan as read).
           Each panel is compared with its as-cut panel within the evaluation's tolerances (x 1/8 in, Elev
           and top 1/4 in, height 0.65 in; depth 0.5 mm, Jim's, as the evaluation has none), paired left
           to right as scoring.py pairs them
@@ -29,6 +31,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ngrunner.build import placement as pl
+from ngrunner.build.plan import PlanReading, read_plan
 from ngrunner.build.room import ICLine, Plan, ReadVertical, ReadWall, RoomModel, TableRow
 from ngrunner.build.schedule import build_room
 from ngrunner.build.walls import table_rows
@@ -69,6 +72,15 @@ def tables(summary: bytes) -> dict[str, tuple[TableRow, ...]]:
     """Each design's WALL/AREA table as NG Runner's summary check reads it, by its name's key hash."""
     return {name_key_hash(d["name"]): table_rows(d["walls"])
             for d in check_summary(summary).details.get("designs", [])}
+
+
+def plans_read(summary: bytes) -> dict[str, PlanReading]:
+    """Each design's plan as ngrunner/build/plan.py reads it from its WALL/AREA page, by its name's key hash."""
+    out = {}
+    for d in check_summary(summary).details.get("designs", []):
+        page = d["wall_area_pages"][0] if d["wall_area_pages"] else 0
+        out[name_key_hash(d["name"])] = read_plan(summary, page, table_rows(d["walls"]))
+    return out
 
 
 def plan_of(room: RoomTruth) -> Plan:
@@ -262,11 +274,13 @@ def _read_wall_result(model: RoomModel, pair: Pair, wall_id: str) -> WallResult:
 
 def build_frozen(pairs: Mapping[str, Sequence[Pair]], crops: Mapping[str, Sequence[WallCrop]],
                  summaries: Mapping[str, bytes], rooms: Mapping[str, Mapping[str, RoomTruth]],
-                 jobs: Sequence[str] = ("X", "Y", "Z")) -> list[RoomResult]:
-    """Each frozen room built with its own panels as the reading and its own chain as the plan (module notes)."""
+                 jobs: Sequence[str] = ("X", "Y", "Z"), *, read_plans: bool = False) -> list[RoomResult]:
+    """Each frozen room built with its own panels as the reading and its own chain as the plan, or the plan
+    as read (module notes)."""
     out = []
     for case in jobs:
         table = tables(summaries[case])
+        read = plans_read(summaries[case]) if read_plans else {}
         by_design: dict[int, list[Pair]] = defaultdict(list)
         for p in pairs.get(case, ()):
             by_design[p.crop.design].append(p)
@@ -281,7 +295,8 @@ def build_frozen(pairs: Mapping[str, Sequence[Pair]], crops: Mapping[str, Sequen
             paired = {p.crop.page for p in members}
             walls = [read_wall(p.crop, payload.answer_of(p)) for p in members]
             walls += [read_wall(c, None) for c in crops.get(case, ()) if c.design == design and c.page not in paired]
-            model = build_room(f"{case} room {design + 1}", rows, walls, plan_of(room))
+            plan = read[crop.design_key] if read_plans else plan_of(room)
+            model = build_room(f"{case} room {design + 1}", rows, walls, plan)
             diffs, counts = _walls(model, room, members)
             results = [_frozen_wall(model, p, f"{case}/{p.crop.page}") for p in sorted(members, key=lambda p: p.crop.page)]
             out.append(RoomResult(case, design, stem, model, diffs, counts, results))
@@ -292,22 +307,27 @@ def build_frozen(pairs: Mapping[str, Sequence[Pair]], crops: Mapping[str, Sequen
 
 
 def build_read(readings: Sequence[tuple[Pair, Reading]], crops: Mapping[str, Sequence[WallCrop]],
-               summaries: Mapping[str, bytes], rooms: Mapping[str, Mapping[str, RoomTruth]]) -> list[RoomResult]:
-    """Each room the readings touch, built from them with no plan, and compared wall by wall (module notes)."""
+               summaries: Mapping[str, bytes], rooms: Mapping[str, Mapping[str, RoomTruth]], *,
+               read_plans: bool = False) -> list[RoomResult]:
+    """Each room the readings touch, built from them with no plan (or the plan as read), and compared wall by
+    wall (module notes)."""
     by_room: dict[tuple[str, int], list[tuple[Pair, Reading]]] = defaultdict(list)
     for pair, reading in readings:
         by_room[(pair.case, pair.crop.design)].append((pair, reading))
     out = []
     table_of: dict[str, dict[str, tuple[TableRow, ...]]] = {}
+    plans_of: dict[str, dict[str, PlanReading]] = {}
     for (case, design), members in by_room.items():
         if case not in table_of:
             table_of[case] = tables(summaries[case])
+            plans_of[case] = plans_read(summaries[case]) if read_plans else {}
         valid = [(p, r) for p, r in members if r.status == "answered" and scoring._valid(r.answer)]
         pages = {p.crop.page for p, _ in valid}
         walls = [read_wall(p.crop, r.answer) for p, r in valid]
         walls += [read_wall(c, None) for c in crops.get(case, ()) if c.design == design and c.page not in pages]
         crop = members[0][0].crop
-        model = build_room(f"{case} room {design + 1}", table_of[case].get(crop.design_key, ()), walls)
+        model = build_room(f"{case} room {design + 1}", table_of[case].get(crop.design_key, ()), walls,
+                           plans_of[case].get(crop.design_key))
         stems = {p.room for p, _ in members}
         stem = stems.pop() if len(stems) == 1 else members[0][0].room
         room = rooms[case][stem]
@@ -351,14 +371,15 @@ def reason(why: str) -> str:
     return why[:60]
 
 
-def report_frozen(results: Sequence[RoomResult]) -> str:
-    lines = ["Jim's frozen jobs: each room's own panels stand in for the reading and its own chain for the plan;"
+def report_frozen(results: Sequence[RoomResult], plan: str = "its own chain for the plan") -> str:
+    lines = [f"Jim's frozen jobs: each room's own panels stand in for the reading and {plan};"
              " compared as his regression compare does (0.5 mm, 0.01 degree)."]
     for r in results:
         walls = ", ".join(f"{k} {v}" for k, v in sorted(r.wall_values.items()))
         t = r.model.top_line
         top = f"{t.value_mm:.1f}" if t.value_mm is not None else t.status
         lines.append(f"  {r.case} room {r.design + 1} ({r.room}): walls {walls or 'none'}; top line {top}")
+        lines += [f"    chain: {f.why}" for f in r.model.findings if f.status == "could not verify"]
         lines += [f"    wall difference: {d}" for d in r.walls]
         for w in r.panels:
             lines.append(f"    wall {w.wall_id}: {len(w.panels)} panels; right {w.count('right')}, wrong "
