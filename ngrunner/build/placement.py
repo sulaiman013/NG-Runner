@@ -195,10 +195,15 @@ def run_start(first_x_mm: float) -> Finding:
 # ----- a room, placed
 
 
-def _fm_upper(v: Drawn, wall: DrawnWall) -> Finding:
-    bases = [b.height_mm for b in wall.verticals if b.mount == "FM" and b.bottom_mm <= OFF_FLOOR_MM
-             and b.height_mm is not None and b.top_mm <= v.bottom_mm]
-    return counter_elev(bases, has_counter=wall.has_counter)
+def bases_under(v: Drawn, wall: DrawnWall) -> list[float]:
+    """The heights of the wall's FM panels on the floor drawn below v: what an FM upper would stand over."""
+    return [b.height_mm for b in wall.verticals if b.mount == "FM" and b.bottom_mm <= OFF_FLOOR_MM
+            and b.height_mm is not None and b.top_mm <= v.bottom_mm]
+
+
+def fm_upper(v: Drawn, wall: DrawnWall) -> Finding:
+    """Where an FM vertical drawn above the floor stands: on the counter over its wall's bases."""
+    return counter_elev(bases_under(v, wall), has_counter=wall.has_counter)
 
 
 def place_room(walls: Sequence[DrawnWall], *, other_fm_tops_mm: Sequence[float] = ()) -> RoomPlacement:
@@ -214,7 +219,7 @@ def place_room(walls: Sequence[DrawnWall], *, other_fm_tops_mm: Sequence[float] 
     for w, wall in enumerate(walls):
         for i, v in enumerate(wall.verticals):
             if v.mount == "FM" and v.bottom_mm > OFF_FLOOR_MM:
-                uppers[(w, i)] = found = _fm_upper(v, wall)
+                uppers[(w, i)] = found = fm_upper(v, wall)
                 height = v.height_mm if v.height_mm is not None else v.top_mm - v.bottom_mm
                 fm_tops.append(found.value_mm + height if found.value_mm is not None else v.top_mm)
             elif v.mount == "FM":

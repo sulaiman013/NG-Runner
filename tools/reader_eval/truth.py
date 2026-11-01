@@ -13,7 +13,8 @@ Where a vertical stands:
           overhangs by 1.5 mm); read as WallNumber or IDTag, 13 do not. Jim's regression.py never
           maps it, comparing the raw string.
   x       X, the panel's left face from the wall's start, in mm; inches here.
-  bottom  Elev. top: Elev + Height.
+  bottom  Elev. top: Elev + Height. depth: Depth, mm.
+Each wall also keeps its Ang and its start (PosX, PosY), for the P5a builder's comparison (built.py).
 Panels come left to right by (x, bottom), so a stacked tower reads lower then upper.
 
 Categories (design 3.6: plain, radius, stacked tower, hutch, REA, bridge, flush end), derived here
@@ -58,6 +59,7 @@ class Panel:
     height_mm: float
     width_mm: float
     rot: float
+    depth_mm: float = 0.0
 
     @property
     def x_in(self) -> float:
@@ -98,6 +100,8 @@ class Wall:
     height_in: float
     panels: tuple[Panel, ...]
     products: tuple[str, ...]  # every product's name on this wall, panels included
+    ang: float = 0.0  # Ang, degrees
+    pos_mm: tuple[float, float] = (0.0, 0.0)  # PosX, PosY: where the wall starts
 
     @property
     def has_rotated(self) -> bool:
@@ -156,6 +160,7 @@ def read_room(data: bytes) -> RoomTruth:
     walls_raw = [_attrs(m.group(0)) for m in re.finditer(rb"<Wall [^>]*>", data)]
     sizes = [(w.get("WallNumber", "?"), _num(w, "Len", "a wall") / MM, _num(w, "Height", "a wall") / MM)
              for w in walls_raw]
+    frames = [(float(w.get("Ang") or 0), (float(w.get("PosX") or 0), float(w.get("PosY") or 0))) for w in walls_raw]
     panels: dict[int, list[Panel]] = {i: [] for i in range(1, len(sizes) + 1)}
     products: dict[int, list[str]] = {i: [] for i in range(1, len(sizes) + 1)}
     for m in re.finditer(rb"<Product [^>]*>", data):
@@ -172,9 +177,9 @@ def read_room(data: bytes) -> RoomTruth:
         if PANEL.match(a.get("ProdName", "")) and width <= PANEL_MAX_WIDTH_MM:
             panels[int(position)].append(Panel(name, ref, _num(a, "X", "a panel"), _num(a, "Elev", "a panel"),
                                                _num(a, "Height", "a panel"), width,
-                                               float(a.get("Rot") or 0)))
+                                               float(a.get("Rot") or 0), float(a.get("Depth") or 0)))
     walls = tuple(Wall(i, number, length, height,
-                       tuple(sorted(panels[i], key=lambda p: (p.x_mm, p.elev_mm))), tuple(products[i]))
+                       tuple(sorted(panels[i], key=lambda p: (p.x_mm, p.elev_mm))), tuple(products[i]), *frames[i - 1])
                   for i, (number, length, height) in enumerate(sizes, 1))
     name = _attrs(room.group(0)).get("Name", "")
     return RoomTruth(name_key_hash(name), walls, name_key(name))

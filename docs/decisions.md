@@ -528,6 +528,67 @@ Measured on Claude's cached readings (silent values: build choice and reading as
 - **Left for Jim** (the questions he would answer by building it): where a run starts when the drawing leaves under 3 in at the wall's start; and T for a room with no FM panel beside its WM run whose drawn top is not near 83.94 in (Job F's room is cut at 96 in exactly, Elev 36 in, on neither grid).
 - **Limits of the measurement.** FM panels on a room's walls that weren't read count as standing on the floor. A read vertical takes its IC line by the height it named; when that height's lines disagree on FM or WM it could not verify. A rule never changes x, so the run-start rows only move errors from silent to flagged.
 
+## P5a builder, slice 1: the room model (2026-11-01)
+
+`ngrunner/build/`: `room.py` is the model's types, `walls.py` a room's walls from its design's WALL/AREA table, and `schedule.py` each wall's panel schedule and the room. In memory only: nothing reads or writes a file. Every value is a `Fact`: the value, its source (the table, the plan, the reading, the IC line, or a rule) and its status (set; review, where Jim's rule keeps a value but flags it; could not verify, with the reason; not needed). `python -m tools.reader_eval.run build --provider anthropic` builds it from Jim's frozen jobs and from Claude's cached readings and compares it with the as-cut rooms value by value (`tools/reader_eval/built.py`). No model is called. Each row below is a default where Jim's docs left a choice, citing his lines (toolkit of 2026-10-31), and Sulaiman can overrule any of them.
+
+| Question | Ruling | Why |
+|---|---|---|
+| A wall's length and height | The table's inches × 25.4, rounded to 4 places; its WallNumber and IDTag are its number, and a wall not named by digits has no IDTag (could not verify) | BUILD 201-202 ("exact, never from pixels"); gen_rooms.py 78, 87-88; SCHEMA 14-15. NG Runner's own summary check reads the table |
+| The chain's order and each wall's angle | From the plan view only. Nothing in NG Runner reads the plan yet, so without one they could not verify, and so do each wall's position, its start and the joints. Given a plan, its walls must be the table's, each once, and turn clockwise | BUILD 201-202 ("Only TURN DIRECTIONS come from the plan"), 209-221; RULES 454-457; regression.py 78-82. The chain is not always the table's order: gen_rooms.py 41-73 traces it between the plan's two free ends, and two of frozen job Z's four rooms run 5, 1, 2, 3, 4 and 4, 1, 2, 3, 5 |
+| Where the chain starts | The first wall at (0, 0), never shifted. Joints name IDTags; H_Walls is the tallest wall | Frozen X and Z start there, and 13 of the 14 per-job build scripts that write walls never shift the chain. gen_rooms.py 82-85 and frozen Y's script shift it so no coordinate is negative; Jim's regression compare doesn't compare PosX or PosY (regression.py 201-204). Joints: gen_rooms.py 94-96, SCHEMA 20-21, and frozen Z's name IDTags 5 and 1; H_Walls: gen_rooms.py 111-113 |
+| A vertical's own IC lines | Its wall's VT, VT RAD and Custom Vert lines of the height the reader named: VT RAD when it saw a radius, the others when it saw none | RULES 296-301 and BUILD 237-239: the parts list is a quantity list, the drawing gives the order |
+| Height and mount | Placement's (RULES 291, 318; 290, 324-326). New: a line with no notch whose vertical is drawn above the floor with no base under it could not verify its mount | The line says floor, the drawing says hung, and neither is guessed. On one P5 job, 4 such panels are built WM Panel 48; the rule alone would have built them FM 84, silently |
+| Depth | Its lines' one depth on SCHEMA's grid within 1.3 mm, else kept IC-exact with status review. Lines of two depths at that height: could not verify | SCHEMA 161-166, BUILD 286 (the grid and tolerance are build_verticals.py's, tied by `ast`). RULES 304-306: the DEPTH row says which, and the reading doesn't give it |
+| REA and radius | REA from its lines (RULES 411-413). Radius is the reader's yes or no, held to the wall's VT RAD count; a count that differs, or a reading unsure of a radius, leaves every radius on the wall could not verify | RULES 294 ("a VT RAD line, never the drawing alone"), 317 |
+| Gates 1 and 4 | A reading whose count or heights are not the wall's VT lines' (or one unsure of the count) leaves every value from the lines could not verify. Gate 2 then holds by construction, gate 5 is placement's top line | RULES 313-320: no vertical's own line can be told |
+| x and Elev | x is the drawn left face to 3 places, could not verify where placement's run start is. Elev is placement's: FM on the floor 0, WM T − height, an FM upper on the counter | BUILD 283-284; RULES 292, 329-339; "P5a placement" above |
+| Thru, Left or Right | Geometry: a face is covered by a wall within 6.5 in or a section within 7 in. Jim inserts the sections by hand after the verticals, so at build time a section is a bay: the gap from the face to the nearest vertical overlapping it by more than 1 mm, when that gap is an IC shelf width of the wall within 1.3 mm. A section seen past another panel covers no face. Both faces open, or a side that changes with where the run starts (as drawn, tight, centred): could not verify. A plain FM panel has no notch | RULES 361-372, 397-398, 459-460; BUILD 245-248, 274-277, 296; swap_rea.py 32-43 and 54 (his geometry for REA panels; its 6.5 in is tied by `ast`). The "past another panel" limit is what frozen X's stacked tower needs: Jim built the radius panel against its base Right and the upper beside it Left, though drawers lie 3/4 in past the base |
+| Geometry and the drill codes | Held together, height by height: the sides geometry gives must be the drill codes' (FD Thru, LH Left, RH Right) as a set. Where they differ, could not verify | RULES 372 says the plan wins and RULES 62 ranks IC codes above geometry inference, so Jim's docs disagree (AGENTS.md rule 4). With the as-cut panels standing in for the drawing on every paired wall (measured 2026-11-01), the two differed on 7 groups of panels and the codes were what Jim built on 6 |
+| The product | FM 84; FM 84 REA and its side; WM Panel 48 and its side, then Radius; WM 48 REA the same. A floor panel over 84 in: could not verify | BUILD 243; RULES 377-387, 415-417. Jim's docs name only FM 84, and the real rooms here hold 54 such panels on FM 84 (Jobs A, B, H, J and six P5 jobs) and 32 on FM 90 (four P5 jobs), at the same heights |
+| What "reproduced" means | Jim's regression compare (his lines 188-220): walls by file order, length and height within 0.5 mm, angle within 0.01°; each panel found on its wall by X within 0.5 mm, then product, height, depth and Elev. The tool also compares mount, side, radius, REA and the top, and each wall's start relative to the first | His own check of a rebuild, tied by `ast` |
+
+Measured 2026-11-01 (`tests/test_build_room_real.py` pins it):
+
+- **Frozen X and Z reproduce, wall by wall and panel by panel**, with their own panels standing in for the reading and their own chains for the plan (no reader or plan reader has read them), so x and the chain hold by construction and the test is everything the builder adds. X: 4 walls, every length, height, angle, number and start right; 14 panels on 3 walls, every value right. Z: 4 rooms, 20 walls all right (2 rooms' chains are not the table's order); 16 panels, every value right. Top line 2132 in all five rooms.
+- **Frozen Y could not verify**, as placement found: walls right (its chain is shifted 12.7 mm, gen_rooms' normalising); top line could not verify; of its 7 panels, 6 could not verify (x by the run start, 0.78 in out; Elev and top by the top line; 2 sides where geometry and the codes differ) and 1 is wrong: a panel today's geometry and its own RH line make Right, which Jim built Thru before the rule of 2026-09-21 (BUILD 260).
+- **The 26 DEV walls (Jobs A to J), from Claude's cached readings, no plan**, within the evaluation's tolerances (x 1/8 in, Elev and top 1/4 in, height 0.65 in; depth 0.5 mm):
+
+| Wall | Categories | Panels | Right | Could not verify | Wrong | Why could not verify |
+|---|---|---|---|---|---|---|
+| A/3 | bridge | 3 | 0 | 3 | 0 | run start; FM 84 or FM 90 |
+| A/5 | radius, flush end | 3 | 3 | 0 | 0 | |
+| B/5 | bridge | 3 | 0 | 3 | 0 | FM 84 or FM 90 |
+| B/12 | no verticals | 0 | 0 | 0 | 0 | |
+| B/14 | plain, flush end | 3 | 0 | 3 | 0 | run start; FM 84 or FM 90 |
+| B/16 | radius, bridge, flush end | 4 | 4 | 0 | 0 | |
+| C/3 | plain, flush end | 3 | 3 | 0 | 0 | |
+| C/7 | radius, flush end | 5 | 5 | 0 | 0 | |
+| C/12 | plain | 3 | 0 | 3 | 0 | run start; the reading's own doubt of x |
+| C/16 | radius, flush end | 5 | 0 | 5 | 0 | run start |
+| D/3 | plain, flush end | 3 | 3 | 0 | 0 | |
+| E/3 | stacked tower | 4 | 4 | 0 | 0 | |
+| E/5 | stacked tower | 6 | 6 | 0 | 0 | |
+| E/9 | stacked tower | 8 | 8 | 0 | 0 | |
+| E/13 | plain | 3 | 0 | 3 | 0 | run start |
+| F/3 | no verticals | 0 | 0 | 0 | 0 | |
+| F/4 | radius, bridge, flush end | 2 | 0 | 2 | 0 | top line |
+| F/5 | radius, flush end | 3 | 0 | 3 | 0 | top line |
+| G/3 | radius, flush end | 4 | 4 | 0 | 0 | |
+| G/4 | bridge | 2 | 2 | 0 | 0 | |
+| G/5 | radius, flush end | 5 | 5 | 0 | 0 | |
+| H/3 | plain, flush end | 6 | 0 | 6 | 0 | the reading's own doubt of x; FM 84 or FM 90 |
+| H/8 | plain, flush end | 3 | 0 | 3 | 0 | the reading's own doubt of x; FM 84 or FM 90 |
+| I/3 | plain, flush end | 5 | 0 | 5 | 0 | run start |
+| J/8 | bridge | 3 | 3 | 0 | 0 | |
+| J/19 | no verticals | 0 | 0 | 0 | 0 | |
+| **All** | | **89** | **50** | **39** | **0** | |
+
+  Values that could not verify, by reason: x by the run start 21, x the reader doubted 10, Elev and top by the top line 5 each (Job F's room), product FM 84 or FM 90 13. Every height, depth, mount, side, radius and REA on these walls is right.
+- **The 121 TEST walls (P5 jobs), for context:** 413 panels, 255 right, 134 could not verify, 24 wrong: 18 on rooms cut on the old 32k+20 Elev rule (as placement found), 6 of the reader's own x errors, and 1 side where geometry and the IC line agree on Left and Jim built Thru. The two new rules above (a floor line drawn hanging, a floor panel over 84 in) came from these walls, so TEST is no blind test of them.
+- **Left for Jim**, besides questions 31 and 32: FM 84 or FM 90 for a floor panel over 84 in; which wins when geometry and the drill codes disagree (RULES 62 or 372); and, for a floor line drawn hanging, the line or the drawing.
+- **Not in this slice, and what each needs.** Writing Room#.des: the plan (a plan reader, or a person's), then each room seeded from the template job's Room1 with Products, Walls and WallJoints stripped by a balanced scanner, `UniqueID` 50001 up, Name, `IdTagCount` as SCHEMA 32-37, the cloned `<Wall>`/`<WallJoint>` attribute set, coordinates as `f"{v:.3f}"` stripped (BUILD 145-150, 283-291), CRLF and the version line. Cloning products: the model's product names map to his 19 templates (read from the adopted toolkit copy at run time, never committed), resized (the groove's cached X = height − 191.9, RULES 400-404; an REA's slant, RULES 419-421), line bores stripped except on REA (RULES 423-427, BUILD 288), WM banding (RULES 431-450), `SourceLib` from the template (BUILD 289). The gates on the written room: RULES 313-322 (gate 6 by `elev_panels.py`), legal names (RULES 388), the notch face, WM banding, REA drilling untouched, then `regression.py compare` on the 3 frozen jobs, the exit test. And `commit_write` with the interlock, into NG Runner's own copy until P5 goes live (AGENTS.md rule 1).
+
 ## Matching (settled)
 
 | Decision | Ruling | Why |
