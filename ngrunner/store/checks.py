@@ -28,7 +28,7 @@ from datetime import datetime
 from typing import Any
 
 from ngrunner.store.db import (
-    Db, dumps, iso, key_text, loads, one_of, session, sha256_value, text_value,
+    Db, dumps, iso, key_text, loads, one_of, optional_text, session, sha256_value, text_value,
     time_of, time_or_none,
 )
 
@@ -38,6 +38,10 @@ CHECK_STATES = ("asked", "running", "done", "not_run")
 CHECK_CODES = ("passed", "failed", "could_not_verify")
 CHECK_FEATURES = ("garage", "rea", "bridge")        # design 5, "Trust per feature", as rooms show them
 SETTLE_HOWS = ("not_a_problem", "told_chat")
+# A settle stands for this job (the very finding, design and IC Conversion it was made on), or for all jobs:
+# then for every finding of its kind (its checker and what it found) on any job, under the condition Jim's
+# words give (design 3.3, "Settled entry"; P4's second round).
+SETTLE_SCOPES = ("job", "all_jobs")
 _OPEN = ("asked", "running")
 
 
@@ -75,7 +79,9 @@ class CheckRunRecord:
 @dataclass(frozen=True)
 class SettleRecord:
     """Jim saying a finding is not a problem for this job (how "not_a_problem"), or that he already
-    told his chat (how "told_chat"), bound to the finding and to what its run ran on."""
+    told his chat (how "told_chat"), bound to the finding and to what its run ran on. scope "all_jobs":
+    not a problem for any job, for every finding of its checker and what, under the condition his words
+    give; checker and what are None for a settle of this job alone."""
 
     id: int
     studio_id: str
@@ -87,6 +93,9 @@ class SettleRecord:
     words: str
     channel: str
     at: datetime
+    scope: str = "job"
+    checker: str | None = None
+    what: str | None = None
 
 
 @dataclass(frozen=True)
@@ -210,21 +219,27 @@ def list_check_runs(db: Db, studio_id: str | None = None, *,
 
 
 def add_settle(db: Db, *, studio_id: str, run_id: int, fingerprint: str, identities: Mapping[str, str],
-               conversion_sha256: str, how: str, words: str, channel: str, at: datetime) -> SettleRecord:
-    """Record Jim's settle. The run must be one of this job's."""
+               conversion_sha256: str, how: str, words: str, channel: str, at: datetime, scope: str = "job",
+               checker: str | None = None, what: str | None = None) -> SettleRecord:
+    """Record Jim's settle. The run must be one of this job's. scope "all_jobs" needs the checker and
+    what of the finding, which is how it is known on any job; a settle of this job alone takes neither."""
     if not identities:
         raise ValueError("a settle is bound to the rooms its run ran on")
+    one_of(scope, SETTLE_SCOPES, "a settle's scope")
+    if (scope == "all_jobs") != bool(checker and what) or (scope == "job" and (checker or what)):
+        raise ValueError("a settle for all jobs names its checker and what it found, and only it does")
     values = (key_text(studio_id, "a Studio project ID"), _run_id(run_id),
               sha256_value(fingerprint, "a finding's fingerprint"), _hashes(identities, "a room's design identity"),
               sha256_value(conversion_sha256, "the IC Conversion's sha256"), one_of(how, SETTLE_HOWS, "a settle"),
-              text_value(words, "Jim's words"), text_value(channel, "a channel"), iso(at, "at"))
+              text_value(words, "Jim's words"), text_value(channel, "a channel"), iso(at, "at"), scope,
+              optional_text(checker, "a checker"), optional_text(what, "what a checker found"))
     with session(db, write=True) as conn:
         owner = conn.execute("SELECT studio_id FROM check_runs WHERE id = ?", (values[1],)).fetchone()
         if owner is None or owner["studio_id"] != values[0]:
             raise ValueError("a settle names a check run of its own job")
         cursor = conn.execute(
             "INSERT INTO settles (studio_id, run_id, fingerprint, identities, conversion_sha256, how, words,"
-            " channel, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", values)
+            " channel, at, scope, checker, what) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", values)
         row = conn.execute("SELECT * FROM settles WHERE id = ?", (cursor.lastrowid,)).fetchone()
     return _settle(row)
 
@@ -333,7 +348,8 @@ def _settle(row: sqlite3.Row) -> SettleRecord:
     return SettleRecord(
         id=row["id"], studio_id=row["studio_id"], run_id=row["run_id"], fingerprint=row["fingerprint"],
         identities=loads(row["identities"]), conversion_sha256=row["conversion_sha256"], how=row["how"],
-        words=row["words"], channel=row["channel"], at=time_of(row["at"]))
+        words=row["words"], channel=row["channel"], at=time_of(row["at"]), scope=row["scope"],
+        checker=row["checker"], what=row["what"])
 
 
 def _prompt(row: sqlite3.Row) -> PromptRecord:
@@ -344,7 +360,7 @@ def _prompt(row: sqlite3.Row) -> PromptRecord:
 
 
 __all__ = [
-    "CHECK_CODES", "CHECK_FEATURES", "CHECK_KINDS", "CHECK_STATES", "CHECK_TRIGGERS", "SETTLE_HOWS",
+    "CHECK_CODES", "CHECK_FEATURES", "CHECK_KINDS", "CHECK_STATES", "CHECK_TRIGGERS", "SETTLE_HOWS", "SETTLE_SCOPES",
     "CheckRunRecord", "PromptRecord", "SettleRecord", "add_prompt", "add_settle", "answer_prompt",
     "ask_check", "back_to_asked", "finish_check", "get_check_run", "list_check_runs", "list_prompts",
     "list_settles", "mark_stale", "mark_told", "not_run_check", "start_check",

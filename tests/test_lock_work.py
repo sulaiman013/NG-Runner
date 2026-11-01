@@ -29,7 +29,7 @@ from ngrunner.intake.pipeline import InlineFetches
 from ngrunner.lock import kept, work
 from ngrunner.lock.leases import LEASE_TERM, take_lease
 from ngrunner.messages import templates
-from ngrunner.store import add_card, answer_card, ensure_job, list_dev, list_events, open_store, update_job
+from ngrunner.store import add_card, answer_card, ensure_job, get_job, list_dev, list_events, open_store, update_job
 from ngrunner.store.locks import add_batch, get_lease, list_batches
 from ngrunner.tracker_inbox import HEADER
 from ngrunner.writes import FileWrite, commit_recorded
@@ -181,7 +181,8 @@ def test_a_batch_is_judged_again_only_on_a_new_snapshot(ctx, monkeypatch) -> Non
     from ngrunner.lock.drop import AfterRead
 
     batch = add_batch(ctx.store, id="20261031T130000Z-abc123", folder=JOB, kind="lock_design", verb="append",
-                      material=None, rows=ROWS, file="tracker_inbox_20261031T130000Z-abc123.csv", dropped_at=T0)
+                      material=None, rows=ROWS, file="tracker_inbox_20261031T130000Z-abc123.csv", dropped_at=T0,
+                      shadow=False)
     judged = []
     real = work.judge_after
     monkeypatch.setattr(work, "judge_after", lambda b, seen, **kw: judged.append(seen) or real(b, seen, **kw))
@@ -193,9 +194,26 @@ def test_a_batch_is_judged_again_only_on_a_new_snapshot(ctx, monkeypatch) -> Non
     assert len(judged) == 1
 
 
-def test_a_batch_the_tracker_hasnt_taken_in_30_minutes_is_one_dev_item(ctx) -> None:
+def test_a_shadow_batch_is_compared_again_only_on_a_new_snapshot(ctx, monkeypatch) -> None:
+    from ngrunner.lock.drop import AfterRead
+
+    batch = shadow_batch(ctx)
+    compared = []
+    real = work.shadow_batches.compare
+    monkeypatch.setattr(work.shadow_batches, "compare", lambda b, snap: compared.append(snap) or real(b, snap))
+    lock = work.LockWork(InlineFetches(), running=not_running, holder="PC")
+    early = real_snapshot(ctx, minutes=-1)
+
+    lock._took_after(ctx, [(batch, AfterRead(snap=early))])
+    lock._took_after(ctx, [(batch, AfterRead(snap=early))])
+    assert len(compared) == 1
+    lock._took_after(ctx, [(batch, AfterRead(snap=real_snapshot(ctx)))])
+    assert len(compared) == 2
+
+
+def test_a_live_batch_the_tracker_hasnt_taken_in_30_minutes_is_one_dev_item(ctx) -> None:
     add_batch(ctx.store, id="20261031T130000Z-abc123", folder=JOB, kind="lock_design", verb="append", material=None,
-              rows=ROWS, file="tracker_inbox_20261031T130000Z-abc123.csv", dropped_at=T0)
+              rows=ROWS, file="tracker_inbox_20261031T130000Z-abc123.csv", dropped_at=T0, shadow=False)
     lock = work.LockWork(InlineFetches(), running=not_running, holder="PC")
 
     lock._batch_limits(ctx, T0 + timedelta(minutes=29))
@@ -204,6 +222,83 @@ def test_a_batch_the_tracker_hasnt_taken_in_30_minutes_is_one_dev_item(ctx) -> N
     lock._batch_limits(ctx, T0 + timedelta(minutes=45))
     slow, = [d for d in list_dev(ctx.store) if d.code == work.BATCH_SLOW]
     assert "still waits for the tracker" in slow.text
+
+
+# ----- a shadow batch: closed against the chat's own rows, or after 7 days, and never a DEV item
+
+
+DESIGN_ROWS = [list(HEADER), ["SHEETGOODS", JOB, "", "Egger Classic White", "24.3778", "262.40", "8.20", ""],
+               ["JOBSUMMARY", JOB, "", "🔲 In progress", ""]]
+
+
+def shadow_batch(ctx, *, rows=DESIGN_ROWS, source="ng_runner"):
+    return add_batch(ctx.store, id="20261031T130000Z-abc123", folder=JOB, kind="lock_design", verb="append",
+                     material=None, rows=rows, file="tracker_inbox_20261031T130000Z-abc123.csv", dropped_at=T0,
+                     source=source)
+
+
+def real_snapshot(ctx, *, minutes=5, calc="8.2"):
+    """The real tracker's snapshot, read only, with the chat's own rows for the job."""
+    from ngrunner.guards.tracker import read_tracker
+    from test_lock_drop import snapshot
+
+    return read_tracker(snapshot(ctx.settings.tracker_folder, taken=T0 + timedelta(minutes=minutes),
+                                 sheets=[(JOB, "Egger Classic White", calc, "", "40.00")],
+                                 jobs=[(JOB, "🔲 In progress")]))
+
+
+def test_a_shadow_batch_never_raises_the_30_minute_item_and_closes_as_not_compared_after_7_days(ctx) -> None:
+    from ngrunner.store.locks import get_batch
+
+    batch = shadow_batch(ctx)
+    lock = work.LockWork(InlineFetches(), running=not_running, holder="PC")
+
+    lock._batch_limits(ctx, T0 + timedelta(days=6, hours=23))
+    assert list_dev(ctx.store) == [] and get_batch(ctx.store, batch.id).state == "dropped"
+    lock._batch_limits(ctx, T0 + timedelta(days=7, minutes=1))
+    lock._batch_limits(ctx, T0 + timedelta(days=8))
+
+    closed = get_batch(ctx.store, batch.id)
+    assert (closed.state, closed.closed_at) == ("not_compared", T0 + timedelta(days=7, minutes=1))
+    assert list_dev(ctx.store) == []
+    (message, to), = ctx.messenger.messages
+    assert to == "sulaiman" and message.title.startswith(f"SHADOW {JOB}: Lock design not compared")
+    assert [e.lane for e in list_events(ctx.store) if e.kind == "batch_not_compared"] == ["LOG"]
+
+
+def test_a_shadow_batch_closes_as_matched_once_the_chats_own_rows_show_on_the_real_tracker(ctx) -> None:
+    from ngrunner.lock.drop import AfterRead
+    from ngrunner.store.locks import get_batch
+
+    batch = shadow_batch(ctx)
+    lock = work.LockWork(InlineFetches(), running=not_running, holder="PC")
+
+    lock._took_after(ctx, [(batch, AfterRead(snap=real_snapshot(ctx, minutes=-1)))])     # from before the drop
+    assert get_batch(ctx.store, batch.id).state == "dropped"
+    assert kept.after_of(ctx.store, batch.id)["words"] == "Waiting for the chat's own rows on the tracker to compare with"
+    lock._took_after(ctx, [(batch, AfterRead(snap=real_snapshot(ctx)))])
+
+    closed = get_batch(ctx.store, batch.id)
+    assert (closed.state, closed.words) == ("matched", "Matches the chat's own rows on the tracker")
+    (message, to), = ctx.messenger.messages
+    assert to == "sulaiman" and message.title.startswith(f"SHADOW {JOB}: Lock design matches the chat")
+    assert not [p for p in ctx.settings.tracker_folder.iterdir() if "tracker_inbox" in p.name]   # read only
+
+
+def test_a_shadow_batch_that_differs_says_which_row_in_plain_words(ctx) -> None:
+    from ngrunner.lock.drop import AfterRead
+    from ngrunner.store.locks import get_batch
+
+    batch = shadow_batch(ctx)
+    work.LockWork(InlineFetches(), running=not_running, holder="PC")._took_after(
+        ctx, [(batch, AfterRead(snap=real_snapshot(ctx, calc="8.5")))])
+
+    closed = get_batch(ctx.store, batch.id)
+    assert closed.state == "differing"
+    assert closed.words == ("Differs from the chat's own rows: Egger Classic White: Calc Sheets 8.5 on the chat's"
+                            " row, 8.2 on NG Runner's")
+    assert kept.after_of(ctx.store, batch.id)["lines"] == [
+        "Egger Classic White: Calc Sheets 8.5 on the chat's row, 8.2 on NG Runner's"]
 
 
 # ----- leases: kept while a fix waits, released when none does
@@ -362,3 +457,21 @@ def test_a_room_is_not_staged_over_an_earlier_fix_still_waiting_for_jims_next_sa
     lock = work.LockWork(InlineFetches(), running=not_running)
 
     assert lock._stage_work(ctx, T0) is None
+
+
+# ----- a Pricing block that can't be read: no snapshot, so no lock, saying why
+
+
+def test_a_click_on_a_snapshot_whose_pricing_block_cant_be_read_is_refused_saying_so(ctx) -> None:
+    from test_lock_drop import snapshot
+
+    folder = snapshot(ctx.settings.tracker_folder, taken=T0)
+    (folder / "tracker_snapshot_Pricing.csv").write_text("PRICING\nSHEET GOODS — price per sheet\n", encoding="utf-8")
+
+    snap, problem = work._read_snapshot(folder)
+
+    assert snap is None and problem == "The tracker's Pricing snapshot has lost its Sheet Goods block"
+    request = {"id": 1, "kind": "click", "studio_id": SID, "folder": JOB, "click": "lock_design"}
+    said = work.LockWork(InlineFetches(), running=not_running)._click(
+        ctx, get_job(ctx.store, SID), work.ClickRead(request, problem=problem))
+    assert said == problem

@@ -90,6 +90,10 @@ BATCHES = {
     "confirmed": Style("ok", "check", "Confirmed"),
     "doubt": Style("bad", "alert", "In doubt"),
     "resent": Style("muted", "refresh", "Re-sent"),
+    # A shadow batch closed against the chat's own rows on the real tracker (lock/shadow.py).
+    "matched": Style("ok", "check", "Matches the chat"),
+    "differing": Style("warn", "alert", "Differs from the chat"),
+    "not_compared": Style("muted", "minus", "Not compared"),
 }
 FIXES = {
     "waiting": Style("info", "clock", "Waiting to write"),

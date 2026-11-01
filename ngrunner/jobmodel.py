@@ -1220,6 +1220,30 @@ def _quoted_row(text: str) -> str:
     return f'Fab row "{typed}"'
 
 
+# ----- the heartbeat's open risks
+
+
+def open_risks(store: Store, settings: Settings | None, clock: Clock) -> tuple[str, ...]:
+    """What the digest would put first, then P4's fixes approved and not yet verified (design 6.5). Those
+    are the heartbeat's alone while P4 is in shadow: Jim's digest doesn't carry them."""
+    return (*digest_view(store, settings, clock).owner, *lock_view.unverified_fixes(lock_view.read(store)))
+
+
+# ----- P4's "5 locks match the chat"
+
+
+def shadow_locks(store: Store) -> str:
+    """For Health: how many jobs' shadow locks, made from NG Runner's own takeoff, matched the chat's own
+    rows on the tracker, out of the 5 P4's exit asks for (lock/shadow.py). "" before any shadow lock."""
+    from ngrunner.lock import shadow
+    from ngrunner.store.locks import list_batches
+
+    batches = list_batches(store)
+    if not any(b.shadow for b in batches):
+        return ""
+    return shadow.tally_words(shadow.tally(batches))
+
+
 # ----- history
 
 

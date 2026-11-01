@@ -16,6 +16,8 @@ NG Runner is configured with, and any .des while Mozaik runs.
     leases      the lease file in a job's NG Jobs folder: taken, renewed, released, released all
     gate        check-before-lock: Nest checked for every material, and a crosscheck current for the rooms
     drop        a tracker batch: the checks before a drop, the drop, and what the snapshots say after it
+    shadow      a shadow batch against the chat's own rows on the real tracker, and P4's "5 locks match"
+    names       the tracker's names for a lock's rows: RULES' names held to the Pricing block
     totals      the snapshots' totals rows and BUILD's four equalities
     clicks      Lock design, Finish lock and Lock, made of the parts above
     job_sheet   Jim's cnc_job_sheet run on a staged copy, its counts read and set against the nests

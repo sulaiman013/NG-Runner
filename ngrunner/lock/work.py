@@ -21,6 +21,10 @@ Why it is built this way:
 - A batch is judged on each new snapshot (drop.read_after on the worker, drop.judge_after here). Doubt is
   never re-dropped: only when the after-drop step says a missing row may be re-sent does the board offer
   [Re-send only the missing row], and resend_missing still waits for a snapshot taken after Jim asked.
+- A shadow batch, which nothing ingests, is compared instead with the chat's own rows for its job once they
+  show on the real tracker's snapshot (read only), and closes as matched or differing; with none after 7
+  days, as not compared (lock/shadow.py). It blocks only a second drop for its own job (drop.in_flight).
+  Each closing goes to Sulaiman, marked SHADOW, and is P4's "5 locks match the chat".
 - A fix is planned from the real room (read only) when a check that counts finds a notch on the wrong
   face, and becomes a card in the plan's words. Only Jim's approval of that very plan applies it: into a
   fresh copy of the room, under a lease and the P4 interlock, which waits while Mozaik runs, while the
@@ -32,9 +36,9 @@ Why it is built this way:
 - A lease is taken for a fix or an Undo, renewed while one waits, and released when none does, on Pause,
   and by release-all. A lapsed lease is taken again, never renewed (leases.py).
 
-In shadow nothing saves NG Runner's copies but NG Runner, so on a real PC a fix's survival waits, and a
-batch waits for an ingest of the test folder that never comes; the board and Sulaiman's DEV lane say so
-after 30 minutes. Both are for the day simulation to drive, and for P4's go-live to make real.
+In shadow nothing saves NG Runner's copies but NG Runner, so on a real PC a fix's survival waits, and
+nothing ingests the test folder: the day simulation drives both, and P4's go-live makes them real. Only a
+live batch the tracker hasn't taken in 30 minutes is a DEV item: a shadow batch waits for the chat instead.
 """
 from __future__ import annotations
 
@@ -63,20 +67,23 @@ from ngrunner.guards.reads import Unreadable, read_shared
 from ngrunner.guards.tracker import TrackerSnapshot, TrackerUnreadable, read_tracker
 from ngrunner.interlock import GARAGE_SUFFIX, P4Interlock, p4_interlock
 from ngrunner.lock import kept, leases
+from ngrunner.lock import shadow as shadow_batches
 from ngrunner.lock.clicks import ClickResult, finish_lock, lock, lock_design
 from ngrunner.lock.drop import LOCKED, AfterRead, judge_after, read_after, resend_missing
 from ngrunner.lock.fixes import FixPlan, FixRefused, Survival, apply_fix, plan_fix, replan, survival, undo_fix
 from ngrunner.lock.gate import CLICKS, GateResult, lock_gate
 from ngrunner.lock.job_sheet import JOB_SHEET_SUFFIX, MATCHES, JobSheetRun, make_job_sheet, write_job_sheet
 from ngrunner.lock.leases import ACTIVE, LeaseResult, lease_held, release_lease, renew_lease, take_lease
-from ngrunner.lock.names import NO_NAMES, takeoff_facts, tracker_name_of_nest, tracker_names
+from ngrunner.lock.names import NO_NAMES, lock_names, tracker_name_of_nest
 from ngrunner.lock.notch import NOTCH_FACE
 from ngrunner.messages import templates
 from ngrunner.store import (
     JobRecord, NestRecord, Store, StoreError, get_card, get_job, list_cards, list_dev, list_jobs, list_nests,
     list_programs, log_event, open_dev, set_state,
 )
-from ngrunner.store.locks import BatchRecord, get_batch, get_fix, list_batches, list_fixes, list_leases, record_survival
+from ngrunner.store.locks import (
+    BatchRecord, get_batch, get_fix, list_batches, list_fixes, list_leases, record_survival, update_batch,
+)
 from ngrunner.toolkit import Snapshot, adopted_snapshot
 from ngrunner.writes import Roots
 
@@ -88,13 +95,12 @@ FIX_WAITS = timedelta(hours=8)          # design 3.4: a fix waiting for Mozaik, 
 BATCH_WAITS = timedelta(minutes=30)     # design 3.4: a lock batch, 30 minutes, then DEV and the board
 LOCK_FAILED, LOCK_STUCK = "lock_failed", "lock_stuck"
 FIX_NOT_PLANNED, FIX_GAVE_UP, BATCH_SLOW = "fix_not_planned", "fix_gave_up", "lock_batch_waiting"
-NO_TAKEOFF = ("NG Runner has no complete takeoff of this job, so its tracker rows can't be made; lock it in"
-              " chat as before")
 NO_JOB_FOLDER = "Its job folder isn't in Mozaik Shared, so there is nothing to lock yet"
 _NOTCH = ("notch_check", "notch_face")
 _ROOM_TAG = "R"
 _SHEET_ASKED = "lock.sheet_asked"
 _ROOM = re.compile(r"Room(\d+)\.des", re.IGNORECASE)
+_OPEN = ("dropped", "archived", "first_ok")
 _FINAL = ("This fix was undone already", "Undo is refused", "Undo is offered only", "This fix isn't the one",
           "Putting the values back", "The patch", "The file isn't")
 
@@ -428,20 +434,19 @@ class LockWork:
         request = read.request
         if read.problem:
             return read.problem
-        record = job_takeoffs_of(store).get(job.studio_id)
-        if record is None or record.state != "made" or not record.complete or record.result is None:
-            return NO_TAKEOFF
         if read.snap is None:
             return "The tracker snapshot could not be read"
-        takeoff = takeoff_facts(record.result)
-        names = tracker_names(read.conversion, takeoff)
+        made = lock_names(job_takeoffs_of(store).get(job.studio_id), read.conversion, read.snap)
+        if isinstance(made, str):
+            return made                              # no whole takeoff, or a name not in Pricing: which one
+        takeoff, names = made.takeoff, made.names
         check = job_checks(store, now).get(job.studio_id)
         nests = job_nests(store, job)
         common = dict(takeoff=takeoff, names=names, snap=read.snap, nests=nests, check=check,
                       room_sha256=dict(read.rooms), room_identity=dict(read.identities),
                       conversion_sha256=read.conversion_sha256, without_check=bool(request.get("without_check")),
                       store=store, roots=shadow(ctx), interlock=interlock_for(ctx, running=self._running),
-                      clock=ctx.clock)
+                      clock=ctx.clock, source=made.source)
         folder = request["folder"]
         if request["click"] == "lock_design":
             return lock_design(folder, **common)
@@ -491,12 +496,17 @@ class LockWork:
         store, now = ctx.store, ctx.clock.now()
         for batch, seen in found:
             batch = get_batch(store, batch.id) or batch
+            if batch.state not in _OPEN:
+                continue                              # closed meanwhile: after 7 days, say
             before = kept.after_of(store, batch.id) or {}
             taken = None if seen.snap is None else to_iso(seen.snap.taken)
             fresh = (taken != before.get("taken") or (seen.archived is not None) != before.get("archived", False)
                      or seen.set_aside is not None)
             if not fresh and before:
                 continue                              # nothing new since it was last judged
+            if batch.shadow and seen.archived is None and seen.set_aside is None:
+                self._compare(ctx, batch, seen, taken, before, now)
+                continue
             judged = judge_after(batch, seen, store=store, now=now)
             said = {"state": judged.state, "words": judged.words, "missing": list(judged.missing),
                     "differs": list(judged.differs), "can_resend": judged.can_resend, "taken": taken,
@@ -510,6 +520,33 @@ class LockWork:
                                                   words=judged.words, at=now))
                 said["told"] = judged.state
             kept.keep_after(store, batch.id, said)
+
+    def _compare(self, ctx: Any, batch: BatchRecord, seen: AfterRead, taken: str | None,
+                 before: Mapping[str, Any], now: datetime) -> None:
+        """A shadow batch against the chat's own rows on the real tracker: closed when they are there."""
+        compared = None if seen.snap is None else shadow_batches.compare(batch, seen.snap)
+        if compared is None:
+            unreadable = templates._clause(seen.unreadable or "The tracker snapshot could not be read")
+            words = shadow_batches.WAITING if seen.snap is not None else (
+                f"{unreadable}, so the batch is not compared yet")
+            kept.keep_after(ctx.store, batch.id, {"state": batch.state, "words": words, "missing": [], "differs": [],
+                                                  "can_resend": False, "taken": taken, "archived": False,
+                                                  "told": before.get("told")})
+            return
+        self._close_shadow(ctx, batch, compared.state, compared.words, now, lines=compared.lines, taken=taken)
+
+    def _close_shadow(self, ctx: Any, batch: BatchRecord, state: str, words: str, now: datetime, *,
+                      lines: Sequence[str] = (), taken: str | None = None) -> None:
+        """A shadow batch closed: matched, differing or not compared. A line in the log, and Sulaiman told."""
+        store = ctx.store
+        update_batch(store, batch.id, state=state, words=words, closed_at=now)
+        label = templates.BATCH_LABELS[batch.kind]
+        log_event(store, at=now, kind=f"batch_{state}", lane="LOG", studio_id=_studio_of(store, batch.folder),
+                  text=f"{batch.folder}: {label}: {templates._ended(words)}")
+        _tell(ctx, templates.shadow_compared(batch.folder, label=label, state=state, words=words, at=now))
+        kept.keep_after(store, batch.id, {"state": state, "words": words, "lines": list(lines), "missing": [],
+                                          "differs": [], "can_resend": False, "taken": taken, "archived": False,
+                                          "told": state})
 
     def _took_plan(self, ctx: Any, found: Mapping[str, Any]) -> None:
         store, now = ctx.store, ctx.clock.now()
@@ -729,9 +766,15 @@ class LockWork:
         self._keep_leases(ctx, now)
 
     def _batch_limits(self, ctx: Any, now: datetime) -> None:
+        """A live batch the tracker hasn't taken in 30 minutes is one DEV item; a shadow batch with no chat
+        rows to compare with after 7 days closes as not compared, and is never a DEV item."""
         store = ctx.store
         told = kept.names_in(store, kept.WAITING_TOLD)
         for batch in list_batches(store, open_only=True):
+            if batch.shadow:
+                if shadow_batches.gives_up(batch, now):
+                    self._close_shadow(ctx, batch, shadow_batches.NOT_COMPARED, shadow_batches.GAVE_UP, now)
+                continue
             if batch.state == "dropped" and now - batch.dropped_at > BATCH_WAITS and batch.id not in told:
                 label = templates.BATCH_LABELS[batch.kind]
                 open_dev(store, at=now, code=BATCH_SLOW, studio_id=_studio_of(store, batch.folder),

@@ -927,10 +927,10 @@ class Supervisor:
             self._dev(now, "heartbeat_failed", "Heartbeats are not reaching the control folder.")
 
     def _open_risks(self) -> tuple[str, ...]:
-        """What the digest would put first: the watchdog repeats these if no digest goes."""
+        """What the digest would put first, and P4's fixes not yet verified: the watchdog repeats these if
+        no digest goes."""
         try:
-            return tuple(self._seams.jobmodel.digest_view(
-                self._store, self._settings, self._clock).owner)
+            return tuple(self._seams.jobmodel.open_risks(self._store, self._settings, self._clock))
         except Exception:  # noqa: BLE001 - a heartbeat says it is alive, whatever else is wrong
             _log.exception("the open risks could not be read for a heartbeat")
             return ()
@@ -1397,7 +1397,7 @@ class Supervisor:
         folder. The job model adds the alarms the store holds."""
         store = self._store
         last_export = list_synced_at = beat = None
-        mozaik = ""
+        mozaik = shadow_locks = ""
         leftovers: tuple[Path, ...] = ()
         if store is not None and not self._store_problem:
             try:
@@ -1408,6 +1408,7 @@ class Supervisor:
                 leftovers = tuple(
                     Path(p) for p in json.loads(get_state(store, LEFTOVER_TEMPS, "[]") or "[]"))
                 mozaik = _mozaik_words(*mozaik_said(store))
+                shadow_locks = self._seams.jobmodel.shadow_locks(store)
             except StoreError:
                 self._store_problem = NO_STORE
         off = (NO_TRACKER_FOLDER,) if (self._settings is not None
@@ -1416,7 +1417,7 @@ class Supervisor:
                           list_synced_at=list_synced_at, heartbeat=beat,
                           toasts=self._toast_setting, alarms=(*self._blockers, *self._notes, *off),
                           leftover_temps=leftovers, app_version=launcher.app_version(),
-                          mozaik=mozaik)
+                          mozaik=mozaik, shadow_locks=shadow_locks)
 
     def _is_paused(self) -> bool:
         if self._store is None:
@@ -1546,6 +1547,18 @@ class Supervisor:
         return jobchecks.settle(self._ctx, studio_id.strip(), int(run_id), int(n), how=how,
                                 words=SETTLE_LABELS[how], channel="board")
 
+    def settle_all(self, studio_id: str, run_id: str, n: str, condition: str) -> str:
+        """A check item settled as not a problem for any job, under the condition Jim typed."""
+        if self._store is None or self._store_problem or self._ctx is None:
+            return CANT_DO_THAT
+        from ngrunner.checks import jobchecks
+        from ngrunner.messages.templates import SETTLE_GONE
+
+        if not run_id.strip().isdigit() or not n.strip().isdigit():
+            return SETTLE_GONE
+        return jobchecks.settle(self._ctx, studio_id.strip(), int(run_id), int(n), how="not_a_problem",
+                                words=condition, channel="board", scope="all_jobs")
+
     def answer_prompt(self, prompt_id: str, choice: str) -> str:
         """A close prompt's button on the board."""
         if not prompt_id.strip().isdigit():
@@ -1614,6 +1627,8 @@ class Supervisor:
             return self._answer(parsed.card_id, parsed.choice, words=parsed.text, channel=channel)
         if parsed.kind == "check":
             return self._check_named(parsed.name or "")
+        if parsed.kind == "lock":
+            return self._lock_named(parsed.name or "")
         return self._add_job(parsed)
 
     def _check_named(self, name: str) -> str:
@@ -1626,6 +1641,20 @@ class Supervisor:
         if not named:
             return jobchecks.NO_SUCH_JOB
         return self.check_job(named)
+
+    def _lock_named(self, name: str) -> str:
+        """The command box's "lock <job>": Jim's Lock (lock design and every Finish lock at once) on the one
+        job that name names, whole, held to the same gate as the board's button. Never "lock without check":
+        that is a confirmation of its own, on the board."""
+        if self._ctx is None:
+            return NOT_SET_UP
+        from ngrunner.checks import jobchecks
+        from ngrunner.messages.templates import NO_LOCK_JOB
+
+        named = jobchecks.job_named(self._store, name)
+        if not named:
+            return NO_LOCK_JOB
+        return self.lock_click(named, "lock", "", False)
 
     def _open_cards(self) -> list[Card]:
         found = (self._card_or_none(record) for record in list_cards(self._store, state="open"))

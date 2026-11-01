@@ -30,7 +30,7 @@ NOW = datetime(2026, 10, 31, 12, 0, tzinfo=timezone.utc)
 EMBEDDED = {
     "ngrunner", "ngrunner.match", "ngrunner.intake", "ngrunner.intake.summary_check", "ngrunner.intake.branch",
     "ngrunner.convert", "ngrunner.convert.rules", "ngrunner.convert.summary_lines", "ngrunner.convert.parts",
-    "ngrunner.convert.takeoff", "tools", "tools.workbook", "tools.workbook.sheets", "tools.workbook.xlsx",
+    "ngrunner.convert.takeoff", "ngrunner.convert.tracker_names", "tools", "tools.workbook", "tools.workbook.sheets", "tools.workbook.xlsx",
     "tools.workbook.conversion", "tools.delivery", "tools.delivery.front",
 }
 

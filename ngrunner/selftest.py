@@ -64,11 +64,11 @@ P1A_MODULES: tuple[str, ...] = (
     "ngrunner.guards.tool_checks", "ngrunner.guards.tracker", "ngrunner.guards.watch",
     "ngrunner.toolkit",
     "ngrunner.checks", "ngrunner.checks.crosscheck", "ngrunner.checks.readers", "ngrunner.checks.findings",
-    "ngrunner.checks.jobchecks", "ngrunner.store.checks",
+    "ngrunner.checks.jobchecks", "ngrunner.checks.settled", "ngrunner.store.checks",
     "ngrunner.lock", "ngrunner.lock.leases", "ngrunner.lock.gate", "ngrunner.lock.drop", "ngrunner.lock.totals",
     "ngrunner.lock.clicks", "ngrunner.lock.job_sheet", "ngrunner.lock.patch", "ngrunner.lock.fixes",
     "ngrunner.lock.notch", "ngrunner.store.locks", "ngrunner.lock.names", "ngrunner.lock.kept",
-    "ngrunner.lock.work", "ngrunner.lock.view",
+    "ngrunner.lock.work", "ngrunner.lock.view", "ngrunner.lock.shadow", "ngrunner.convert.tracker_names",
     "flask", "waitress", "requests", "pystray", "PIL", "psutil", "win32api", "pywintypes",
     "pythoncom", "win32com", "win32com.shell", "win32com.propsys", "win32cred", "win32timezone",
     "win32job", "runpy", "pkgutil", "windows_toasts",
@@ -494,6 +494,13 @@ def _lock_samples(t: Any, job: str) -> list[object]:
         t.survival_message(job, code="mozaik_undid", at=at,
                            words="Mozaik undid the fix on C3: the save put the old values back"),
         t.survival_message(job, code="held", at=at, words="The fix on C3 held after the save"),
+        t.shadow_compared(job, label="Lock design", state="matched", at=at,
+                          words="Matches the chat's own rows on the tracker"),
+        t.shadow_compared(job, label="Lock", state="differing", at=at,
+                          words="Differs from the chat's own rows: Egger Classic White: Calc Sheets 8.3 on the"
+                                " chat's row, 8.2 on NG Runner's"),
+        t.shadow_compared(job, label="Lock design", state="not_compared", at=at,
+                          words="Not compared: the chat's own rows for this job didn't come within 7 days"),
         *(Message("lock_line", "NG Runner", (f"1. {line}" if line.startswith(job) else f"1. {job}: {line}",))
           for line in (
             t.lock_refused(job, label="Lock", missing=missing), t.lock_asked(job, label="Lock design",
@@ -508,7 +515,9 @@ def _lock_samples(t: Any, job: str) -> list[object]:
             t.job_sheet_words("mismatch"), t.job_sheet_words("could_not_verify",
                                                              why="Jim's job sheet script didn't finish cleanly"),
             t.undo_asked(job), t.P4_SHADOW_NOTE, t.RESEND, t.LOCK_WITHOUT_CHECK, t.NOT_A_LOCK, t.LOCK_GONE,
-            t.LOCK_BUSY, *labels)),
+            t.LOCK_BUSY, t.LOCK_FROM_THE_CHAT, t.NO_LOCK_JOB,
+            *(t.fix_unverified(job, room="Room1.des", state=state)
+              for state in ("approved", "written", "could_not_verify")), *labels)),
     ]
 
 
@@ -652,7 +661,8 @@ def _check_samples(t: Any, job: str) -> list[object]:
             f"{job}: {t.settled_line(at=at, words=t.SETTLE_LABELS['told_chat'], now=at)}")),
         *(Message("echo", "NG Runner", (line,)) for line in (
             t.check_asked(job), t.check_already_asked(job), t.settled_echo(job, n=1, how="told_chat"),
-            t.settled_echo(job, n=2, how="not_a_problem"), t.mozaik_error_echo(job), t.not_yet_echo(job),
+            t.settled_echo(job, n=2, how="not_a_problem"), t.settled_echo(job, n=3, how="not_a_problem", all_jobs=True),
+            t.SETTLE_ALL, t.SETTLE_NEEDS_CONDITION, t.mozaik_error_echo(job), t.not_yet_echo(job),
             f"{t.NO_TOOLKIT}.", t.NOT_A_JOB, t.SETTLE_GONE, t.SETTLE_STALE, t.SETTLE_NEVER, t.PROMPT_ANSWERED,
             t.PROMPT_NOT_A_CHOICE)),
     ]

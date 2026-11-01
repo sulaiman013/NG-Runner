@@ -26,7 +26,10 @@ A settle is Jim saying an item is not a problem for this job, or that he already
 bound to the item's fingerprint and to the rooms' design identities and the IC Conversion's hash that
 its run ran on, so Mozaik saving the same design again keeps it, and any real change asks again. An item
 that must never be silenced (a line bore off the panel) or that is no finding (could not verify) can't
-be settled.
+be settled. A settle for all jobs (P4's second round; design 3.3 and section 6) must name its condition in
+Jim's words, and stands for every finding of its kind (checker and what) on any job, through new runs and
+design changes; it goes on NG Runner's one settled list (checks/settled.py), which the chat reads alongside
+each job's notes, and those notes say which of the job's items it settles.
 
 The audit of a chat-built job: when a job's folder appears in Mozaik Shared after install with its rooms
 settled, it is audited once, before sections go in (findings.AUDIT_CHECKERS). What was there at the first
@@ -59,6 +62,7 @@ from ngrunner.checks.crosscheck import TEMPLATE_JOB, run_crosscheck
 from ngrunner.checks.findings import (
     CNV, FIX, MOZAIK, Findings, Item, findings_of, from_json, to_json,
 )
+from ngrunner.checks import settled as settled_list
 from ngrunner.checks.readers import NO_LIBRARY, NO_REFERENCE, STOPPED
 from ngrunner.clock import to_iso
 from ngrunner.guards.bak import DesignUnreadable
@@ -70,7 +74,7 @@ from ngrunner.guards.reads import Unreadable, read_shared
 from ngrunner.interlock import GARAGE_SUFFIX
 from ngrunner.messages import templates
 from ngrunner.store import (
-    CheckRunRecord, JobRecord, PromptRecord, SettleRecord, Store, add_prompt, add_settle, answer_prompt as
+    CheckRunRecord, JobRecord, PromptRecord, SettleRecord, Store, StoreError, add_prompt, add_settle, answer_prompt as
     store_answer_prompt, ask_check, back_to_asked, close_dev, finish_check, get_check_run, get_job,
     get_state, list_check_runs, list_dev, list_jobs, list_prompts, list_settles, log_event, mark_stale,
     mark_told, not_run_check, open_dev, set_state, start_check,
@@ -86,6 +90,7 @@ CHECK_OVERRUN = timedelta(minutes=15)   # design 3.4: a check's limit
 PROMPT_ARG = "check-prompt"             # a close prompt's toast buttons: "check-prompt <id> <n>"
 CHECK_FAILED, CHECK_STUCK = "check_failed", "check_stuck"
 CHECK_UNVERIFIED, MOZAIK_ERROR = "check_unverified", "mozaik_error"
+SETTLED_LIST_FAILED = "settled_list_failed"
 WAITING = "Waiting for Mozaik to close the job"
 _SEEN = "checks.seen"                   # JSON: the folders at the first look, and those held open
 _FRESH = 0                              # the worker's key when it runs no check: run ids start at 1
@@ -200,18 +205,21 @@ def job_checks(store: Store, now: datetime) -> dict[str, JobCheck]:
     for run in list_check_runs(store):
         runs[run.studio_id] = run                       # oldest first, so the newest stands
     settles: dict[str, list[SettleRecord]] = {}
-    for settle in list_settles(store):
-        settles.setdefault(settle.studio_id, []).append(settle)
+    every = list_settles(store)
+    for settle in every:
+        if settle.scope == "job":
+            settles.setdefault(settle.studio_id, []).append(settle)
+    all_jobs = settled_list.all_jobs(every)
     prompts = _pinned(store, runs)
     out = {}
     for studio_id in {*runs, *prompts}:
         out[studio_id] = _job_check(runs.get(studio_id), settles.get(studio_id, ()), prompts.get(studio_id),
-                                    now)
+                                    now, all_jobs)
     return out
 
 
 def _job_check(run: CheckRunRecord | None, settles: Sequence[SettleRecord], prompt: PromptRecord | None,
-               now: datetime) -> JobCheck:
+               now: datetime, all_jobs: Sequence[SettleRecord] = ()) -> JobCheck:
     if run is None:
         return JobCheck(None, "none", "", prompt=prompt)
     audit = run.kind == "audit"
@@ -223,7 +231,7 @@ def _job_check(run: CheckRunRecord | None, settles: Sequence[SettleRecord], prom
                                                                      now=now, words=run.words or ""),
                         prompt=prompt, audit=audit)
     found = from_json(run.result or {"code": COULD_NOT_VERIFY, "items": [], "verdicts": [], "left_out": []})
-    shown = tuple(ShownItem(item, _settle_of(item, run, settles)) for item in found.items)
+    shown = tuple(ShownItem(item, _settle_of(item, run, settles, all_jobs)) for item in found.items)
     if run.stale_at is not None:
         return JobCheck(run, "stale", templates.check_state_words(state="stale", at=run.finished_at, now=now,
                                                                   audit=audit),
@@ -254,21 +262,32 @@ def notes_block(job: str, check: JobCheck | None) -> tuple[dict[str, Any] | None
                         "tags": list(shown.item.tags), "words": templates.check_item_words(shown.item),
                         "chat": templates.check_chat_line(job, shown.item), "settled": shown.settle is not None}
                        for shown in check.items]}
-    settled = [{"item": shown.item.n, "tags": list(shown.item.tags), "words": templates.check_item_words(shown.item),
-                "how": shown.settle.how, "said": shown.settle.words, "at": to_iso(shown.settle.at)}
-               for shown in check.items if shown.settle is not None]
+    settled = [_settled_entry(shown) for shown in check.items if shown.settle is not None]
     return block, settled
 
 
-def _settle_of(item: Item, run: CheckRunRecord, settles: Iterable[SettleRecord]) -> SettleRecord | None:
-    """A settle stands for an item only on the very finding, design and IC Conversion it was made on."""
+def _settled_entry(shown: ShownItem) -> dict[str, Any]:
+    """A settled item as the job's notes carry it: this job's own, or one of the list for all jobs."""
+    settle = shown.settle
+    assert settle is not None
+    said = {"item": shown.item.n, "tags": list(shown.item.tags), "words": templates.check_item_words(shown.item)}
+    if settle.scope == settled_list.ALL_JOBS:
+        return {**said, "scope": "all jobs", "how": settle.how, "said": templates.SETTLE_LABELS.get(settle.how, ""),
+                "condition": settle.words, "at": to_iso(settle.at), "list": settled_list.WHERE}
+    return {**said, "scope": "this job", "how": settle.how, "said": settle.words, "at": to_iso(settle.at)}
+
+
+def _settle_of(item: Item, run: CheckRunRecord, settles: Iterable[SettleRecord],
+               all_jobs: Iterable[SettleRecord] = ()) -> SettleRecord | None:
+    """A settle of this job stands for an item only on the very finding, design and IC Conversion it was made
+    on; one for all jobs stands for every finding of its kind, on any job."""
     if not item.settles:
         return None
     for settle in settles:
         if (settle.fingerprint == item.fingerprint and settle.identities == run.identities
                 and settle.conversion_sha256 == run.conversion_sha256):
             return settle
-    return None
+    return next((s for s in all_jobs if (s.checker, s.what) == (item.checker, item.what)), None)
 
 
 def _pinned(store: Store, runs: Mapping[str, CheckRunRecord]) -> dict[str, PromptRecord]:
@@ -301,8 +320,12 @@ def ask(ctx: Any, studio_id: str, *, trigger: str = "check_now") -> str:
     return templates.check_asked(job.name)
 
 
-def settle(ctx: Any, studio_id: str, run_id: int, n: int, *, how: str, words: str, channel: str) -> str:
-    """Jim's settle of item n of a run: only on a run that still counts, and an item that may be."""
+def settle(ctx: Any, studio_id: str, run_id: int, n: int, *, how: str, words: str, channel: str,
+           scope: str = "job") -> str:
+    """Jim's settle of item n of a run: only on a run that still counts, and an item that may be. scope
+    "all_jobs": not a problem for any job, under the condition words give, which it must."""
+    if scope == settled_list.ALL_JOBS and not words.strip():
+        return templates.SETTLE_NEEDS_CONDITION
     store, now = ctx.store, ctx.clock.now()
     job, run = get_job(store, studio_id), get_check_run(store, run_id)
     if job is None or run is None or run.studio_id != studio_id or run.result is None:
@@ -316,13 +339,35 @@ def settle(ctx: Any, studio_id: str, run_id: int, n: int, *, how: str, words: st
         return templates.SETTLE_NEVER
     if run.conversion_sha256 is None:
         return templates.SETTLE_STALE
+    every = scope == settled_list.ALL_JOBS
+    said = templates.settled_echo(job.name, n=n, how=how, all_jobs=every)
     with store.transaction() as tx:
         add_settle(tx, studio_id=studio_id, run_id=run.id, fingerprint=item.fingerprint,
-                   identities=run.identities, conversion_sha256=run.conversion_sha256, how=how, words=words,
-                   channel=channel, at=now)
-        log_event(tx, at=now, kind="settled", lane="ACT", studio_id=studio_id,
-                  text=templates.settled_echo(job.name, n=n, how=how))
-    return templates.settled_echo(job.name, n=n, how=how)
+                   identities=run.identities, conversion_sha256=run.conversion_sha256, how=how,
+                   words=" ".join(words.split()) if every else words, channel=channel, at=now, scope=scope,
+                   checker=item.checker if every else None, what=item.what if every else None)
+        log_event(tx, at=now, kind="settled", lane="ACT", studio_id=studio_id, text=said)
+    if every:
+        _keep_list(ctx)
+    return said
+
+
+def _keep_list(ctx: Any) -> None:
+    """NG Runner's one settled list, current with the store; a failure is said once, never stops the rest."""
+    try:
+        problem = settled_list.keep(ctx)
+    except StoreError:
+        raise
+    except Exception:  # noqa: BLE001 - the list is written again next minute; a check must go on
+        _log.exception("the settled list could not be kept")
+        problem = "The settled list for all jobs could not be written"
+    if problem and not any(i.code == SETTLED_LIST_FAILED for i in list_dev(ctx.store)):
+        open_dev(ctx.store, at=ctx.clock.now(), code=SETTLED_LIST_FAILED,
+                 text=f"The settled list for all jobs wasn't written: {templates._clause(problem)}.")
+    elif not problem:
+        for item in list_dev(ctx.store):
+            if item.code == SETTLED_LIST_FAILED:
+                close_dev(ctx.store, item.id)
 
 
 def answer_prompt(ctx: Any, prompt_id: int, choice: str | int, *, words: str, channel: str) -> str:
@@ -391,6 +436,7 @@ def tick(ctx: Any, runner: Any, *, toast: Callable[[ToastMessage], object] | Non
     oldest check asked, and the freshness of every run that counts."""
     take_finished(ctx, runner, toast=toast)
     now = ctx.clock.now()
+    _keep_list(ctx)
     for key in runner.overran():
         if key != _FRESH:
             _gave_up(ctx, key, now)

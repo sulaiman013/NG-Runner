@@ -102,7 +102,20 @@
                   <input type="hidden" name="how" value="{{ how }}">
                   <button class="btn btn--secondary btn--sm" type="submit">{{ label }}</button>
                 </form>
-                {% endfor %}{% endif %}
+                {% endfor %}
+                <details class="reveal reveal--start">
+                  <summary class="btn btn--secondary btn--sm">{{ settle_all }}</summary>
+                  <form class="reveal-panel" method="post" action="{{ url_for('settle_all') }}">
+                    {{ m.token_field() }}{{ m.back_field(page) }}
+                    <input type="hidden" name="studio_id" value="{{ c.studio_id }}">
+                    <input type="hidden" name="run_id" value="{{ c.run_id }}">
+                    <input type="hidden" name="n" value="{{ item.n }}">
+                    <label class="reveal-text" for="condition-{{ c.run_id }}-{{ item.n }}">{{ settle_all }}: this kind of finding isn't asked again on any job. Say when it holds, in your words. It goes on NG Runner's settled list for chat.</label>
+                    <input class="input" type="text" id="condition-{{ c.run_id }}-{{ item.n }}" name="condition" required maxlength="200">
+                    <button class="btn btn--primary" type="submit">{{ settle_all }}</button>
+                  </form>
+                </details>
+                {% endif %}
               </li>
             {% endfor %}
             </ul>
@@ -112,6 +125,7 @@
           {% if job.p4 %}{% set p = job.p4 %}
           <div class="lock-panel">
             {% if p.note %}<p class="lock-note">{{ m.icon("info") }}<span>{{ p.note }}</span></p>{% endif %}
+            {% if p.source %}<p class="lock-note">{{ m.icon("info") }}<span>{{ p.source }}</span></p>{% endif %}
             <ul class="lock-buttons">
             {% for b in p.buttons %}
               <li class="lock-button">

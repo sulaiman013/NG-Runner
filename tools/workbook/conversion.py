@@ -13,7 +13,9 @@ on intake; the parts are the same rows that takeoff summed, each with the line i
 must add up to it bucket by bucket or nothing is given back. On top of the takeoff it adds only what
 his shape holds and the takeoff doesn't: each part's millimetres, snapped as SCHEMA's "Snap
 tolerances" says (VT depth and height and SH depth, nothing else); the walls the summary check read
-from the WALL/AREA tables; and every PULLED line in one bucket.
+from the WALL/AREA tables; every PULLED line in one bucket; and each bucket's tracker names by RULES
+(convert/tracker_names.py), the names NG Runner's lock holds to the tracker's Pricing block, which this
+can't read, so each says it must be checked there.
 
 Never a guess (ruling R4). A line the takeoff could not verify is never a part: it is in "unplaced" and
 "flags", and its PULLED line is bucketed "could not verify". A bucket with no sheet size has no sheet
@@ -40,6 +42,7 @@ from ngrunner.convert.parts import BoardPart, Unplaced, board_part, settle_colou
 from ngrunner.convert.summary_lines import (SummaryLine, SummaryUnreadable, design_lines, pulled_lines,
                                             read_pages)
 from ngrunner.convert.takeoff import Bucket, Takeoff
+from ngrunner.convert.tracker_names import Unnamed, bucket_names
 from ngrunner.intake.summary_check import check_summary
 from tools.workbook.sheets import COULD_NOT_VERIFY, unplaced_words
 
@@ -61,6 +64,7 @@ MATERIAL_RULE = ("Sheets by IC colour and built thickness from RULES' sheet tabl
                  " the library is not read for sizes until Jim answers item 5). Arctic White (WH) is"
                  " Egger Classic White, or AMWH on the whole job when a white part is 1in or thicker"
                  " (RULES 214), its 1/4 backs then White 1/4 Vinyl at 49x97 (RULES 135).")
+TRACKER_NOTE = "Each name must be in the tracker's Pricing exactly; NG Runner's lock checks it"
 NOT_MADE = ("client", "designer", "address", "verticals", "runs", "each part's design and wall",
             "the estimate's lines other than its total")
 
@@ -342,7 +346,17 @@ def _bucket(b: Bucket, parts: Sequence[BoardPart], thick_white: bool) -> dict[st
             "parts": b.parts, "sqft": b.sqft, "sqm": round(area * SQM_PER_SQFT, 4),
             "calc_sheets_raw": b.calc_sheets_32, "sheets_with_waste": b.sheets_with_waste,
             "sheet_in": sheet, "sheet_math": math_words, "edgeband_lf": b.tape_lf,
-            "tape": TAPE_WIDTHS.get(b.thk_in, "could not verify")}
+            "tape": TAPE_WIDTHS.get(b.thk_in, "could not verify"), "tracker": _tracker(b, thick_white)}
+
+
+def _tracker(b: Bucket, thick_white: bool) -> dict[str, Any]:
+    """The bucket's tracker names by RULES (convert/tracker_names.py), the very names NG Runner's lock holds
+    to the tracker's Pricing block, which this can't read; or why it has none."""
+    named = bucket_names(b.colour, b.thk_in, amwh=thick_white, tape=b.tape_lf > 0)
+    if isinstance(named, Unnamed):
+        return {"sheet": None, "tape": None, "tape_colour": None, "could_not_verify": named.why, "note": TRACKER_NOTE}
+    return {"sheet": named.sheet, "tape": named.tape or None, "tape_colour": named.tape_colour or None,
+            "could_not_verify": None, "note": TRACKER_NOTE}
 
 
 def _sheet_size(buckets: Sequence[Mapping[str, Any]]) -> str:

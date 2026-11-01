@@ -96,6 +96,15 @@ def test_a_bucket_carries_his_sheet_math_and_both_sheet_numbers() -> None:
     assert b["tape"] == '15/16" / 1"'
 
 
+def test_a_bucket_carries_its_tracker_names_by_rules_for_the_chat_and_the_lock() -> None:
+    """NG Runner's own names for the tracker's rows (convert/tracker_names.py), the very names its lock
+    holds to the Pricing block, which the workbook can't read: it says so."""
+    b = made()["buckets"][0]
+    assert b["tracker"] == {"sheet": "Egger Classic White", "tape": 'Egger Classic White 1mm — 15/16" / 1"',
+                            "tape_colour": "Egger Classic White", "could_not_verify": None,
+                            "note": "Each name must be in the tracker's Pricing exactly; NG Runner's lock checks it"}
+
+
 # ----- each part as he writes it
 
 

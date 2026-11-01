@@ -245,3 +245,24 @@ def test_every_check_line_on_the_board_passes_jims_format(store, settings) -> No
     strings = [check.line, *(i.text for i in check.items), *(i.chat for i in check.items if i.chat),
                *(item.text for item in view.your_list)]
     assert all(check_line(text) == [] for text in strings), [t for t in strings if check_line(t)]
+
+
+def test_an_item_can_be_settled_for_all_jobs_only_with_its_condition_in_jims_words(store, settings) -> None:
+    """Design 6: "Settle defaults to this job. 'All jobs' must name a condition." A confirmation of its own,
+    with a box for the condition; the board sends what he typed, and the store's side refuses a blank one."""
+    run(store)
+    actions = SettleAllActions()
+    client = browser_for(board(store, settings), actions)
+    page = html.unescape(client.get("/", base_url=BASE).get_data(as_text=True))
+
+    assert templates.SETTLE_ALL in page and 'action="/checks/settle-all"' in page
+    assert 'name="condition"' in page and "required" in page
+
+    _post(client, "/checks/settle-all", {"studio_id": SID, "run_id": "3", "n": "1",
+                                         "condition": "When the notch is on a finished end"})
+    assert actions.calls == [("settle_all", SID, "3", "1", "When the notch is on a finished end")]
+
+
+class SettleAllActions(CheckActions):
+    def settle_all(self, studio_id: str, run_id: str, n: str, condition: str) -> str:
+        return self._record("settle_all", studio_id, run_id, n, condition)

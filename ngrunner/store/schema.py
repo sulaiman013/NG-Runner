@@ -439,7 +439,21 @@ _V7 = (
     ) STRICT""",
 )
 
-MIGRATIONS: tuple[tuple[str, ...], ...] = (_V1, _V2, _V3, _V4, _V5, _V6, _V7)
+# Version 8: P4's second round. A tracker batch says whether it was a shadow batch (every batch before
+# this version was: P4 has never gone live), which takeoff its rows came from (NG Runner's own or the
+# chat's; unknown for an older one), and when a shadow batch closed against the chat's own rows. A settle
+# says its scope: this job, or all jobs, with the kind of finding (checker and what) it stands for there.
+# Columns added with defaults, so nothing an older row holds changes.
+_V8 = (
+    "ALTER TABLE tracker_batches ADD COLUMN shadow INTEGER NOT NULL DEFAULT 1",
+    "ALTER TABLE tracker_batches ADD COLUMN source TEXT",
+    "ALTER TABLE tracker_batches ADD COLUMN closed_at TEXT",
+    "ALTER TABLE settles ADD COLUMN scope TEXT NOT NULL DEFAULT 'job'",
+    "ALTER TABLE settles ADD COLUMN checker TEXT",
+    "ALTER TABLE settles ADD COLUMN what TEXT",
+)
+
+MIGRATIONS: tuple[tuple[str, ...], ...] = (_V1, _V2, _V3, _V4, _V5, _V6, _V7, _V8)
 LATEST = len(MIGRATIONS)
 
 

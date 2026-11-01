@@ -221,6 +221,45 @@ def test_a_second_batch_waits_while_the_first_is_in_flight(env) -> None:
     result = drop(env, other)
 
     assert not result.ok and [p.code for p in result.problems] == ["in_flight"]
+    assert result.reason == "A tracker batch for this job is still in flight, so this one waits"
+
+
+def test_a_shadow_batch_never_blocks_another_jobs_drop_only_a_second_drop_for_its_own_job(env) -> None:
+    """Nothing ingests NG Runner's test folder, so its first batch would otherwise block every later drop
+    on every job. Its file stays in the folder, and that blocks nothing either."""
+    from ngrunner.store.locks import update_batch
+
+    first = drop(env)
+    theirs = [list(HEADER), ["JOBSUMMARY", OTHER, "", IN_PROGRESS, ""]]
+
+    other_job = drop_batch(OTHER, theirs, kind="lock_design", verb="append", material=None,
+                           snap=snap_of(env, "other", minutes=-5), store=env["store"], roots=env["roots"],
+                           interlock=env["interlock"], clock=env["clock"])
+
+    assert first.ok and other_job.ok, other_job.reason
+    assert other_job.batch.shadow and (env["roots"].tracker / first.batch.file).is_file()
+    again = [list(HEADER), ["JOBSUMMARY", JOB, "", IN_PROGRESS, "x"]]
+    assert [p.code for p in drop(env, again).problems] == ["in_flight"]
+    update_batch(env["store"], first.batch.id, state="matched", closed_at=T0)       # closed against the chat's
+    assert drop(env, again).ok
+
+
+def test_in_flight_is_per_job_in_shadow_and_any_live_batch_of_any_job_live() -> None:
+    from ngrunner.lock.drop import in_flight
+    from test_lock_shadow import batch
+
+    open_ = [batch(id="a"), batch(folder=OTHER, id="b"), batch(folder=OTHER, shadow_=False, id="c")]
+
+    assert [b.id for b in in_flight(open_, JOB, shadow=True)] == ["a"]
+    assert [b.id for b in in_flight(open_, f" {JOB.upper()} ", shadow=True)] == ["a"]
+    assert [b.id for b in in_flight(open_, JOB, shadow=False)] == ["c"]
+
+
+def test_a_drop_keeps_which_takeoff_its_rows_came_from(env) -> None:
+    made = drop_batch(JOB, APPEND, kind="lock_design", verb="append", material=None,
+                      snap=snap_of(env, "s", minutes=-5), store=env["store"], roots=env["roots"],
+                      interlock=env["interlock"], clock=env["clock"], source="chat")
+    assert made.ok and get_batch(env["store"], made.batch.id).source == "chat"
 
 
 # ----- after a drop

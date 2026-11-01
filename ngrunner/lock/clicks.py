@@ -54,7 +54,7 @@ def lock_design(job: str, *, takeoff: TakeoffFacts, names: Names, snap: TrackerS
                 nests: Sequence[NestLike], check: JobCheck | None, room_sha256: Mapping[str, str],
                 room_identity: Mapping[str, str], conversion_sha256: str | None, without_check: bool,
                 store: Store, roots: Roots, interlock: Callable[[list[Path]], str | None],
-                clock: Clock) -> ClickResult:
+                clock: Clock, source: str | None = None) -> ClickResult:
     """Add the job's calculated rows, In progress. check: the job's check as jobchecks.job_checks()
     gives it; the rooms' and the IC Conversion's hashes are as they are on disk now."""
     gate = lock_gate("lock_design", nests=nests, check=check, room_sha256=room_sha256,
@@ -62,14 +62,15 @@ def lock_design(job: str, *, takeoff: TakeoffFacts, names: Names, snap: TrackerS
                      without_check=without_check)
     return _click("lock_design", job, None, gate,
                   lambda: inbox_rows(job, takeoff, verb="append", names=names, status=IN_PROGRESS),
-                  "append", snap, store, roots, interlock, clock)
+                  "append", snap, store, roots, interlock, clock, source=source)
 
 
 def finish_lock(job: str, material: str, *, tracker_name: str, sheets: float, takeoff: TakeoffFacts,
                 names: Names, snap: TrackerSnapshot, nests: Sequence[NestLike], check: JobCheck | None,
                 room_sha256: Mapping[str, str], room_identity: Mapping[str, str],
                 conversion_sha256: str | None, without_check: bool, store: Store, roots: Roots,
-                interlock: Callable[[list[Path]], str | None], clock: Clock) -> ClickResult:
+                interlock: Callable[[list[Path]], str | None], clock: Clock,
+                source: str | None = None) -> ClickResult:
     """Set one material's nest numbers: material is the nest's (its folder's name), tracker_name the
     row's, sheets the nest's sheet count. The last material also locks the job."""
     gate = lock_gate("finish_lock", nests=nests, check=check, room_sha256=room_sha256,
@@ -92,14 +93,14 @@ def finish_lock(job: str, material: str, *, tracker_name: str, sheets: float, ta
                             or (last and row[0] in ("EDGEBAND_SET", "JOBSUMMARY_SET"))]
 
     return _click("finish_lock", job, material, gate, rows, "set", snap, store, roots, interlock, clock,
-                  batch_material=tracker_name)
+                  batch_material=tracker_name, source=source)
 
 
 def lock(job: str, *, sheets: Mapping[str, float], takeoff: TakeoffFacts, names: Names,
          snap: TrackerSnapshot, nests: Sequence[NestLike], check: JobCheck | None,
          room_sha256: Mapping[str, str], room_identity: Mapping[str, str], conversion_sha256: str | None,
          without_check: bool, store: Store, roots: Roots, interlock: Callable[[list[Path]], str | None],
-         clock: Clock) -> ClickResult:
+         clock: Clock, source: str | None = None) -> ClickResult:
     """Lock design and every Finish lock at once: sheets holds each tracker row's nest sheet count."""
     gate = lock_gate("lock", nests=nests, check=check, room_sha256=room_sha256,
                      room_identity=room_identity, conversion_sha256=conversion_sha256,
@@ -116,7 +117,7 @@ def lock(job: str, *, sheets: Mapping[str, float], takeoff: TakeoffFacts, names:
         return inbox_rows(job, takeoff, verb=verb, names=names, status=LOCKED,
                           optimizer={**{m: sheets[m] for m in materials}, **_tape_calc(plain)})
 
-    return _click("lock", job, None, gate, rows, verb, snap, store, roots, interlock, clock)
+    return _click("lock", job, None, gate, rows, verb, snap, store, roots, interlock, clock, source=source)
 
 
 def _tape_calc(set_rows: list[list[str]]) -> dict[str, float]:
@@ -128,7 +129,7 @@ def _tape_calc(set_rows: list[list[str]]) -> dict[str, float]:
 def _click(click: str, job: str, material: str | None, gate: GateResult,
            rows: Callable[[], list[list[str]]], verb: str, snap: TrackerSnapshot, store: Store, roots: Roots,
            interlock: Callable[[list[Path]], str | None], clock: Clock,
-           batch_material: str | None = None) -> ClickResult:
+           batch_material: str | None = None, source: str | None = None) -> ClickResult:
     if not gate.allowed:
         blocking = [m.words for m in gate.missing if not (gate.without_check and m.waivable)] or \
             [m.words for m in gate.missing]
@@ -138,7 +139,7 @@ def _click(click: str, job: str, material: str | None, gate: GateResult,
     except InboxRefused as exc:
         return ClickResult(False, gate, None, str(exc))
     dropped = drop_batch(job, made, kind=click, verb=verb, material=batch_material, snap=snap, store=store,
-                         roots=roots, interlock=interlock, clock=clock)
+                         roots=roots, interlock=interlock, clock=clock, source=source)
     if not dropped.ok:
         return ClickResult(False, gate, dropped, dropped.reason or "The batch was not dropped")
     add_lock_click(store, folder=job, click=click, material=material, without_check=gate.without_check,

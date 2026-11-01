@@ -1008,7 +1008,15 @@ def check_already_asked(job: str) -> str:
     return f"{job} is already waiting for its check."
 
 
-def settled_echo(job: str, *, n: int, how: str) -> str:
+SETTLE_ALL = "Not a problem for any job"
+SETTLE_NEEDS_CONDITION = ("A settle for all jobs needs the condition it holds under, in your words, so nothing was"
+                          " settled.")
+
+
+def settled_echo(job: str, *, n: int, how: str, all_jobs: bool = False) -> str:
+    if all_jobs:
+        return (f"Settled for all jobs from {job}: item {n}'s kind of finding isn't asked again on any job, under"
+                " the condition you gave. It is on NG Runner's settled list for chat.")
     if how == "told_chat":
         return f"Noted for {job}: you told chat about item {n}. It isn't asked again unless the job changes."
     return f"Settled for {job}: item {n} isn't asked again unless the job changes."
@@ -1072,6 +1080,8 @@ def _upper_first(text: str) -> str:
 
 P4_SHADOW_NOTE = ("P4 runs in shadow: a batch, a fix, a lease and a job sheet go only to NG Runner's own copies"
                   " on this PC, never to the tracker, Mozaik Shared or NG Jobs")
+LOCK_FROM_THE_CHAT = ("NG Runner's own takeoff of this job isn't complete, so a lock's rows come from the"
+                      " chat's IC Conversion, under its own names, each held to the tracker's Pricing")
 LOCK_LABELS = {"lock_design": "Lock design", "finish_lock": "Finish lock", "lock": "Lock"}
 LOCK_WITHOUT_CHECK = "Lock without check"
 FIX_CHOICES = ("Fix it", "Leave it")
@@ -1080,6 +1090,7 @@ BATCH_LABELS = {"lock_design": "Lock design", "finish_lock": "Finish lock", "loc
                 "resend": "Re-send of the missing rows"}
 RESEND = "Re-send only the missing row"
 NOT_A_LOCK = "That isn't one of the lock buttons, so nothing changed."
+NO_LOCK_JOB = "NG Runner doesn't know that job, so nothing was locked."
 LOCK_GONE = "That is no longer on the board, so nothing changed."
 LOCK_BUSY = "That is already asked for, so it wasn't asked again."
 
@@ -1123,9 +1134,35 @@ def batch_result(job: str, *, label: str, state: str, words: str, at: datetime) 
                                            " says what can be.",), urgent=True)
 
 
+_COMPARED = {"matched": "matches the chat", "differing": "differs from the chat", "not_compared": "not compared"}
+
+
+def shadow_compared(job: str, *, label: str, state: str, words: str, at: datetime) -> Message:
+    """A shadow batch closed against the chat's own rows on the real tracker (P4's "5 locks match the
+    chat"), for Sulaiman: matched, differing with which rows, or not compared after 7 days."""
+    title = f"{job}: {label} {_COMPARED[state]} {fmt_clock(at)}"
+    return Message("shadow_compared", title, (f"{_sentence(words)} Shadow: compared, read only, with what the"
+                                              " chat put on the tracker.",))
+
+
 def batch_waiting(job: str, *, label: str, since: datetime, now: datetime) -> str:
     """A batch the tracker hasn't taken within 30 minutes (design 3.4, a lock batch's limit)."""
     return f"{job}: the {label} batch dropped {_clock_on(since, pacific_day(now))} still waits for the tracker"
+
+
+def fix_unverified(job: str, *, room: str, state: str) -> str:
+    """A fix approved and not yet verified, for the heartbeat's open risks (design 6.5): approved and not
+    written, written and waiting for the room's next save, or its survival could not be verified. Marked
+    shadow while P4 is in shadow."""
+    found = re.fullmatch(r"Room([0-9]+)\.des", room, re.IGNORECASE)
+    shown = f"Room {int(found[1])}" if found else "a room"
+    if state == "approved":
+        said = f"a fix approved for {shown} isn't written yet, so it isn't verified"
+    elif state == "written":
+        said = f"the fix written on {shown} isn't verified until the room is saved again"
+    else:
+        said = f"the fix on {shown} could not be verified after the save"
+    return f"{job}: {said} (shadow); see the board"
 
 
 def resend_asked(job: str) -> str:

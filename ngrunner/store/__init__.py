@@ -58,7 +58,7 @@ from ngrunner.store.cards import (
     record_reminder, withdraw_card,
 )
 from ngrunner.store.checks import (
-    CHECK_CODES, CHECK_FEATURES, CHECK_KINDS, CHECK_STATES, CHECK_TRIGGERS, SETTLE_HOWS,
+    CHECK_CODES, CHECK_FEATURES, CHECK_KINDS, CHECK_STATES, CHECK_TRIGGERS, SETTLE_HOWS, SETTLE_SCOPES,
     CheckRunRecord, PromptRecord, SettleRecord, add_prompt, add_settle, answer_prompt, ask_check,
     back_to_asked, finish_check, get_check_run, list_check_runs, list_prompts, list_settles,
     mark_stale, mark_told, not_run_check, start_check,
@@ -202,7 +202,7 @@ __all__ = [
     "TAKEOFF_BRANCHES", "TAKEOFF_STATES", "TakeoffRecord", "add_takeoff", "get_takeoff",
     "list_takeoffs",
     # check_runs, settles, check_prompts
-    "CHECK_CODES", "CHECK_FEATURES", "CHECK_KINDS", "CHECK_STATES", "CHECK_TRIGGERS", "SETTLE_HOWS",
+    "CHECK_CODES", "CHECK_FEATURES", "CHECK_KINDS", "CHECK_STATES", "CHECK_TRIGGERS", "SETTLE_HOWS", "SETTLE_SCOPES",
     "CheckRunRecord", "PromptRecord", "SettleRecord", "add_prompt", "add_settle", "answer_prompt",
     "ask_check", "back_to_asked", "finish_check", "get_check_run", "list_check_runs", "list_prompts",
     "list_settles", "mark_stale", "mark_told", "not_run_check", "start_check",

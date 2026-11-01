@@ -7,8 +7,10 @@ removed by hand", an "ingested_" archive was no proof a row applied, and a re-dr
 landed made duplicates (BUILD's traps 1 and 3). So:
 
 Before a drop, all of these hold, or nothing is written (before_drop):
-- no batch is in flight: none of NG Runner's is waiting for the ingest or its snapshots, and no
-  tracker_inbox file of anyone's is waiting in the folder;
+- no batch is in flight (in_flight): live, none of NG Runner's live batches is waiting for the ingest or
+  its snapshots, and no tracker_inbox file of anyone's is waiting in the folder. In shadow, where nothing
+  ingests NG Runner's test folder, only an open batch of the same job blocks: a shadow batch never blocks
+  another job's drop, and it closes against the chat's own rows (lock/shadow.py), not by an ingest;
 - the snapshot is under 20 minutes old;
 - each material is in its Pricing block character for character, once, with a price;
 - an append finds no row yet for its job and material, a set exactly one;
@@ -46,7 +48,7 @@ from ngrunner.clock import Clock, utc
 from ngrunner.guards.tracker import (
     TrackerSnapshot, TrackerUnreadable, plain_material, read_tracker, split_tape_name,
 )
-from ngrunner.lock import P4_SHADOW
+from ngrunner.lock import P4_LIVE, P4_SHADOW
 from ngrunner.lock.totals import Totals, four_equalities, read_totals
 from ngrunner.store import Store
 from ngrunner.store.locks import (
@@ -68,6 +70,7 @@ _MATERIAL = {"SHEETGOODS": (3, True), "SHEETGOODS_SET": (2, True), "EDGEBAND": (
              "EDGEBAND_SET": (2, False)}
 _OPTIMIZER = {"SHEETGOODS": 7, "SHEETGOODS_SET": 6, "EDGEBAND": 5, "EDGEBAND_SET": 4}
 _STATUS = {"JOBSUMMARY": 3, "JOBSUMMARY_SET": 2}
+_SETTLED = ("confirmed", "resent", "matched", "differing", "not_compared")
 
 
 @dataclass(frozen=True)
@@ -114,11 +117,13 @@ class AfterRead:
 
 
 def before_drop(job: str, rows: Sequence[Sequence[str]], *, verb: str, snap: TrackerSnapshot, now: datetime,
-                open_batches: int, waiting_files: Sequence[str]) -> tuple[DropProblem, ...]:
-    """Everything that stands in the way of dropping rows for job now; () when nothing does."""
+                open_batches: int, waiting_files: Sequence[str], shadow: bool = False) -> tuple[DropProblem, ...]:
+    """Everything that stands in the way of dropping rows for job now; () when nothing does. open_batches:
+    how many batches in_flight() found; shadow: they are the job's own, in NG Runner's test folder."""
     found: list[DropProblem] = []
     if open_batches or waiting_files:
-        found.append(DropProblem("in_flight", "A tracker batch is still in flight, so this one waits"))
+        whose = " for this job" if shadow else ""
+        found.append(DropProblem("in_flight", f"A tracker batch{whose} is still in flight, so this one waits"))
     shape = _shape(job, rows, verb)
     if shape:
         return (*found, shape)
@@ -200,32 +205,44 @@ def _status(row: Sequence[str]) -> list[DropProblem]:
 def drop_batch(job: str, rows: Sequence[Sequence[str]], *, kind: str, verb: str, material: str | None,
                snap: TrackerSnapshot, store: Store, roots: Roots,
                interlock: Callable[[list[Path]], str | None], clock: Clock,
-               resend_of: str | None = None) -> DropResult:
+               resend_of: str | None = None, source: str | None = None, phase: str = P4_SHADOW) -> DropResult:
     """Drop rows for job as one new batch file in roots.tracker, once every check before a drop
-    holds. Nothing is written when one doesn't."""
+    holds. Nothing is written when one doesn't. source: which takeoff the rows came from (kept with the
+    batch). phase: P4_SHADOW until P4 goes live, and writes.py has no rules for any other yet."""
     rows = [list(row) for row in rows]
+    shadow = phase == P4_SHADOW
     if rows_dropped_before(store, rows):
         return DropResult(False, reason=("These exact rows were dropped before, and NG Runner never"
                                          " drops a batch twice."))
     if roots.tracker is None:
         return DropResult(False, reason="No folder is set for the tracker's inbox, so nothing was dropped.")
-    waiting = _waiting(roots.tracker)
+    waiting = [] if shadow else _waiting(roots.tracker)
     if waiting is None:
         return DropResult(False, reason="The tracker's inbox folder could not be read, so nothing was dropped.")
     now = clock.now()
-    problems = before_drop(job, rows, verb=verb, snap=snap, now=now,
-                           open_batches=len(list_batches(store, open_only=True)), waiting_files=waiting)
+    flying = in_flight(list_batches(store, open_only=True), job, shadow=shadow)
+    problems = before_drop(job, rows, verb=verb, snap=snap, now=now, open_batches=len(flying),
+                           waiting_files=waiting, shadow=shadow)
     if problems:
         return DropResult(False, problems=problems, reason=problems[0].words)
     batch_id = f"{utc(now):%Y%m%dT%H%M%SZ}-{secrets.token_hex(3)}"
     name = f"{_INBOX_PREFIX}_{batch_id}.csv"
     result = commit_recorded([FileWrite(roots.tracker / name, inbox_bytes(rows), None)], store=store,
-                             clock=clock, roots=roots, interlock=interlock, phase=P4_SHADOW)
+                             clock=clock, roots=roots, interlock=interlock, phase=phase)
     if not result.ok:
         return DropResult(False, reason=result.reason)
     batch = add_batch(store, id=batch_id, folder=job, kind=kind, verb=verb, material=material, rows=rows,
-                      file=name, dropped_at=now, resend_of=resend_of)
+                      file=name, dropped_at=now, resend_of=resend_of, shadow=shadow, source=source)
     return DropResult(True, batch)
+
+
+def in_flight(open_batches: Sequence[BatchRecord], job: str, *, shadow: bool) -> list[BatchRecord]:
+    """The open batches that stand in the way of a drop for job. Shadow: only the job's own, as nothing
+    ingests NG Runner's test folder. Live: every live batch, whatever its job, as the ingest takes one
+    batch at a time."""
+    if shadow:
+        return [b for b in open_batches if b.folder.strip().casefold() == job.strip().casefold()]
+    return [b for b in open_batches if not b.shadow]
 
 
 def _waiting(folder: Path) -> list[str] | None:
@@ -243,20 +260,28 @@ def _waiting(folder: Path) -> list[str] | None:
 def after_drop(batch: BatchRecord, *, store: Store, roots: Roots, snapshots: Path,
                now: datetime) -> AfterDrop:
     """Where batch stands, from the drop folder and the snapshot in snapshots, kept in the store.
-    A confirmed or resent batch is settled and stays as it is."""
+    A confirmed or resent batch, or a shadow batch closed against the chat's rows, is settled and stays
+    as it is."""
     return judge_after(batch, read_after(batch, roots=roots, snapshots=snapshots), store=store, now=now)
 
 
 def read_after(batch: BatchRecord, *, roots: Roots, snapshots: Path) -> AfterRead:
     """The files after_drop judges batch by: the drop folder, then the snapshot once the batch is
-    archived. Reads only, so it may run where a read can wait."""
-    if batch.state in ("confirmed", "resent"):
+    archived. A shadow batch waiting in NG Runner's test folder, which nothing ingests, gets the real
+    tracker's snapshot as well, read only, for the chat's own rows (lock/shadow.py). Reads only, so it may
+    run where a read can wait."""
+    if batch.state in _SETTLED:
         return AfterRead()
     archived = _archive(batch, roots.tracker)
     if isinstance(archived, AfterDrop):
         return AfterRead(set_aside=archived)
     if archived is None:
-        return AfterRead()
+        if not batch.shadow:
+            return AfterRead()
+        try:
+            return AfterRead(snap=read_tracker(snapshots))
+        except TrackerUnreadable as exc:
+            return AfterRead(unreadable=str(exc))
     try:
         return AfterRead(archived, snap=read_tracker(snapshots), totals=read_totals(snapshots))
     except TrackerUnreadable as exc:
@@ -265,7 +290,7 @@ def read_after(batch: BatchRecord, *, roots: Roots, snapshots: Path) -> AfterRea
 
 def judge_after(batch: BatchRecord, seen: AfterRead, *, store: Store, now: datetime) -> AfterDrop:
     """Where batch stands, from what read_after read, kept in the store."""
-    if batch.state in ("confirmed", "resent"):
+    if batch.state in _SETTLED:
         return AfterDrop(batch.state, batch.words or "")
     if seen.set_aside is not None:
         return _keep(store, batch, seen.set_aside)
@@ -375,7 +400,8 @@ def resend_missing(batch: BatchRecord, *, fresh: TrackerSnapshot, pressed_at: da
     again = [list(HEADER)] + [list(row) for line, row in enumerate(batch.rows, start=1) if line in lines]
     result = drop_batch(batch.folder, again, kind="resend", verb="append", material=batch.material,
                         snap=fresh, store=store, roots=roots, interlock=interlock, clock=clock,
-                        resend_of=batch.id)
+                        resend_of=batch.id, source=batch.source,
+                        phase=P4_SHADOW if batch.shadow else P4_LIVE)
     if result.ok:
         update_batch(store, batch.id, state="resent", words=f"Its missing rows went again as {result.batch.id}")
     return result

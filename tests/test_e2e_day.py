@@ -4055,3 +4055,165 @@ def test_scenario_88_the_notes_carry_the_checks_items_and_what_jim_settled_for_h
     assert (settled["item"], settled["how"], settled["said"]) == (1, "told_chat", templates.SETTLE_LABELS["told_chat"])
     assert settled["words"] == "R1C3: the notch is on the wrong face" and settled["tags"] == ["R1C3"]
     assert from_iso(settled["at"]) and from_iso(check["at"])
+
+
+# ----- P4's second round: a shadow batch closes against the chat's own rows, names held to Pricing, "lock
+# <Job>", fixes not yet verified in the heartbeat, one settled list for all jobs, and Jim's real job sheet
+
+
+def test_scenario_89_a_shadow_batch_closes_as_matched_once_the_chats_own_rows_show_on_the_real_tracker(
+        make_world, monkeypatch):
+    """Nothing ingests NG Runner's test folder: the batch waits, with no DEV item, until the chat's own rows
+    for the job show on the real tracker's snapshot (read only), and then closes against them. That is P4's
+    "5 locks match the chat", on Health."""
+    world = make_world(tracker=True)
+    p4_ready(world, monkeypatch, toolkit=False)
+    before = tree(world.mozaik)
+    world.actions.lock_click("4242", "lock_design", "", True)
+    world.run(minutes=2)
+    batch, = batches_of(world)
+    assert (batch.shadow, batch.source) == (True, "ng_runner")
+
+    world.run(minutes=45)
+    assert batches_of(world)[0].state == "dropped" and not [d for d in world.dev() if d.code == "lock_batch_waiting"]
+    view, = world.board_row(GUARD_JOB).p4.batches
+    assert view.words == "Waiting for the chat's own rows on the tracker to compare with"
+
+    tracker_now(world, rows=landed(batch))           # the chat locks the job by hand, as it does today
+    world.run(minutes=2)
+
+    closed, = batches_of(world)
+    assert closed.state == "matched" and closed.closed_at is not None
+    view, = world.board_row(GUARD_JOB).p4.batches
+    assert (view.state, view.words) == ("matched", "Matches the chat's own rows on the tracker")
+    told, = world.outbox(to="sulaiman", subject=f"SHADOW {GUARD_JOB}: Lock design matches the chat")
+    assert "read only" in told.lines[0]
+    assert world.sup.board().health.shadow_locks == "1 of 5 jobs' shadow locks match the chat"
+    assert world.outbox(to="jim", subject=GUARD_JOB) == []
+    nothing_of_p4_in_the_real_folders(world, before)
+
+
+def test_scenario_90_a_shadow_batch_the_chat_never_matches_closes_as_not_compared_after_7_days(
+        make_world, monkeypatch):
+    world = make_world(tracker=True)
+    p4_ready(world, monkeypatch, toolkit=False)
+    world.actions.lock_click("4242", "lock_design", "", True)
+    world.run(minutes=2)
+
+    world.run(minutes=7 * 24 * 60 + 5, step=3600)
+
+    closed, = batches_of(world)
+    assert closed.state == "not_compared"
+    assert world.board_row(GUARD_JOB).p4.batches[0].state == "not_compared"
+    assert len(world.outbox(to="sulaiman", subject=f"SHADOW {GUARD_JOB}: Lock design not compared")) == 1
+    assert not [d for d in world.dev() if d.code == "lock_batch_waiting"]
+    assert world.sup.board().health.shadow_locks == ("0 of 5 jobs' shadow locks match the chat; 1 not"
+                                                     " compared")
+
+
+def test_scenario_91_lock_job_in_the_command_box_is_the_lock_button_on_that_job_whole(make_world, monkeypatch):
+    from ngrunner.store.locks import list_lock_clicks
+
+    world = make_world(tracker=True)
+    p4_ready(world, monkeypatch, build=False)
+    lock = button(world.board_row(GUARD_JOB), "lock")
+
+    reply = world.actions.command(f"lock {GUARD_JOB}")
+
+    assert reply == templates.lock_refused(GUARD_JOB, label="Lock", missing=lock.missing)
+    assert world.actions.command("lock Testerson") == templates.NO_LOCK_JOB       # a part of a name: no job
+    assert world.actions.command("LOCK   testerson_101426 ") == reply              # case and spaces aside
+    world.run(minutes=2)
+    assert batches_of(world) == [] and list_lock_clicks(world.store) == []
+
+
+def test_scenario_92_a_name_not_in_the_trackers_pricing_refuses_the_lock_and_says_which(make_world, monkeypatch):
+    from test_lock_drop import snapshot
+
+    world = make_world(tracker=True)
+    p4_ready(world, monkeypatch, toolkit=False)
+    snapshot(world.tracker, taken=world.clock.now(), tape_prices=[['Tafisa 1mm — 15/16" / 1"', "$0.27"]])
+
+    world.actions.lock_click("4242", "lock_design", "", True)
+    world.run(minutes=2)
+
+    assert batches_of(world) == [] and list(shadow_of(world).tracker.iterdir()) == []
+    told, = world.outbox(to="sulaiman", subject=f"SHADOW {GUARD_JOB}: Lock design (lock without check)")
+    assert told.lines[0] == ("Not dropped: Egger Classic White tape 15/16\" isn't in the tracker's Pricing exactly"
+                             " as NG Runner names it, so the rows can't be made.")
+
+
+def test_scenario_93_a_fix_approved_and_not_yet_verified_is_an_open_risk_in_the_heartbeat(make_world, monkeypatch):
+    world = make_world(tracker=True)
+    card, job = fix_card_of(world, monkeypatch)
+    world.actions.answer(card.id, "Fix it")
+    world.run(minutes=6)                              # written into NG Runner's copy, and a heartbeat since
+
+    risks = world.heartbeats()[-1].payload["open_risks"]
+    assert (f"{GUARD_JOB}: the fix written on Room 1 isn't verified until the room is saved again (shadow); see"
+            " the board") in risks
+    assert not [line for line in jobmodel.digest_view(world.store, world.settings, world.clock).owner
+                if "fix" in line]                     # Jim's digest: nothing of P4's in shadow
+
+
+def test_scenario_94_a_finding_settled_for_all_jobs_goes_on_ng_runners_own_settled_list(make_world):
+    """Design 6: "All jobs" must name a condition, takes effect at once and is written to the settled list the
+    chat reads. Before P4 goes live the list is NG Runner's own copy of the folder _NG Runner in NG Jobs, and
+    each job's notes say which of its items it settles."""
+    from ngrunner.checks import settled
+
+    world = make_world()
+    checks_ready(world)
+    world.actions.check_job("4242")
+    world.run(minutes=2)
+    run = check_of(world).run
+
+    assert world.actions.settle_all("4242", str(run.id), "1", "  ") == templates.SETTLE_NEEDS_CONDITION
+    reply = world.actions.settle_all("4242", str(run.id), "1", "When the notch is on a finished end")
+    world.run(minutes=2)
+
+    assert reply.startswith(f"Settled for all jobs from {GUARD_JOB}")
+    assert check_of(world).to_fix == 0 and check_of(world).settled == 1
+    listed = json.loads((shadow_of(world).ng_jobs / settled.FOLDER / settled.FILE).read_text(encoding="utf-8"))
+    entry, = listed["settled"]
+    assert (entry["checker"], entry["condition"]) == ("notch_check", "When the notch is on a finished end")
+    assert not (world.ng_jobs / settled.FOLDER).exists()
+    said, = record_of(world, GUARD_JOB)["settled"]
+    assert (said["scope"], said["list"]) == ("all jobs", settled.WHERE)
+
+
+@pytest.mark.fixtures
+def test_scenario_95_jims_real_job_sheet_runs_from_the_adopted_copy_on_a_real_job_at_lock(make_world, monkeypatch):
+    """Jim's own cnc_job_sheet.py, from an adopted copy of his real toolkit, run in the tools' Python on a
+    staged copy of a real job's JobDat.dat and nests, once the job is locked (here as a confirmed Lock leaves
+    it: scenarios 81 to 83 drive the click itself). Case A's sheet matches its nests, so it is filed, in NG
+    Runner's own copy of the job folder only. Skips without Jim's toolkit or the tools' Python."""
+    from helpers_checks import adopt, conversion
+    from helpers_toolkit import job_folder, stage_tree, tools_python
+    from ngrunner.lock import kept, work
+
+    python = tools_python()
+    real = job_folder("A")
+    monkeypatch.setenv("NGR_TOOLS_PYTHON", str(python))
+    world = make_world(tracker=True)
+    p4_ready(world, monkeypatch, build=False, toolkit=False)
+    adopt(world.store, world.paths.toolkit, stage_tree(world.tmp / "jims-real"), at=world.clock.now())
+    conversion(world.ng_jobs, GUARD_JOB, '{"schema_version": "2.0", "pulled_classified": []}')
+    job = world.mozaik / "Jobs" / GUARD_JOB
+    job.mkdir(parents=True)
+    for name in ["JobDat.dat", *(p.name for p in real.glob("*.opt"))]:
+        shutil.copyfile(real / name, job / name)
+    quiet(world, job)
+    before, real_before = tree(world.mozaik), {p.name: p.read_bytes() for p in real.iterdir() if p.is_file()}
+
+    kept.add_name(world.store, work._SHEET_ASKED, GUARD_JOB)    # what a Lock that sets LOCKED leaves
+    world.run_until(lambda: kept.sheet_of(world.store, GUARD_JOB) is not None, within=minutes(10))
+
+    said = kept.sheet_of(world.store, GUARD_JOB)
+    assert (said["code"], said["written"], said["items"]) == ("matches", True, [])
+    filed = shadow_of(world).ng_jobs / GUARD_JOB / f"{GUARD_JOB} CNC Job Sheet.docx"
+    assert filed.read_bytes()[:2] == b"PK"
+    assert world.board_row(GUARD_JOB).p4.sheet.state == "matches"
+    assert not list(world.ng_jobs.rglob("* CNC Job Sheet.docx"))
+    assert tree(world.mozaik) == before
+    assert {p.name: p.read_bytes() for p in real.iterdir() if p.is_file()} == real_before    # only ever read

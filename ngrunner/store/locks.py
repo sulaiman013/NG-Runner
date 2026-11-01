@@ -38,9 +38,15 @@ BATCH_VERBS = ("append", "set")
 # dropped: waiting for the ingest to archive it. archived: archived, waiting for a snapshot after it.
 # first_ok: one snapshot shows every row. confirmed: a second, 10 minutes on, agrees. doubt: a row is
 # missing or differs, or the ingest set it aside: an item for Jim, never a re-drop. resent: its missing
-# rows went in a batch of their own.
-BATCH_STATES = ("dropped", "archived", "first_ok", "confirmed", "doubt", "resent")
+# rows went in a batch of their own. A shadow batch, which nothing ingests, closes against the chat's own
+# rows on the real tracker instead (lock/shadow.py): matched, differing, or not_compared when the chat's
+# rows didn't come within 7 days.
+BATCH_STATES = ("dropped", "archived", "first_ok", "confirmed", "doubt", "resent", "matched", "differing",
+                "not_compared")
 _OPEN_BATCHES = ("dropped", "archived", "first_ok")
+# Which takeoff a batch's rows came from: NG Runner's own, or the chat's IC Conversion when NG Runner's
+# isn't complete (lock/names.py). None for a batch from before it was kept.
+BATCH_SOURCES = ("ng_runner", "chat")
 FIX_STATES = ("applied", "undone")
 CLICKS = ("lock_design", "finish_lock", "lock")
 
@@ -101,7 +107,10 @@ def _lease(row: sqlite3.Row) -> LeaseRecord:
 @dataclass(frozen=True)
 class BatchRecord:
     """One batch dropped. rows: the batch exactly as written, header first. first_taken: when the
-    snapshot that first showed every row was taken, which the confirming one must be 10 minutes after."""
+    snapshot that first showed every row was taken, which the confirming one must be 10 minutes after.
+    shadow: dropped into NG Runner's own test folder, before P4 goes live. source: which takeoff its rows
+    came from (BATCH_SOURCES), None when not kept. closed_at: when a shadow batch closed against the chat's
+    own rows."""
 
     id: str
     folder: str
@@ -119,6 +128,9 @@ class BatchRecord:
     confirmed_at: datetime | None
     words: str | None
     resend_of: str | None
+    shadow: bool = True
+    source: str | None = None
+    closed_at: datetime | None = None
 
 
 def rows_sha256(rows: Sequence[Sequence[str]]) -> str:
@@ -127,24 +139,27 @@ def rows_sha256(rows: Sequence[Sequence[str]]) -> str:
 
 def add_batch(db: Db, *, id: str, folder: str, kind: str, verb: str, material: str | None,
               rows: Sequence[Sequence[str]], file: str, dropped_at: datetime,
-              resend_of: str | None = None) -> BatchRecord:
-    """A batch NG Runner has just dropped, waiting for the ingest."""
+              resend_of: str | None = None, shadow: bool = True, source: str | None = None) -> BatchRecord:
+    """A batch NG Runner has just dropped, waiting for the ingest (or, shadow, for the chat's own rows)."""
     if not rows or not all(isinstance(cell, str) for row in rows for cell in row):
         raise ValueError("a batch holds its rows, each a list of text cells")
+    if not isinstance(shadow, bool):
+        raise ValueError("shadow must be True or False")
     values = (key_text(id, "a batch's id"), key_text(folder, "a job's folder"),
               one_of(kind, BATCH_KINDS, "a batch's kind"), one_of(verb, BATCH_VERBS, "a batch's verb"),
               optional_text(material, "a material"), dumps([list(row) for row in rows]),
               rows_sha256(rows), text_value(file, "a batch's file"), iso(dropped_at, "dropped_at"),
-              optional_text(resend_of, "the batch it re-sends"))
+              optional_text(resend_of, "the batch it re-sends"), int(shadow),
+              None if source is None else one_of(source, BATCH_SOURCES, "a batch's source"))
     with session(db, write=True) as conn:
         conn.execute("INSERT INTO tracker_batches (id, folder, kind, verb, material, rows, rows_sha256,"
-                     " file, state, dropped_at, resend_of) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'dropped', ?, ?)",
-                     values)
+                     " file, state, dropped_at, resend_of, shadow, source)"
+                     " VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'dropped', ?, ?, ?, ?)", values)
         row = conn.execute("SELECT * FROM tracker_batches WHERE id = ?", (values[0],)).fetchone()
     return _batch(row)
 
 
-_BATCH_TIMES = ("archived_at", "first_ok_at", "first_taken", "confirmed_at")
+_BATCH_TIMES = ("archived_at", "first_ok_at", "first_taken", "confirmed_at", "closed_at")
 
 
 def update_batch(db: Db, batch_id: str, *, state: str, words: str | None = None,
@@ -199,7 +214,8 @@ def _batch(row: sqlite3.Row) -> BatchRecord:
                        loads(row["rows"]), row["rows_sha256"], row["file"], row["state"],
                        time_of(row["dropped_at"]), time_or_none(row["archived_at"]),
                        time_or_none(row["first_ok_at"]), time_or_none(row["first_taken"]),
-                       time_or_none(row["confirmed_at"]), row["words"], row["resend_of"])
+                       time_or_none(row["confirmed_at"]), row["words"], row["resend_of"], bool(row["shadow"]),
+                       row["source"], time_or_none(row["closed_at"]))
 
 
 # ----- fixes

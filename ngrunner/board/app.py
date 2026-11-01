@@ -50,7 +50,9 @@ from ngrunner.board.files import open_inside
 from ngrunner.board.views import BoardActions, BoardView, BoardViews, EventView
 from ngrunner.clock import Clock, SystemClock, fmt_clock, fmt_day, pacific_day
 from ngrunner.config import MODES
-from ngrunner.messages.templates import LOCK_LABELS, LOCK_WITHOUT_CHECK, NOT_A_LOCK, RESEND, SETTLE_LABELS
+from ngrunner.messages.templates import (
+    LOCK_LABELS, LOCK_WITHOUT_CHECK, NOT_A_LOCK, RESEND, SETTLE_ALL, SETTLE_LABELS,
+)
 
 COOKIE = "ngrunner_board"
 TOKEN_FIELD = "token"
@@ -225,6 +227,7 @@ def _template_values() -> dict[str, object]:
         "check_style": display.CHECKS.__getitem__,
         "check_item_style": display.check_item_style,
         "settle_labels": SETTLE_LABELS,
+        "settle_all": SETTLE_ALL,
         "lock_button_style": display.LOCK_BUTTONS.__getitem__,
         "batch_style": display.BATCHES.__getitem__,
         "fix_style": display.FIXES.__getitem__,
@@ -367,6 +370,12 @@ def _actions(app: Flask, actions: BoardActions, roots: tuple[Path, ...],
             return _back()
         return _run(lambda: actions.settle_item(request.form.get("studio_id", ""), request.form.get("run_id", ""),
                                                 request.form.get("n", ""), how))
+
+    @app.post("/checks/settle-all")
+    def settle_all() -> Response:
+        """Not a problem for any job, under the condition Jim typed: the store's side refuses a blank one."""
+        return _run(lambda: actions.settle_all(request.form.get("studio_id", ""), request.form.get("run_id", ""),
+                                               request.form.get("n", ""), request.form.get("condition", "")))
 
     @app.post("/checks/prompt")
     def answer_prompt() -> Response:

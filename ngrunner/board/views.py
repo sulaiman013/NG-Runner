@@ -32,7 +32,8 @@ CHECK_STATES = ("none", "asked", "running", "waiting", "passed", "failed", "coul
 CHECK_ITEM_KINDS = ("fix", "mozaik", "could_not_verify", "advisory")
 TAKEOFF_STATES = ("made", "chat", "unverified", "in_chat", "failed")
 LOCK_BUTTON_STATES = ("ready", "waivable", "blocked", "asked")
-BATCH_STATES = ("dropped", "archived", "first_ok", "confirmed", "doubt", "resent")
+BATCH_STATES = ("dropped", "archived", "first_ok", "confirmed", "doubt", "resent", "matched", "differing",
+                "not_compared")
 FIX_STATES = ("waiting", "applied", "undone", "held", "mozaik_undid", "you_changed", "could_not_verify")
 LEASE_STATES = ("active", "lapsed", "released")
 JOB_SHEET_STATES = ("matches", "mismatch", "could_not_verify")
@@ -217,6 +218,7 @@ class LockPanelView:
     fixes: tuple[FixView, ...] = ()
     sheet: JobSheetView | None = None
     note: str = ""
+    source: str = ""                      # where a lock's rows come from, when not NG Runner's own takeoff
 
 
 @dataclass(frozen=True)
@@ -328,6 +330,7 @@ class HealthView:
     leftover_temps: tuple[Path, ...] = ()
     app_version: str = ""
     mozaik: str = ""                     # what the observer last found, in words; "" not looked yet
+    shadow_locks: str = ""               # P4's "5 locks match the chat", in words; "" none read
 
     def __post_init__(self) -> None:
         for name in ("last_export", "list_synced_at", "heartbeat"):
@@ -422,6 +425,11 @@ class BoardActions(Protocol):
     def settle_item(self, studio_id: str, run_id: str, n: str, how: str) -> str:
         """Settle item n of a check run for this job: how is "not_a_problem" or "told_chat", as the
         board refuses anything else. The ids are as the form sent them."""
+        ...
+
+    def settle_all(self, studio_id: str, run_id: str, n: str, condition: str) -> str:
+        """Settle item n of a check run as not a problem for any job, under condition, in Jim's words: it
+        stands for every finding of its kind on any job, and goes on NG Runner's settled list for chat."""
         ...
 
     def answer_prompt(self, prompt_id: str, choice: str) -> str:

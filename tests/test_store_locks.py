@@ -36,9 +36,12 @@ def store(tmp_path: Path):
 # ----- the migration
 
 
+P4 = 7          # the migration that made P4's tables; 8 is P4's second round
+
+
 def test_p4s_migration_comes_after_every_earlier_one_and_adds_only_its_tables(tmp_path: Path) -> None:
     path = tmp_path / "ngrunner.db"
-    filled_database(path, LATEST - 1)
+    filled_database(path, P4 - 1)
     before = every_row(path)
 
     open_store(path)
@@ -46,7 +49,44 @@ def test_p4s_migration_comes_after_every_earlier_one_and_adds_only_its_tables(tm
     after = every_row(path)
     assert set(after) - set(before) == LOCK_TABLES
     assert {table: after[table] for table in before} == before
-    assert "leases" in "\n".join(MIGRATIONS[LATEST - 1])
+    assert "leases" in "\n".join(MIGRATIONS[P4 - 1])
+
+
+def test_p4s_second_round_keeps_every_batch_from_before_as_a_shadow_batch_of_unknown_source(
+        tmp_path: Path) -> None:
+    import json
+
+    from ngrunner.store import Store, migrate
+    from ngrunner.store.locks import rows_sha256
+
+    path = tmp_path / "ngrunner.db"
+    filled_database(path, P4)
+    with closing(sqlite3.connect(path)) as raw, raw:          # as P4's first round wrote it
+        raw.execute("INSERT INTO tracker_batches (id, folder, kind, verb, material, rows, rows_sha256, file,"
+                    " state, dropped_at) VALUES (?, ?, 'lock_design', 'append', NULL, ?, ?, ?, 'dropped', ?)",
+                    ("b0", JOB, json.dumps(ROWS), rows_sha256(ROWS), "tracker_inbox_b0.csv", T0.isoformat()))
+
+    assert migrate(Store(path)) == LATEST == P4 + 1
+    kept = get_batch(open_store(path), "b0")
+    assert (kept.shadow, kept.source, kept.closed_at, kept.state, kept.rows) == (True, None, None, "dropped", ROWS)
+
+
+def test_a_batch_keeps_whether_it_was_shadow_and_which_takeoff_its_rows_came_from(store) -> None:
+    made = add_batch(store, id="b1", folder=JOB, kind="lock", verb="append", material=None, rows=ROWS,
+                     file="tracker_inbox_b1.csv", dropped_at=T0, shadow=True, source="ng_runner")
+    other = [ROWS[0], ["JOBSUMMARY", OTHER, "", "🔲 In progress", ""]]
+    live = add_batch(store, id="b2", folder=OTHER, kind="lock", verb="append", material=None, rows=other,
+                     file="tracker_inbox_b2.csv", dropped_at=T0, shadow=False, source="chat")
+    assert (made.shadow, made.source) == (True, "ng_runner") and (live.shadow, live.source) == (False, "chat")
+
+    update_batch(store, made.id, state="matched", words="Matches the chat's own rows", closed_at=T2)
+
+    closed = get_batch(store, made.id)
+    assert (closed.state, closed.closed_at, closed.words) == ("matched", T2, "Matches the chat's own rows")
+    assert [b.id for b in list_batches(store, open_only=True)] == [live.id]       # a closed batch is settled
+    with pytest.raises(ValueError):
+        add_batch(store, id="b3", folder=JOB, kind="lock", verb="append", material=None, rows=ROWS,
+                  file="tracker_inbox_b3.csv", dropped_at=T0, source="someone")
 
 
 def test_p4s_tables_are_strict(store) -> None:

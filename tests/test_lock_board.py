@@ -173,3 +173,79 @@ def test_every_lock_line_on_the_board_passes_jims_format(store, settings) -> Non
     strings = [p4.note, *(w for b in p4.buttons for w in (b.label, *b.missing)), *(b.words for b in p4.batches),
                *(item.text for item in view.your_list)]
     assert all(check_line(text) == [] for text in strings), [t for t in strings if check_line(t)]
+
+
+# ----- a shadow batch closed against the chat's own rows, and P4's "5 locks match the chat" on Health
+
+
+def test_a_shadow_batchs_closing_shows_as_icon_label_and_colour() -> None:
+    from ngrunner.board import display
+
+    closed = LockPanelView(batches=(
+        BatchView("b1", "Lock design", "matched", "Matches the chat's own rows on the tracker"),
+        BatchView("b2", "Lock", "differing", "Differs from the chat's own rows: Egger Classic White: Calc Sheets"
+                                             " 8.5 on the chat's row, 8.2 on NG Runner's"),
+        BatchView("b3", "Finish lock", "not_compared", "Not compared: the chat's own rows for this job didn't come"
+                                                       " within 7 days")), note=templates.P4_SHADOW_NOTE)
+    page = html.unescape(browser_for(view_with(closed), LockActions()).get("/", base_url=BASE).get_data(as_text=True))
+
+    for state in ("matched", "differing", "not_compared"):
+        style = display.BATCHES[state]
+        assert style.tone and style.icon and style.label in page, state
+    assert (display.BATCHES["matched"].tone, display.BATCHES["differing"].tone,
+            display.BATCHES["not_compared"].tone) == ("ok", "warn", "muted")
+    assert "Calc Sheets 8.5 on the chat's row" in page and page.count(templates.RESEND) == 0
+
+
+def test_health_shows_how_many_of_five_shadow_locks_match_the_chat(store, settings) -> None:
+    from ngrunner.lock import shadow
+
+    for n, (folder, state) in enumerate(((JOB, "matched"), ("Sampleton_101526", "differing"))):
+        made = add_batch(store, id=f"b{n}", folder=folder, kind="lock_design", verb="append", material=None,
+                         rows=[list(HEADER), ["JOBSUMMARY", folder, "", "🔲 In progress", ""]],
+                         file=f"tracker_inbox_b{n}.csv", dropped_at=NOW, source="ng_runner")
+        update_batch(store, made.id, state=state, closed_at=NOW)
+
+    said = jobmodel.shadow_locks(store)
+
+    assert said == "1 of 5 jobs' shadow locks match the chat; 1 differs" == shadow.tally_words(shadow.Tally(1, 1))
+    health = HealthView(paths=(), last_export=None, list_synced_at=None, heartbeat=None, toasts=None,
+                        shadow_locks=said)
+    page = html.unescape(browser_for(BoardView(jobs=(), your_list=(), cards=(), health=health,
+                                               tray=TrayState("green", 0, "ok"), paused=False, shadow=False),
+                                     LockActions()).get("/health", base_url=BASE).get_data(as_text=True))
+    assert "Shadow locks against the chat" in page and said in page and check_line(said) == []
+
+
+# ----- the heartbeat's open risks: fixes approved and not yet verified
+
+
+def test_the_heartbeats_open_risks_list_each_fix_approved_and_not_yet_verified(store, settings) -> None:
+    """Approved and not written, written and not judged by the next save, or judged could not verify. A fix
+    that held, one Jim changed, one Mozaik undid (a card of its own) and one undone are no open risk. P4 is
+    in shadow, so the lines say so, and Jim's digest doesn't carry them."""
+    from ngrunner.store.locks import add_fix, mark_fix_undone, record_survival
+
+    plan = {"room": "Room2.des", "words": ["Room 2: the hang notch is cut from the wrong face on 1 panel (R2C3)"]}
+    kept.add_pending(store, kind="apply", at=NOW, folder=JOB, plan=plan)
+    kept.add_pending(store, kind="undo", at=NOW, folder=JOB, fix=99)
+
+    def fix(room: str):
+        return add_fix(store, folder=JOB, room=room, fixer="notch_face", fingerprint="f" * 64, base_sha256="a" * 64,
+                       result_sha256="b" * 64, patch=[{"offset": 1, "old": "00", "new": "01"}],
+                       elements=[{"cab": "3", "id": "2"}], programs={}, backups=[], applied_at=NOW)
+
+    fix("Room1.des")
+    for room, code in (("Room3.des", "held"), ("Room4.des", "could_not_verify"), ("Room6.des", "you_changed"),
+                       ("Room7.des", "mozaik_undid")):
+        record_survival(store, fix(room).id, code=code, words="said", at=NOW)
+    mark_fix_undone(store, fix("Room5.des").id, at=NOW)
+
+    risks = jobmodel.open_risks(store, settings, FakeClock(NOW))
+
+    assert [line for line in risks if "fix" in line] == [
+        f"{JOB}: a fix approved for Room 2 isn't written yet, so it isn't verified (shadow); see the board",
+        f"{JOB}: the fix written on Room 1 isn't verified until the room is saved again (shadow); see the board",
+        f"{JOB}: the fix on Room 4 could not be verified after the save (shadow); see the board"]
+    assert all(check_line(line) == [] for line in risks)
+    assert not [line for line in jobmodel.digest_view(store, settings, FakeClock(NOW)).owner if "fix" in line]

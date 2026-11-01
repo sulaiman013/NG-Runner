@@ -11,8 +11,11 @@ What shows:
 - Lock design, then Finish lock for each material with a nest, then Lock, each ready, needing its check
   ("lock without check" may go ahead, with a confirmation that is logged), not yet, or asked;
 - the lease, held until when, lapsed or released;
+- where a lock's rows come from, when NG Runner's own takeoff isn't complete: the chat's IC Conversion,
+  whole (lock/names.py);
 - each batch, as the after-drop step last judged it, with [Re-send only the missing row] only where it
-  said so;
+  said so; a shadow batch waiting for the chat's own rows, or closed against them: matched, differing, or
+  not compared (lock/shadow.py);
 - each fix waiting to be written, written (with Undo), undone, or what Jim's next save showed;
 - the job sheet at lock: matches, differs (with what), or could not verify.
 """
@@ -27,8 +30,8 @@ from ngrunner.board.views import (
     BatchView, FixView, JobSheetView, LeaseView, LockButtonView, LockPanelView,
 )
 from ngrunner.checks.jobchecks import JobCheck
-from ngrunner.lock import kept
-from ngrunner.lock.work import NO_TAKEOFF, folder_of, folders_of, job_nests, preview
+from ngrunner.lock import kept, shadow
+from ngrunner.lock.work import folder_of, folders_of, job_nests, preview
 from ngrunner.messages import templates
 from ngrunner.store import JobRecord, NestRecord, Store, TakeoffRecord, list_nests
 from ngrunner.store.locks import BatchRecord, FixRecord, LeaseRecord, list_batches, list_fixes, list_leases
@@ -69,18 +72,17 @@ def panel(store: Store, facts: P4Facts, job: JobRecord, *, filed: bool, takeoff:
     if not (filed or batches or fixes or leases or waiting or sheet):
         return None
     return LockPanelView(
-        buttons=_buttons(store, facts, job, takeoff, checks, now),
+        buttons=_buttons(store, facts, job, checks, now),
         lease=_lease(leases[0], now) if leases else None,
         batches=tuple(_batch(b, facts) for b in batches),
         fixes=(*(_waiting(p) for p in waiting), *(_fix(f, facts) for f in fixes)),
         sheet=None if sheet is None else JobSheetView(sheet["code"], sheet["words"], tuple(sheet.get("items", ()))),
-        note=templates.P4_SHADOW_NOTE)
+        note=templates.P4_SHADOW_NOTE, source="" if _complete(takeoff) else templates.LOCK_FROM_THE_CHAT)
 
 
-def _buttons(store: Store, facts: P4Facts, job: JobRecord, takeoff: TakeoffRecord | None,
+def _buttons(store: Store, facts: P4Facts, job: JobRecord,
              checks: Mapping[str, JobCheck], now: datetime) -> tuple[LockButtonView, ...]:
     asked = any(r["kind"] == "click" and r.get("studio_id") == job.studio_id for r in facts.requests)
-    no_takeoff = takeoff is None or takeoff.state != "made" or not takeoff.complete
     nests = job_nests(store, job, facts.nests)
     clicks = [("lock_design", None), *(("finish_lock", n.material) for n in nests), ("lock", None)]
     buttons = []
@@ -91,16 +93,20 @@ def _buttons(store: Store, facts: P4Facts, job: JobRecord, takeoff: TakeoffRecor
             continue
         gate = preview(store, job, click, material, now, checks=checks, nests=nests)
         missing = [m.words for m in gate.missing]
-        if no_takeoff:
-            missing.append(NO_TAKEOFF)
-        if gate.allowed and not no_takeoff:
+        if gate.allowed:
             state = "ready"
-        elif not no_takeoff and all(m.waivable for m in gate.missing):
+        elif all(m.waivable for m in gate.missing):
             state = "waivable"
         else:
             state = "blocked"
         buttons.append(LockButtonView(job.studio_id, click, material, label, state, tuple(missing)))
     return tuple(buttons)
+
+
+def _complete(takeoff: TakeoffRecord | None) -> bool:
+    """NG Runner's own takeoff is complete, so a lock's rows come from it; else from the chat's IC
+    Conversion, whole, and the click says so if that gives none (lock/names.py)."""
+    return takeoff is not None and takeoff.state == "made" and takeoff.complete
 
 
 def _lease(record: LeaseRecord, now: datetime) -> LeaseView:
@@ -116,7 +122,8 @@ def _batch(batch: BatchRecord, facts: P4Facts) -> BatchView:
     label = templates.BATCH_LABELS.get(batch.kind, "Batch")
     if batch.material:
         label = f"{label}, {templates.material_words(batch.material)}"
-    words = said.get("words") or batch.words or "Waiting for the tracker to take the batch"
+    waiting = shadow.WAITING if batch.shadow else "Waiting for the tracker to take the batch"
+    words = said.get("words") or batch.words or waiting
     asked = any(r["kind"] == "resend" and r.get("batch") == batch.id for r in facts.requests)
     return BatchView(batch.id, label, batch.state, words,
                      can_resend=batch.state == "doubt" and bool(said.get("can_resend")) and not asked)
@@ -142,6 +149,22 @@ def _fix(fix: FixRecord, facts: P4Facts) -> FixView:
 _SURVIVALS = ("held", "mozaik_undid", "you_changed", "could_not_verify")
 
 
+def unverified_fixes(facts: P4Facts) -> list[str]:
+    """The heartbeat's open risks from P4 (design 6.5): each fix approved and not written yet, each written
+    and not yet judged by the room's next save, and each whose survival could not be verified. A fix that
+    held, that Jim changed, or that Mozaik undid (a card of its own) is no open risk, nor one undone."""
+    lines = [templates.fix_unverified(p["folder"], room=p["plan"].get("room", ""), state="approved")
+             for p in facts.pending if p["kind"] == "apply"]
+    for fix in facts.fixes:
+        if fix.state != "applied":
+            continue
+        if fix.survival is None:
+            lines.append(templates.fix_unverified(fix.folder, room=fix.room, state="written"))
+        elif fix.survival == "could_not_verify":
+            lines.append(templates.fix_unverified(fix.folder, room=fix.room, state="could_not_verify"))
+    return lines
+
+
 def doubts(facts: P4Facts) -> Sequence[BatchRecord]:
     """Batches in doubt: tracker problems, for Your list and the digest."""
     return [b for b in facts.batches if b.state == "doubt"]
@@ -151,4 +174,4 @@ def folder_label(batch: BatchRecord) -> str:
     return f"{batch.folder}: the {templates.BATCH_LABELS.get(batch.kind, 'lock')} batch is in doubt"
 
 
-__all__ = ["P4Facts", "doubts", "folder_label", "folder_of", "panel", "read"]
+__all__ = ["P4Facts", "doubts", "folder_label", "folder_of", "panel", "read", "unverified_fixes"]

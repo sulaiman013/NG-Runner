@@ -237,6 +237,30 @@ def test_a_settle_that_breaks_the_contract_is_refused(store: Store, changes: dic
     assert list_settles(store) == []
 
 
+def test_a_settle_for_all_jobs_keeps_the_kind_of_finding_it_stands_for(store: Store) -> None:
+    """P4's second round: a settle's scope. One for all jobs names its checker and what it found, which is how
+    it is known on any job; its words are the condition Jim gave."""
+    from ngrunner.store import SETTLE_SCOPES
+
+    run = asked(store)
+    start_check(store, run.id, at=T0)
+    finished(store, run.id)
+    common = dict(studio_id=SID, run_id=run.id, fingerprint="e" * 64, identities=IDENTITIES,
+                  conversion_sha256="2" * 64, how="not_a_problem", channel="board", at=T2)
+
+    mine = add_settle(store, words="Not a problem for this job", **common)
+    every = add_settle(store, words="When the outset is on a finished end", scope="all_jobs",
+                       checker="outset_check", what="outset", **common)
+
+    assert (mine.scope, mine.checker, mine.what) == ("job", None, None)
+    assert (every.scope, every.checker, every.what) == ("all_jobs", "outset_check", "outset")
+    assert SETTLE_SCOPES == ("job", "all_jobs") and list_settles(store) == [mine, every]
+    for bad in (dict(scope="everything"), dict(scope="all_jobs"), dict(scope="all_jobs", checker="outset_check"),
+                dict(scope="job", checker="outset_check", what="outset")):
+        with pytest.raises(ValueError):
+            add_settle(store, words="When it is fine", **{**common, **bad})
+
+
 # ----- the close prompt
 
 
