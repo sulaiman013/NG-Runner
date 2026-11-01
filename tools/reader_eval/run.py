@@ -7,6 +7,7 @@ The reader evaluation's command line (docs/p2/build-spec.md 5.7; design 3.6, dec
     .venv\Scripts\python.exe -m tools.reader_eval.run dry-run [--walls 3] [--provider openai]
     .venv\Scripts\python.exe -m tools.reader_eval.run eval --provider openai [--limit 10] [--cap 3]
     .venv\Scripts\python.exe -m tools.reader_eval.run score --provider openai [--tol-x 1] [--tol-y 1.5]
+    .venv\Scripts\python.exe -m tools.reader_eval.run place --provider anthropic
 
 Everything it writes goes under .local-fixtures\reader\ (gitignored): the crops, prep.json,
 truth.json, the cached answers and the reports. What it prints names case letters and pages only.
@@ -17,7 +18,8 @@ every job name in the local case key. eval reads the provider's key from Windows
 (NGRunner/openai_key or NGRunner/anthropic_key) and stops, having sent nothing, when it is absent.
 Each call is first checked by the cost guard (budget.py); an answer already cached for the same
 request (the sha256 of the request body, without the key) is reused and costs nothing, so score
-can re-score with other tolerances for free.
+can re-score with other tolerances for free. place re-scores the cached answers with P5a's placement
+rules (placed.py) and checks the rules on Jim's frozen jobs; it reads no key and never calls.
 """
 from __future__ import annotations
 
@@ -31,7 +33,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-from tools.reader_eval import budget, cases, diagnose, keys, pairing, payload, prep, providers, scoring, truth
+from tools.reader_eval import (budget, cases, diagnose, keys, pairing, payload, placed, prep, providers, scoring,
+                               truth)
 
 DEFAULT_WORKED = 4  # worked walls per request: decision 17 says 3 to 5
 # Totals across every run, kept on disk (budget.SpendLedger): Claude $50 for this evaluation, ever;
@@ -356,12 +359,39 @@ def _evaluate(args: argparse.Namespace, *, call: bool) -> int:
     return 0
 
 
+def cmd_place(args: argparse.Namespace) -> int:
+    """The cached answers put through P5a's placement rules and re-scored; Jim's frozen jobs checked."""
+    world = load()
+    provider = providers.PROVIDERS[args.provider](effort=args.effort)
+    result = read_walls(world, test_walls(world), worked_walls(world, args.worked), provider, None,
+                        budget.CostGuard(budget.DEFAULT_CAP_USD), answers=cases.reader_dir() / "answers",
+                        call=False, say=lambda _: None)
+    crops = {c: p.crops for c, p in world.preps.items()}
+    done = placed.place_readings(result.readings, crops)
+    frozen = placed.frozen_check({c: r.pairs for c, r in world.pairings.items()}, crops)
+    text = (f"Provider {provider.name}, model {provider.model}, effort {provider.effort}; walls with no cached "
+            f"answer: {result.not_run}.\n{placed.report(done)}\n{placed.frozen_report(frozen)}")
+    leaks = _self_check(text)
+    text += "\nSelf-check against the local case key: " + ("no job name or surname found." if not leaks
+                                                          else f"FOUND {', '.join(leaks)}")
+    out = cases.reader_dir() / "reports"
+    out.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    (out / f"{stamp}-placement-{provider.name}.txt").write_text(text + "\n", encoding="utf-8")
+    print(text)
+    return 0 if not leaks else 1
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m tools.reader_eval.run")
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("collect")
     sub.add_parser("prep")
     sub.add_parser("pair")
+    place = sub.add_parser("place")
+    place.add_argument("--provider", choices=sorted(providers.PROVIDERS), required=True)
+    place.add_argument("--effort", default="high")
+    place.add_argument("--worked", type=int, default=DEFAULT_WORKED)
     for name in ("dry-run", "eval", "score"):
         p = sub.add_parser(name)
         p.add_argument("--provider", choices=sorted(providers.PROVIDERS), required=name != "dry-run")
@@ -377,8 +407,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         p.add_argument("--tol-x", type=float, default=scoring.TOL_X_IN)
         p.add_argument("--tol-y", type=float, default=scoring.TOL_Y_IN)
     args = parser.parse_args(argv)
-    commands = {"collect": cmd_collect, "prep": cmd_prep, "pair": cmd_pair, "dry-run": cmd_dry_run,
-                "eval": lambda a: _evaluate(a, call=True), "score": lambda a: _evaluate(a, call=False)}
+    commands = {"collect": cmd_collect, "prep": cmd_prep, "pair": cmd_pair, "place": cmd_place,
+                "dry-run": cmd_dry_run, "eval": lambda a: _evaluate(a, call=True),
+                "score": lambda a: _evaluate(a, call=False)}
     return commands[args.command](args)
 
 

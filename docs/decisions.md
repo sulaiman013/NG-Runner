@@ -461,6 +461,34 @@ Measured on Cases A to J (`tests/test_checks_real.py`): no case passes whole on 
 | A failed check with open could-not-verify items | The lock gate refuses it | A check that couldn't look at everything hasn't cleared the job |
 | Left for P4's next round | `lock <Job>` in the command box; "fixes not yet verified" in the heartbeat's risks; one settled list for all jobs; a day-simulation scenario running a real `cnc_job_sheet` | Not needed for the shadow trial |
 
+## P5a placement: Jim's build choices as code rules (2026-10-31)
+
+`ngrunner/build/placement.py`: one pure function per rule, each citing the line of Jim's docs it ports (his toolkit of 2026-10-31), and "could not verify" with the reason wherever his rules don't settle a case. `python -m tools.reader_eval.run place --provider anthropic` puts Claude's cached readings through the rules, room by room, and re-scores them against the as-cut `.des` with the same scorer and tolerances (1/8 in x, 1/4 in top and bottom). No model is called. The rules were decided from Jobs A to J's 26 walls and Jim's docs; the 121 walls of the P5 jobs are the test. Their diagnoses and three of their drawings were seen while the docs were read, but no rule or number comes from them.
+
+| Rule | What the builder does | Source |
+|---|---|---|
+| Top line | One T per room; every WM panel hangs on it, Elev = T − height. T is the top of the highest FM panel reaching above the run's lowest bottom; with none, a run drawn within 1 in of 83.94 in hangs on 2132; a T within 1 in of 2132 is 2132. With no FM panel beside it and a drawn top elsewhere: could not verify, since a builder has no "as built" top, only the drawing's | RULES 329-339 (`top_line.py`'s `room_top` is Jim's check), as questionnaire Q2 recommends. BUILD 244 and 294 ("T = 2132, always") predate it; RULES outranks them |
+| Mount and height | WM when the panel's own IC line has FN, LN or RN, else FM; the height snapped to 32k+20, more than 1.3 mm off: could not verify | RULES 290-292, 318, 325-326 |
+| Stacked gap | A stacked upper with a hanging notch is WM and hangs on T. One without is FM: it stands on the closet counter, Elev = its base's height + 19.304. No WS line on the wall, no base, or bases of two heights under it: could not verify | RULES 73, 218, 221, 310, 326; Jim's own build script of Job E ("uppers stand on the counter"), tied by `ast` in `tests/test_build_placement_real.py` |
+| Run start | Never moves a run. Drawn tight to the wall's start (within 1/8 in), or 3 in or more along it (a Wall Filler or an opening): as drawn. Any gap between: could not verify. Jim's builds of the same drawn gap start the run tight to the wall (Jobs C, H), centre it (Job C) or keep it (Jobs A, B, E, I); BUILD 274 says how to read the WIDTH row, not where to build | RULES 264, BUILD 274, 276 |
+
+Measured on Claude's cached readings (silent values: build choice and reading as `diagnose.py` splits them):
+
+| | DEV, 26 walls | TEST, 121 walls |
+|---|---|---|
+| Silent build-choice errors, before → after | 33 → 15 | 76 → 70 |
+| Silent reading errors, before → after | 2 → 2 | 8 → 8 |
+| Walls with any wrong value, before → after | 9 → 6 | 20 → 18 |
+| Walls, and values, newly wrong | 0, 0 | 0, 0 |
+| Walls with a could-not-verify | 10: run start 8, top line 2 | 28: run start 24, top line 4, stacked gap 1 |
+| Silent errors left on walls no rule stopped | 0 | 35: 30 on cut WM panels whose Elev is off the 32 mm grid, 5 reading |
+
+- **Per category, build-choice errors before → after.** DEV: stacked tower 18 → 0 (Job E's uppers, all three walls now right), radius 15 → 15 and flush end 15 → 15 (all on walls that could not verify), bridge 4 → 4, plain 0 → 0. TEST: radius 34 → 28, flush end 68 → 62, plain 40 → 40, bridge 10 → 10, stacked tower 0 → 0 (its 3 errors are reading). The top line placed the WM panels of 8 DEV and 62 TEST walls, and none got worse.
+- **The 30 left unseen in TEST are the as-cut rooms', not the rules'.** Each is a WM panel the archived room hangs at an Elev of 32k+20 (top 2120, 2152 or 1960), the rule Jim's RULES of 2026-10-06 calls an error ("32k+20 is the HEIGHT grid, not the Elev grid", the toolkit's `RULES_full_20261006.md` 638-648, which names one of these jobs) and today's gate 5 refuses (RULES 319). Claude read 26 of them at 83.94 in, as today's rule hangs them, so they were silent before too. The other 4 are one wall whose room cuts one run at 2132 and another at 1960, two tops in one room (a defect, RULES 330-331): Claude read it within an inch of 1960, and the rule hangs it on the room's 2132, still wrong against that cut, now by 6.8 in.
+- **Jim's frozen jobs**, their own panels standing in for the drawing (no reader has read them), so "as drawn" holds there by construction and the top line and hung panels are the real test. **X:** T 2132 from its FM panels; all 9 panels off the floor, its stacked tower's 3 WM uppers included, where frozen; its runs start 24 in or more along their walls, as drawn. **Z:** T 2132 in all 4 rooms (one with no FM panel, by RULES 338); 10 of 10 hung panels where frozen; runs drawn tight, as drawn (Z centres a 1/8 in slack, inside the tolerance). **Y:** could not verify. Its T, 2408, puts both WM Elevs on 32k+20 (its build script says so), the rule RULES now calls an error; and its runs start 0.78 and 1.5 in from the wall. So today's rules reproduce 2 of the 3; Y would need Jim's T.
+- **Left for Jim** (the questions he would answer by building it): where a run starts when the drawing leaves under 3 in at the wall's start; and T for a room with no FM panel beside its WM run whose drawn top is not near 83.94 in (Job F's room is cut at 96 in exactly, Elev 36 in, on neither grid).
+- **Limits of the measurement.** FM panels on a room's walls that weren't read count as standing on the floor. A read vertical takes its IC line by the height it named; when that height's lines disagree on FM or WM it could not verify. A rule never changes x, so the run-start rows only move errors from silent to flagged.
+
 ## Matching (settled)
 
 | Decision | Ruling | Why |

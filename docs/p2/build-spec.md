@@ -55,8 +55,8 @@ Status: working spec for Phases 2 to 5 (design section 7: P2 18, P3 18, P4 16, P
 | P4 | Job sheet (`cnc_job_sheet.py`) | **1**, needs the run ruling | Its template `.docx` is in the zip. Jobs A to J have `.opt` and `JobDat.dat`, and 63 real job sheets in NG Jobs to compare with |
 | P4 | Fixers as diffs, backup, inverse-patch Undo | **1** on copies of Jobs A to J's `.des` | Byte-level work on CRLF files with a version line, checked by their own checker. Writing into real Mozaik jobs waits for P4's go-live |
 | P4 | Fixer survival after Jim's next save; approving each fixer; "0 writes while Mozaik ran" | **2** | Mozaik, on Jim's PC |
-| P5 | Builder (P5a), "3 archived builds reproduced" | **3**: the P5 go or no-go, which the reader evaluation decides | The pieces are here: 23 panel templates, 18 `build_*`, `gen_rooms.py`, the frozen rooms as truth, and `regression.py compare`. The design does not start P5 before the go |
-| P5 | Reading at filing, overnight staging, promotion (P5b) | **3**: the evaluation, consent, and the night setup (questionnaire 5 and 6) | |
+| P5 | Builder (P5a), "3 archived builds reproduced" | **1. Started.** The reader is decided (Claude, `docs/decisions.md`, "P5's reader"), and the placement rules are built (`ngrunner/build/placement.py`, decisions "P5a placement") | The rules give back frozen jobs X and Z's top lines and hung panels, and Y could not verify: its top line is on the 32k+20 Elev rule RULES now calls an error. Still to build: the room itself (walls, the per-panel schedule, panel products from the 23 templates, the gates) and `regression.py compare` on the 3. The pieces: 18 `build_*`, `gen_rooms.py`, the frozen rooms as truth |
+| P5 | Reading at filing, overnight staging, promotion (P5b) | **3**: the night setup (questionnaire 5 and 6). The evaluation and Jim's consent are done | |
 
 ## 3. Measured formats
 

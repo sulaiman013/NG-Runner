@@ -17,5 +17,6 @@ The steps, one module each:
   scoring   accept and error rates per wall category, silent errors apart, jobs fully built, cost
   budget    the per-run dollar cap, checked before every call
   providers OpenAI and Anthropic behind one interface; keys from Windows Credential Manager
-  run       the command line: collect, prep, pair, dry-run, eval, score
+  placed    the cached answers re-scored with P5a's placement rules, and the rules on the frozen jobs
+  run       the command line: collect, prep, pair, dry-run, eval, score, place
 """
