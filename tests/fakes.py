@@ -732,8 +732,9 @@ def wait_for_fetches(timeout: float = 90.0, *, guards: bool = True) -> None:
     stamped after the clock moved would read as later than it was. BackgroundFetches.start returns
     with its thread running, so every fetch a tick started is listed here. tests/test_e2e_day.py's
     slow-fetch test fails if these threads ever stop being named so. The takeoff of a summary just
-    filed is waited for too, and so is a P3 check. guards: the guards' read of NG Jobs too."""
-    names = ("ngrunner-fetch-", "ngrunner-takeoff-", "ngrunner-checks-")
+    filed is waited for too, and so is a P3 check and P4's lock work. guards: the guards' read of NG
+    Jobs too."""
+    names = ("ngrunner-fetch-", "ngrunner-takeoff-", "ngrunner-checks-", "ngrunner-lock-")
     names += ("ngrunner-guards-",) if guards else ()
     for thread in threading.enumerate():
         if thread.name.startswith(names):

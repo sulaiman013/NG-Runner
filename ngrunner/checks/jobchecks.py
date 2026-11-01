@@ -11,7 +11,7 @@ amber and goes in the digest. Check now is always on the board. These are the de
 taken as they are.
 
 Group 2, built on what is there and marked so: a close is MozaikJob.LCK going from a job's folder, as
-the guards keep it (guards/kept.py, "held"). ASSUMPTION: Mozaik holds that lock while a job is open and
+the guards keep it (guards/kept.py, held_locks). ASSUMPTION: Mozaik holds that lock while a job is open and
 removes it on close; no real .LCK has been read, and the Mozaik lab settles it. So does how long after a
 close the rooms are whole: here a check waits while the lock is there, and a job that changes while it
 is checked is stale from the start.
@@ -60,10 +60,11 @@ from ngrunner.checks.findings import (
     CNV, FIX, MOZAIK, Findings, Item, findings_of, from_json, to_json,
 )
 from ngrunner.checks.readers import NO_LIBRARY, NO_REFERENCE, STOPPED
+from ngrunner.clock import to_iso
 from ngrunner.guards.bak import DesignUnreadable
 from ngrunner.guards.design import room_identity
 from ngrunner.guards.facts import COULD_NOT_VERIFY, FAILED, PASSED
-from ngrunner.guards.kept import nest_files_said
+from ngrunner.guards.kept import held_locks, nest_files_said
 from ngrunner.guards.observer import LOCK_FILE
 from ngrunner.guards.reads import Unreadable, read_shared
 from ngrunner.interlock import GARAGE_SUFFIX
@@ -238,6 +239,27 @@ def _job_check(run: CheckRunRecord | None, settles: Sequence[SettleRecord], prom
                     trial=run.trial, audit=audit)
 
 
+def notes_block(job: str, check: JobCheck | None) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
+    """The check as <Job>_NGRunner.json carries it for Jim's chat (notes schema 4), and the settled list:
+    each item of the job's newest run in NG Runner's own words, with its chat line and whether Jim settled
+    it, and each settle that stands for that run, with how and his words as he gave them. counts: the run
+    stands for the files on disk as the last look found them; a stale one says to check again. Nothing a
+    checker printed is in it. (None, []) for a job never checked."""
+    if check is None or check.run is None:
+        return None, []
+    run = check.run
+    block = {"state": check.state, "kind": run.kind, "trial": bool(run.trial), "counts": bool(check.counts),
+             "at": None if run.finished_at is None else to_iso(run.finished_at),
+             "items": [{"n": shown.item.n, "kind": shown.item.kind, "checker": shown.item.checker,
+                        "tags": list(shown.item.tags), "words": templates.check_item_words(shown.item),
+                        "chat": templates.check_chat_line(job, shown.item), "settled": shown.settle is not None}
+                       for shown in check.items]}
+    settled = [{"item": shown.item.n, "tags": list(shown.item.tags), "words": templates.check_item_words(shown.item),
+                "how": shown.settle.how, "said": shown.settle.words, "at": to_iso(shown.settle.at)}
+               for shown in check.items if shown.settle is not None]
+    return block, settled
+
+
 def _settle_of(item: Item, run: CheckRunRecord, settles: Iterable[SettleRecord]) -> SettleRecord | None:
     """A settle stands for an item only on the very finding, design and IC Conversion it was made on."""
     if not item.settles:
@@ -332,7 +354,6 @@ def answer_prompt(ctx: Any, prompt_id: int, choice: str | int, *, words: str, ch
 
 
 NO_SUCH_JOB = templates.NOT_A_JOB
-_CHECK_COMMAND = re.compile(r"\s*check\s+(?P<name>\S.*?)\s*", re.IGNORECASE | re.DOTALL)
 _PROMPT_CHOICE = re.compile(rf"{PROMPT_ARG} (?P<id>[1-9][0-9]*) (?P<n>[1-9])")
 
 
@@ -343,15 +364,22 @@ def prompt_choice(argument: str) -> tuple[int, int] | None:
 
 
 def check_command(store: Store, text: str) -> str | None:
-    """The command box's "check <job>" (design 4, "How Jim answers"): the job's Studio ID, "" when no job
-    is named so, and None when the text is no check command. A name is matched whole, ignoring case: its
-    frozen name, its folder or an alias, never a part of one."""
-    found = _CHECK_COMMAND.fullmatch(text)
-    if found is None:
+    """The command box's "check <job>" (design 4, "How Jim answers"), read by cards.parse_command: the
+    job's Studio ID, "" when no job is named so, and None when the text is no check command."""
+    from ngrunner.cards import Command, parse_command
+
+    parsed = parse_command(text, [])
+    if not isinstance(parsed, Command) or parsed.kind != "check" or parsed.name is None:
         return None
-    wanted = " ".join(found["name"].split()).casefold()
+    return job_named(store, parsed.name)
+
+
+def job_named(store: Store, name: str) -> str:
+    """The Studio ID of the one job a name names, whole and ignoring case: its frozen name, its folder or
+    an alias, never a part of one. "" when none does, or more than one."""
+    wanted = " ".join(name.split()).casefold()
     named = [job.studio_id for job in list_jobs(store)
-             if wanted in {name.casefold() for name in (*_folders_of(job), *job.aliases)}]
+             if wanted in {each.casefold() for each in (*_folders_of(job), *job.aliases)}]
     return named[0] if len(named) == 1 else ""
 
 
@@ -523,8 +551,8 @@ def _closes(ctx: Any, now: datetime, toast: Callable[[ToastMessage], object] | N
     if said is None:
         return
     seen = _seen(ctx.store)
-    held = sorted(folder for folder, kept in said.items()
-                  if any(entry and entry[0] == LOCK_FILE for entry in kept.get("held", ())))
+    held = sorted(folder for folder, locks in held_locks(ctx.store).items()
+                  if any(lock.open_in_mozaik for lock in locks))
     closed = [folder for folder in seen.get("held", []) if folder not in held and folder in said]
     for folder in closed:
         job = _job_of(ctx.store, folder)

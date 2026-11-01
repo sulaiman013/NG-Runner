@@ -22,6 +22,9 @@ The guards run beside the pipeline's tick and never inside it: a guard's failure
 their reads of G: are on a worker, whose result is taken up within a second of coming back. So do P3's
 checks (checks/jobchecks.py): Jim's crosscheck runs on a worker of its own, one at a time, and what it
 found is taken up within a second; Check now, a settle and a close prompt's answer are the board's.
+P4's lock work (lock/work.py) runs the same way: its reads of Drive and Jim's scripts on a worker of
+its own, and every write it makes, into NG Runner's own copies only until P4 goes live, on the
+scheduler's thread. Every pause, from the tray, the board or a signed file, releases every lease.
 
 Quit means quit until the next logon (launcher.record_quit), and pause means filing stops while
 heartbeats, the digest, the guards and messages go on: the interlock decides that, so the pipeline keeps ticking
@@ -306,10 +309,12 @@ class Supervisor:
         opener: Callable[[str], None] | None = None,
         toolkit_runs: Any = None,
         check_runs: Any = None,
+        lock_work: Any = None,
     ) -> None:
         self._paths = paths
         self._toolkit_runs = toolkit_runs      # where the night's toolkit copy is tried (a FetchRunner)
         self._check_runs = check_runs          # where P3's checks run (a FetchRunner), one at a time
+        self._lock_work = lock_work            # P4 at work (lock.work.LockWork), with a worker of its own
         self._clock = clock or SystemClock()
         self._secrets = secrets if secrets is not None else CredentialSecrets()
         self._http = http
@@ -360,6 +365,7 @@ class Supervisor:
             _Task("pause files", MINUTE, self._read_pause_files),
             _Task("guards", MINUTE, self._guards),
             _Task("checks", MINUTE, self._checks),
+            _Task("lock work", MINUTE, self._lock),
             _Task("pipeline tick", MINUTE, self._tick),
             _Task("receipts check", MINUTE, self._check_receipts),
             _Task("heartbeat", HEARTBEAT_EVERY, self._heartbeat),
@@ -433,6 +439,8 @@ class Supervisor:
             self._quietly("the toolkit copy's stop", self._toolkit_runs.stop)
         if self._check_runs is not None:        # a check under way dies with the process; it is asked again
             self._quietly("the checks' stop", self._check_runs.stop)
+        if self._lock_work is not None:         # a read under way dies with the process; its click waits
+            self._quietly("the lock work's stop", self._lock_work.runner.stop)
         if self._server is not None:
             self._quietly("the board's stop", self._server.stop)
         if self._tray is not None:
@@ -604,7 +612,10 @@ class Supervisor:
             next(task for task in self._tasks if task.name == "pipeline tick").last = None
         if "checks" in asked:
             next(task for task in self._tasks if task.name == "checks").last = None
+        if "lock" in asked:
+            next(task for task in self._tasks if task.name == "lock work").last = None
         self._take_checks(now)
+        self._take_lock(now)
         if "support" in asked:
             self._guarded("support bundle", self._send_support_bundle, now)
         return self._take_guards(now) or bool(asked)
@@ -836,6 +847,54 @@ class Supervisor:
             _log.exception("the checks failed")
             self._dev(now, "task_failed", f"The checks failed ({type(exc).__name__}).")
         return False
+
+    def _lock(self, now: datetime) -> None:
+        """P4 at work: Jim's lock clicks, the batch after them, fixes, Undo and leases. Its writes go only
+        to NG Runner's own copies until P4 goes live, and the P4 interlock holds each one."""
+        if self._ctx is not None and not self._store_problem:
+            self._lock_works().tick(self._ctx)
+
+    def _lock_works(self) -> Any:
+        if self._lock_work is None:
+            from ngrunner.intake.pipeline import BackgroundFetches
+            from ngrunner.lock import work
+
+            self._lock_work = work.LockWork(BackgroundFetches(1, overrun=work.OVERRUN, name=work.WORKER))
+        return self._lock_work
+
+    def _take_lock(self, now: datetime) -> bool:
+        """What the lock work's worker found, within a second of its coming back, on this thread."""
+        if self._ctx is None or self._store_problem or self._lock_work is None:
+            return False
+        try:
+            return self._lock_work.take_finished(self._ctx)
+        except StoreError as exc:
+            _log.error("the lock work could not use the database: %s", exc)
+            self._store_problem = NO_STORE
+        except Exception as exc:  # noqa: BLE001 - P4's failure must never stop the schedule
+            _log.exception("the lock work failed")
+            self._dev(now, "task_failed", f"The lock work failed ({type(exc).__name__}).")
+        return False
+
+    def _release_leases(self, now: datetime) -> None:
+        """Pause hands every job back to Jim's chat: each lease NG Runner holds is released. One that
+        can't be says why on the board and to Sulaiman, and the rest are released all the same."""
+        if self._ctx is None or self._store is None or self._store_problem:
+            return
+        from ngrunner.lock import work
+
+        try:
+            results = work.release_leases(self._store, self._paths, self._ctx.roots,
+                                          self._settings.tracker_folder, self._clock)
+        except Exception:  # noqa: BLE001 - a pause must pause, whatever the leases do; logged
+            _log.exception("releasing the leases failed")
+            self._dev(now, "lease_not_released", "The leases could not be released at a pause; they lapse"
+                                                 " by themselves within 2 and a half hours.")
+            return
+        for result in results:
+            if not result.ok:
+                self._dev(now, "lease_not_released", f"{result.folder}: its lease was not released at a pause:"
+                                                     f" {result.reason or 'no reason given'}")
 
     def _check_receipts(self, now: datetime) -> None:
         if self._ready():
@@ -1503,17 +1562,47 @@ class Supervisor:
             self._asked.add("checks")
         return reply
 
+    def lock_click(self, studio_id: str, click: str, material: str, without_check: bool) -> str:
+        """The board's Lock design, Finish lock and Lock (P4): refused at once with what is missing,
+        or asked, and acted on at the next pass of the schedule."""
+        if self._store is None or self._store_problem or self._ctx is None:
+            return CANT_DO_THAT
+        from ngrunner.lock import work
+
+        reply = work.ask_lock(self._ctx, studio_id.strip(), click.strip(), material.strip() or None,
+                              bool(without_check))
+        with self._asked_lock:
+            self._asked.add("lock")
+        return reply
+
+    def resend_row(self, batch_id: str) -> str:
+        """[Re-send only the missing row], where the board offers it."""
+        if self._store is None or self._store_problem or self._ctx is None:
+            return CANT_DO_THAT
+        from ngrunner.lock import work
+
+        reply = work.ask_resend(self._ctx, batch_id.strip())
+        with self._asked_lock:
+            self._asked.add("lock")
+        return reply
+
+    def undo_fix(self, fix_id: str) -> str:
+        """Undo of a fix NG Runner wrote: it waits on the interlock like the fix did."""
+        if self._store is None or self._store_problem or self._ctx is None:
+            return CANT_DO_THAT
+        from ngrunner.lock import work
+        from ngrunner.messages.templates import LOCK_GONE
+
+        if not fix_id.strip().isdigit():
+            return LOCK_GONE
+        reply = work.ask_undo(self._ctx, int(fix_id))
+        with self._asked_lock:
+            self._asked.add("lock")
+        return reply
+
     def _run_command(self, text: str, *, channel: str) -> str:
         if self._store is None or self._store_problem:
             return CANT_DO_THAT
-        from ngrunner.checks import jobchecks
-
-        named = jobchecks.check_command(self._store, text)
-        if named is not None and self._ctx is not None:
-            reply = jobchecks.ask(self._ctx, named, trigger="check_now") if named else jobchecks.NO_SUCH_JOB
-            with self._asked_lock:
-                self._asked.add("checks")
-            return reply
         parsed = parse_command(text, self._open_cards())
         if isinstance(parsed, Rejection):
             return parsed.text
@@ -1523,7 +1612,20 @@ class Supervisor:
             return self.resume()
         if parsed.kind == "answer":
             return self._answer(parsed.card_id, parsed.choice, words=parsed.text, channel=channel)
+        if parsed.kind == "check":
+            return self._check_named(parsed.name or "")
         return self._add_job(parsed)
+
+    def _check_named(self, name: str) -> str:
+        """The command box's "check <job>": Check now on the one job that name names, whole."""
+        if self._ctx is None:
+            return NOT_SET_UP
+        from ngrunner.checks import jobchecks
+
+        named = jobchecks.job_named(self._store, name)
+        if not named:
+            return jobchecks.NO_SUCH_JOB
+        return self.check_job(named)
 
     def _open_cards(self) -> list[Card]:
         found = (self._card_or_none(record) for record in list_cards(self._store, state="open"))
@@ -1581,6 +1683,8 @@ class Supervisor:
             set_state(self._store, PAUSED, "yes" if paused else "no")
             log_event(self._store, at=now, kind="paused" if paused else "resumed", text=text,
                       lane="ACT")
+        if paused:
+            self._release_leases(now)
         self._update_tray(now)
         return None
 

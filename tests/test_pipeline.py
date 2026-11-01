@@ -1785,8 +1785,9 @@ def test_filing_writes_three_new_files_and_notes_what_it_filed(world):
         second.cache_path.read_bytes())
     record = world.notes(folder)
     assert list(record) == ["schema", "job", "branch", "summary", "designs", "designs_checked",
-                            "filed_at", "items", "nests", "preflight", "takeoff", "note"]
-    assert record["schema"] == 3 and record["job"] == folder and record["branch"] == "closet"
+                            "filed_at", "items", "nests", "preflight", "takeoff", "check", "settled", "note"]
+    assert record["schema"] == 4 and record["job"] == folder and record["branch"] == "closet"
+    assert record["check"] is None and record["settled"] == []
     assert record["nests"] == [] and record["preflight"] is None
     assert record["designs"] == 2 and record["designs_checked"] is True
     assert record["summary"] == {

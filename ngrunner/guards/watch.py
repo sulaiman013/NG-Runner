@@ -54,8 +54,8 @@ from ngrunner.guards.facts import (
 )
 from ngrunner.guards.kept import (
     LOCK_AT, MOZAIK_RUNNING, NEST_FILES, TAKEOFFS, AskedProgram, SizeQuestion, declined_hashes,
-    done_redo, forget_question, keep_question, labels_of, labels_seen, nest_files_said, place_key,
-    question_of, redo_places,
+    done_redo, forget_question, keep_question, labels_of, labels_seen, nest_files_said,
+    note_mozaik_session, place_key, question_of, redo_places,
 )
 from ngrunner.guards.lockcheck import take_lock_facts
 from ngrunner.guards.nest_state import (
@@ -737,7 +737,7 @@ def _take_nest_files(ctx: Any, plan: Plan, found: Scan, now: datetime) -> None:
     all of it as from before install, on an upgrade too. Who the locks name goes in the owner log,
     and nothing gates on any of it (build spec 5.12)."""
     store = ctx.store
-    _note_mozaik_running(store, found)
+    _note_mozaik_running(store, found, now)
     if found.mozaik is None or (plan.nest_files is None and found.mozaik_unlisted):
         return
     said = next_said(plan.nest_files, found.mozaik, found.mozaik_unlisted, found.nests, found.locks, now)
@@ -752,9 +752,13 @@ def _take_nest_files(ctx: Any, plan: Plan, found: Scan, now: datetime) -> None:
             set_state(tx, NEST_FILES, json.dumps(said, ensure_ascii=False))
 
 
-def _note_mozaik_running(store: Store, found: Scan) -> None:
-    """For Health, so Sulaiman can see whether the process names in observer.py are the real ones."""
-    if found.mozaik_looked and json.dumps(found.mozaik_running) != get_state(store, MOZAIK_RUNNING):
+def _note_mozaik_running(store: Store, found: Scan, now: datetime) -> None:
+    """For Health, so Sulaiman can see whether the process names in observer.py are the real ones,
+    and as Mozaik's sessions at this PC, which P4's survival check reads."""
+    if not found.mozaik_looked:
+        return
+    note_mozaik_session(store, found.mozaik_running, now)
+    if json.dumps(found.mozaik_running) != get_state(store, MOZAIK_RUNNING):
         set_state(store, MOZAIK_RUNNING, json.dumps(found.mozaik_running))
 
 

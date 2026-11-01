@@ -109,6 +109,77 @@
             {% endif %}
           </div>
           {% endif %}
+          {% if job.p4 %}{% set p = job.p4 %}
+          <div class="lock-panel">
+            {% if p.note %}<p class="lock-note">{{ m.icon("info") }}<span>{{ p.note }}</span></p>{% endif %}
+            <ul class="lock-buttons">
+            {% for b in p.buttons %}
+              <li class="lock-button">
+                {{ m.tag(lock_button_style(b.state)) }}
+                {% if b.state == "ready" %}
+                <form class="inline-form" method="post" action="{{ url_for('lock_click') }}">
+                  {{ m.token_field() }}{{ m.back_field(page) }}
+                  <input type="hidden" name="studio_id" value="{{ b.studio_id }}">
+                  <input type="hidden" name="click" value="{{ b.click }}">
+                  <input type="hidden" name="material" value="{{ b.material or '' }}">
+                  <button class="btn btn--secondary btn--sm" type="submit">{{ m.icon("lock") }}<span>{{ b.label }}</span></button>
+                </form>
+                {% elif b.state == "waivable" %}
+                <details class="reveal reveal--start">
+                  <summary class="btn btn--secondary btn--sm">{{ m.icon("lock") }}<span>{{ b.label }}</span></summary>
+                  <form class="reveal-panel" method="post" action="{{ url_for('lock_click') }}">
+                    {{ m.token_field() }}{{ m.back_field(page) }}
+                    <input type="hidden" name="studio_id" value="{{ b.studio_id }}">
+                    <input type="hidden" name="click" value="{{ b.click }}">
+                    <input type="hidden" name="material" value="{{ b.material or '' }}">
+                    <input type="hidden" name="without_check" value="yes">
+                    <p class="reveal-text">{{ lock_without_check }}: {{ b.label }} goes ahead without a current check of the design. That is kept with the lock, and logged.</p>
+                    <button class="btn btn--primary" type="submit">{{ lock_without_check }}</button>
+                  </form>
+                </details>
+                {% else %}
+                <span class="lock-label">{{ b.label }}</span>
+                {% endif %}
+                {% if b.missing %}<ul class="lock-missing">{% for words in b.missing %}<li>{{ words }}</li>{% endfor %}</ul>{% endif %}
+              </li>
+            {% endfor %}
+            </ul>
+            {% if p.lease %}<p class="lock-line">{{ m.tag(lease_style(p.lease.state)) }}<span>{{ p.lease.words }}</span></p>{% endif %}
+            {% for batch in p.batches %}
+            <div class="lock-line">
+              {{ m.tag(batch_style(batch.state)) }}
+              <span>{{ batch.label }}: {{ batch.words }}</span>
+              {% if batch.can_resend %}
+              <form class="inline-form" method="post" action="{{ url_for('resend_row') }}">
+                {{ m.token_field() }}{{ m.back_field(page) }}
+                <input type="hidden" name="batch" value="{{ batch.id }}">
+                <button class="btn btn--secondary btn--sm" type="submit">{{ m.icon("send") }}<span>{{ resend_label }}</span></button>
+              </form>
+              {% endif %}
+            </div>
+            {% endfor %}
+            {% for fix in p.fixes %}
+            <div class="lock-line">
+              {{ m.tag(fix_style(fix.state)) }}
+              <span>{{ fix.words }}</span>
+              {% if fix.can_undo and fix.id is not none %}
+              <form class="inline-form" method="post" action="{{ url_for('undo_fix') }}">
+                {{ m.token_field() }}{{ m.back_field(page) }}
+                <input type="hidden" name="fix" value="{{ fix.id }}">
+                <button class="btn btn--secondary btn--sm" type="submit">{{ m.icon("refresh") }}<span>Undo</span></button>
+              </form>
+              {% endif %}
+            </div>
+            {% endfor %}
+            {% if p.sheet %}
+            <div class="lock-line">
+              {{ m.tag(sheet_style(p.sheet.state)) }}
+              <span>{{ p.sheet.words }}</span>
+              {% if p.sheet.items %}<ul class="lock-missing">{% for item in p.sheet.items %}<li>{{ item }}</li>{% endfor %}</ul>{% endif %}
+            </div>
+            {% endif %}
+          </div>
+          {% endif %}
         </td>
         <td class="next" data-label="Next step">
           {{ job.next_step }}

@@ -83,6 +83,12 @@ class AppPaths:
     def launcher_state(self) -> Path:
         return self.app_data / "launcher.json"
 
+    @property
+    def p4_shadow(self) -> Path:
+        """Where P4's writes go until P4 goes live: a lease, a tracker batch, a room's fix and a job
+        sheet, each into a copy on this PC's own disk (shadow_roots). Never synced, never in git."""
+        return self.app_data / "P4 shadow"
+
 
 def app_paths(environ: Mapping[str, str] = os.environ) -> AppPaths:
     """%LOCALAPPDATA%\\NGRunner, or NGR_APP_DATA when set (tests). Either must be a full path."""
@@ -245,10 +251,30 @@ def save_settings(paths: AppPaths, settings: Settings) -> None:
 
 
 def roots(settings: Settings, paths: AppPaths) -> Roots:
-    """The roots commit_write knows about, from these settings."""
+    """The roots commit_write knows about, from these settings. The tracker's folder is never one
+    of them before P4 goes live: settings.tracker_folder is only read (the pre-flight, the after-drop
+    step), so a real batch has nowhere to go, and P4's rules refuse it by name besides."""
     from ngrunner.writes import Roots
 
     return Roots(settings.ng_jobs, settings.mozaik_shared, settings.control, paths.app_data)
+
+
+SHADOW_PLACES = ("NG Jobs copy", "Mozaik copy", "control copy", "data", "tracker inbox copy")
+
+
+def shadow_roots(paths: AppPaths) -> Roots:
+    """The roots P4's writes go to until P4 goes live: folders of their own in AppPaths.p4_shadow,
+    on this PC's own disk, made here when missing. None is named like the real ones (writes.py's P4
+    rules refuse a folder named Mozaik Shared or NG Conversion program Claude), and the P4 interlock
+    refuses anything below the real folders whatever roots it is handed. A shadow room is NG
+    Runner's own copy of a real one (lock.work), so its own data folder may hold it."""
+    from ngrunner.writes import Roots
+
+    places = [paths.p4_shadow / name for name in SHADOW_PLACES]
+    for place in places:
+        place.mkdir(parents=True, exist_ok=True)
+    ng_jobs, mozaik, control, data, tracker = places
+    return Roots(ng_jobs, mozaik, control, data, tracker=tracker)
 
 
 # ----- checks

@@ -275,15 +275,15 @@ def test_an_observed_job_gets_no_takeoff(world):
     assert takeoffs(world) == [] and world.ops(pipeline.TAKEOFF, state=None) == []
 
 
-# ----- the notes file: schema 3, with the takeoff for Jim's chat
+# ----- the notes file: schema 3 brought the takeoff for Jim's chat (schema 4 adds the check)
 
 
-def test_the_notes_carry_the_takeoff_for_jims_chat_in_schema_3(world):
+def test_the_notes_carry_the_takeoff_for_jims_chat(world):
     filed(world)
 
     notes = world.notes(FOLDER)
     takeoff = notes["takeoff"]
-    assert notes["schema"] == 3
+    assert notes["schema"] == 4
     assert (takeoff["state"], takeoff["complete"], takeoff["could_not_verify"]) == (
         "made", True, 0)
     assert takeoff["basis"] == "takeoff estimate; the nest decides"

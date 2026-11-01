@@ -6,8 +6,8 @@ Why a file and a lapse. Jim's chat can't see NG Runner's store, only the job's f
 file there, "_NG Runner is handling this job.txt", which the RULES line tells the chat to read: never
 write a job whose lease is active and unexpired. A dead NG Runner must never lock the chat out (design
 10, "Leases expire; release to chat"), so every lease lapses by itself LEASE_TERM after it was last
-written, and NG Runner writes it again every RENEW_AFTER while it works: a lease lapses at most half an
-hour after NG Runner stops. A lapsed lease is never renewed back to life, since the chat may have
+written, and NG Runner writes it again every RENEW_AFTER while it works: a lease lapses at most LEASE_TERM
+(two and a half hours) after NG Runner last wrote it, so at most that long after NG Runner stops. A lapsed lease is never renewed back to life, since the chat may have
 started on the job meanwhile: it must be taken again, which only happens when a job is clear to work.
 
 Releasing writes the file again as released, as commit_write never deletes. Pause, uninstall and

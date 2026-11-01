@@ -243,6 +243,27 @@ def test_roots_come_from_the_settings_and_the_data_folder(tmp_path):
     assert (r.ng_jobs, r.control, r.app_data) == (Path(GOOD["ng_jobs"]), Path(GOOD["control"]), tmp_path)
 
 
+def test_the_tracker_folder_is_no_root_until_p4_goes_live(tmp_path):
+    """The tracker folder goes into Roots(tracker=...) only at P4's go-live: until then a batch has
+    nowhere real to go, and the chokepoint's P4 rules refuse the real drop and fix by name besides."""
+    settings = settings_from({**GOOD, "tracker_folder": r"C:\CNC operations\NG Conversion program Claude"})
+    assert settings.tracker_folder is not None
+    assert roots(settings, AppPaths(tmp_path)).tracker is None
+
+
+def test_p4s_shadow_writes_go_to_a_local_folder_of_their_own_inside_the_data_folder(tmp_path):
+    from ngrunner.config import shadow_roots
+
+    paths = AppPaths(tmp_path / "data")
+    shadow = shadow_roots(paths)
+    places = (shadow.ng_jobs, shadow.mozaik_shared, shadow.control, shadow.app_data, shadow.tracker)
+    assert all(p.is_dir() and paths.p4_shadow in p.parents for p in places)
+    assert len({p.name.casefold() for p in places}) == 5
+    assert shadow.mozaik_shared.name.casefold() != "mozaik shared"
+    assert shadow.tracker.name.casefold() != "ng conversion program claude"
+    assert paths.p4_shadow.parent == paths.app_data
+
+
 # ----- P1b's settings
 
 

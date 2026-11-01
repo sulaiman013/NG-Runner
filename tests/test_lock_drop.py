@@ -231,6 +231,25 @@ def after(env, batch, folder: Path):
                       snapshots=folder, now=env["clock"].now())
 
 
+def test_reading_and_judging_apart_gives_what_after_drop_gives_and_the_read_writes_nothing(env) -> None:
+    """The running app reads on a worker (read_after: the inbox folder and the snapshot, both maybe on
+    Drive) and judges on the scheduler's thread (judge_after: the store)."""
+    from ngrunner.lock.drop import judge_after, read_after
+
+    batch = drop(env).batch
+    archive(env, batch)
+    env["clock"].advance(timedelta(minutes=2))
+    folder = folder_of(env, "a", **landed_rows())
+    before = get_batch(env["store"], batch.id)
+
+    seen = read_after(before, roots=env["roots"], snapshots=folder)
+
+    assert get_batch(env["store"], batch.id) == before            # reading changed nothing
+    judged = judge_after(before, seen, store=env["store"], now=env["clock"].now())
+    assert judged.state == "first_ok" and get_batch(env["store"], batch.id).state == "first_ok"
+    assert seen.snap is not None and seen.archived is not None
+
+
 def test_it_waits_for_the_archive_then_for_a_snapshot_after_it(env) -> None:
     batch = drop(env).batch
     assert after(env, batch, folder_of(env, "a", **landed_rows())).state == "dropped"

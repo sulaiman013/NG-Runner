@@ -342,6 +342,14 @@ def test_a_fix_still_there_after_the_next_save_held(env) -> None:
     assert get_fix(env["store"], record.id).survival == "held"
 
 
+def test_survival_judged_on_a_worker_keeps_nothing_until_it_is_recorded_where_the_store_is_written(env) -> None:
+    record = applied(env)
+    found = survival(record, NOTCH_FACE, env["snapshot"], room_bytes=room(active="True", tail="3"),
+                     room_name="Room1.des", work=env["work"], sessions=(), store=env["store"],
+                     at=env["clock"].now(), run=env["jim"], keep=False)
+    assert found.code == "held" and get_fix(env["store"], record.id).survival is None
+
+
 def test_a_value_put_back_by_a_session_open_across_the_write_is_mozaik_undid(env) -> None:
     record = applied(env)
     open_across = [(record.applied_at - timedelta(minutes=5), record.applied_at + timedelta(minutes=30))]

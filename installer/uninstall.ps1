@@ -68,7 +68,7 @@ function Release-AllJobs([string]$Root, [string[]]$Versions) {
     $app = Join-Path $Root ('app-' + $Versions[-1] + '\' + $AppExe)
     & $app release-all | Out-Host
     if ($LASTEXITCODE -ne 0) {
-        Say ('Releasing the jobs to chat did not finish (exit code ' + $LASTEXITCODE + '). Leases end by themselves within 2 hours;' +
+        Say ('Releasing the jobs to chat did not finish (exit code ' + $LASTEXITCODE + '). Leases end by themselves within 2 and a half hours;' +
              ' until then, chat leaves those jobs alone.')
     }
 }

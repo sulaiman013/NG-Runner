@@ -54,6 +54,10 @@ What each fact means here, which is the contract with whoever writes it:
                while its files are those it ran on: something to fix from one that counts is on
                Your list (one line a job) and in the digest; a stale one is on its row only, saying
                to check again. An unanswered close prompt is on Your list and in the digest.
+    P4         lock.view: each filed job's lock panel (its three lock buttons with what each is missing,
+               its lease, batches, fixes and job sheet), from the store alone. A batch in doubt is a
+               tracker problem: on Your list and the digest's For you line, and its job stays on the
+               board. A fix to approve, or to redo, is a card like any other.
 """
 from __future__ import annotations
 
@@ -69,13 +73,14 @@ from ngrunner.board.views import (
     PromptView, TakeoffView, Tick, TrayState, tray_tooltip,
 )
 from ngrunner.checks.jobchecks import JobCheck, job_checks
+from ngrunner.lock import view as lock_view
 from ngrunner.cards import Card, age_days, card_from_record, reminder_due
 from ngrunner.clock import Clock, fmt_clock, fmt_date, fmt_day, from_iso, pacific_day
 from ngrunner.config import Settings
 from ngrunner.digest import DigestView, JobLine
 from ngrunner.fab import install_date
 from ngrunner.guards.headsup import UNREADABLE_NOTE
-from ngrunner.guards.kept import folder_of_card, nest_files_said, saved_preflights, takeoffs_said
+from ngrunner.guards.kept import folder_of_card, held_locks, saved_preflights, takeoffs_said
 from ngrunner.guards.observer import OPTIMIZER_LOCK
 from ngrunner.interlock import GARAGE_SUFFIX
 from ngrunner.intake.pipeline import (
@@ -194,6 +199,8 @@ class _Facts:
     takeoffs: dict[str, dict[str, Any]] = field(default_factory=dict)  # by folder
     card_folders: dict[str, str] = field(default_factory=dict)         # cards with no job or row
     ng_jobs: Path | None = None
+    checks: dict[str, JobCheck] = field(default_factory=dict)          # each job's check (P3)
+    p4: lock_view.P4Facts | None = None                                # P4's batches, fixes and leases
 
 
 def _read(store: Store, now: datetime, settings: Settings | None = None) -> _Facts:
@@ -208,9 +215,10 @@ def _read(store: Store, now: datetime, settings: Settings | None = None) -> _Fac
     records = tuple(c for c in open_cards if c.studio_id or c.fab_row_id or c.id in card_folders)
     dev, events = tuple(list_dev(store)), tuple(list_events(store))
     nests = tuple(n for n in list_nests(store) if n.state != "not_posted")
+    checks = job_checks(store, now)
     return _Facts(
         now=now,
-        jobs=_job_facts(store, jobs, rows, records, dev, events, nests, checks=job_checks(store, now)),
+        jobs=_job_facts(store, jobs, rows, records, dev, events, nests, checks=checks),
         free_rows=tuple(r for r in rows
                         if r.studio_id is None and r.state not in _NOT_ON_THE_BOARD),
         cards=tuple(card_from_record(c, job=names.get(c.studio_id or "") or card_folders.get(c.id),
@@ -224,11 +232,12 @@ def _read(store: Store, now: datetime, settings: Settings | None = None) -> _Fac
         nests=nests,
         toolkit_adopted=any(snapshot.adopted for snapshot in list_snapshots(store)),
         lock=saved_preflights(store),
-        held={folder.casefold(): said["held"]
-              for folder, said in (nest_files_said(store) or {}).items() if said.get("held")},
+        held={folder.casefold(): list(locks) for folder, locks in held_locks(store).items()},
         takeoffs=takeoffs_said(store),
         card_folders=card_folders,
         ng_jobs=None if settings is None else settings.ng_jobs,
+        checks=checks,
+        p4=lock_view.read(store),
     )
 
 
@@ -357,7 +366,7 @@ def board_view(
 
 def _board_rows(store: Store, facts: _Facts, *, paused: bool) -> tuple[JobRow, ...]:
     rows = [_job_row(store, j, facts, paused=paused) for j in facts.jobs
-            if _still_on_the_board(j, facts.now)]
+            if _still_on_the_board(j, facts.now) or _p4_open(j, facts)]
     away = "ng_jobs_unreachable" in facts.standing
     rows += [_free_row(row, _row_cards(row, facts), paused=paused, away=away)
              for row in facts.free_rows]
@@ -455,7 +464,19 @@ def _job_row(store: Store, j: _JobFacts, facts: _Facts, *, paused: bool) -> JobR
         lock=_lock_lines(j.folders, facts),
         takeoff=_takeoff_view(j),
         check=_check_view(j, facts.now),
+        p4=None if facts.p4 is None else lock_view.panel(
+            store, facts.p4, j.job, filed=j.filed_at is not None, takeoff=j.takeoff, checks=facts.checks,
+            now=facts.now),
     )
+
+
+def _p4_open(j: _JobFacts, facts: _Facts) -> bool:
+    """A batch in doubt, or a fix waiting to be written, keeps a job on the board past its 30 days."""
+    if facts.p4 is None:
+        return False
+    names = {name.casefold() for name in j.folders}
+    return (any(b.folder.casefold() in names for b in lock_view.doubts(facts.p4))
+            or any(p["folder"].casefold() in names for p in facts.p4.pending))
 
 
 def _check_view(j: _JobFacts, now: datetime) -> CheckView:
@@ -809,7 +830,23 @@ def _your_list(facts: _Facts, *, paused: bool) -> list[tuple[datetime, ListItem]
     items += [_do_not_cut_item(nest, facts) for nest in _do_not_cuts(facts)]
     items += [_save_nest_item(nest, facts) for nest in facts.nests if nest.state == "save_nest"]
     items += _check_items(facts)
+    items += _doubt_items(facts)
     return sorted(items, key=lambda item: item[0])
+
+
+def _doubt_items(facts: _Facts) -> list[tuple[datetime, ListItem]]:
+    """A batch in doubt: the tracker may not hold what it said, and nothing is sent again by itself."""
+    if facts.p4 is None:
+        return []
+    items = []
+    for batch in lock_view.doubts(facts.p4):
+        said = (facts.p4.after.get(batch.id) or {}).get("words") or batch.words or ""
+        text = _fit(f"{lock_view.folder_label(batch)}: {said.rstrip('.')}; see the board",
+                    f"{lock_view.folder_label(batch)}; see the board")
+        items.append((batch.dropped_at, ListItem(_ended(_fit(text, "A tracker batch is in doubt; see the board")),
+                                                 job=batch.folder,
+                                                 age_days=(facts.now - batch.dropped_at) // timedelta(days=1))))
+    return items
 
 
 def _check_items(facts: _Facts) -> list[tuple[datetime, ListItem]]:
@@ -1029,7 +1066,9 @@ def digest_view(store: Store, settings: Settings | None, clock: Clock) -> Digest
     return DigestView(
         now=now,
         owner=(*_nest_lines(facts), *_installing_soon(facts, day),
-               *_alarms(store, facts, paused=None), *_told_stuck(facts, since), *_closes_waiting(facts)),
+               *_alarms(store, facts, paused=None), *_told_stuck(facts, since), *_closes_waiting(facts),
+               *(_fit(f"{lock_view.folder_label(b)}; see the board", "A tracker batch is in doubt; see the board")
+                 for b in (lock_view.doubts(facts.p4) if facts.p4 is not None else ()))),
         jobs=_touched(store, facts, since, paused=paused, day=day),
         cards=facts.cards,
         open_items=len(items),

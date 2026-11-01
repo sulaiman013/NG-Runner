@@ -24,7 +24,8 @@ minutes apart have found none, while its job has no closed marker (decision 7e: 
 fixes as steps for Jim), while anything in its folder changed in the last two minutes (NG Runner's own
 write and temp files aside), while its backup is newer or larger and holds another design (decision
 7d, Q19: it may hold unsaved work), and while NG Runner holds no lease on it. A batch and a job sheet
-are files Mozaik never reads, so Mozaik doesn't hold them up.
+are files Mozaik never reads, so Mozaik doesn't hold them up. One built "releasing" lets only a lease
+file through, and through a pause: Pause and release-all hand every lease back to Jim's chat.
 """
 from __future__ import annotations
 
@@ -132,6 +133,7 @@ _REAL_PLACES = (("ng_jobs", "NG Jobs"), ("mozaik_shared", "Mozaik Shared"),
                 ("control", "the control folder"), ("tracker", "the tracker's own folder"))
 _ROOM = re.compile(r"Room[0-9]+\.des", re.IGNORECASE)
 _TEMP_SUFFIX = ".ngr-tmp"
+_LEASE_FILE = "_NG Runner is handling this job.txt"     # lock.leases.LEASE_NAME
 _EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 
 
@@ -141,10 +143,11 @@ class P4Interlock:
     so its own rename doesn't read as Jim saving. One per batch of work: a new one starts the wait."""
 
     def __init__(self, ctx: Any, *, mozaik_running: Callable[[], bool | None],
-                 lease_held: Callable[[str], bool]) -> None:
+                 lease_held: Callable[[str], bool], releasing: bool = False) -> None:
         self._ctx = ctx
         self._mozaik_running = mozaik_running
         self._lease_held = lease_held
+        self._releasing = releasing
         self._clear_since: dict[str, datetime] = {}
         self._own: dict[str, int] = {}          # path key: the mtime NG Runner's write left on it
 
@@ -154,6 +157,10 @@ class P4Interlock:
             reason = self._real_place(target)
             if reason:
                 return reason
+        if self._releasing:
+            if any(Path(t).name != _LEASE_FILE for t in targets):
+                return "Only a lease is released through a pause, so nothing else was written."
+            return None
         if is_paused(self._ctx.store):
             return PAUSED_REASON
         rooms = [Path(t) for t in targets if Path(t).suffix.casefold() == ".des"]
@@ -262,12 +269,13 @@ class P4Interlock:
 
 
 def p4_interlock(ctx: Any, *, mozaik_running: Callable[[], bool | None] = mozaik_running,
-                 lease_held: Callable[[str], bool] | None = None) -> P4Interlock:
+                 lease_held: Callable[[str], bool] | None = None, releasing: bool = False) -> P4Interlock:
     """The interlock for a P4 commit. ctx needs .store, .roots (the folders NG Runner is configured
     with, which P4's build never writes), .clock, and .tracker, the real tracker folder or None.
-    lease_held(job) says whether NG Runner holds an active lease on a job; by default ctx's own."""
+    lease_held(job) says whether NG Runner holds an active lease on a job; by default ctx's own.
+    releasing: for a lease being released (Pause, release-all), which nothing else may use."""
     held = lease_held if lease_held is not None else ctx.lease_held
-    return P4Interlock(ctx, mozaik_running=mozaik_running, lease_held=held)
+    return P4Interlock(ctx, mozaik_running=mozaik_running, lease_held=held, releasing=releasing)
 
 
 def _key(path: Path) -> str:

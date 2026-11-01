@@ -445,7 +445,8 @@ def test_scenario_02_a_bare_surname_row_is_filed_told_and_listed(make_world, tmp
     summary = (world.ng_jobs / "Testerson_101426" / "Testerson_101426_summary.pdf").read_bytes()
     assert check_summary(summary).project_name == "Testerson_101426"
     record = record_of(world, "Testerson_101426")
-    assert record["schema"] == 3 and record["job"] == "Testerson_101426"
+    assert record["schema"] == 4 and record["job"] == "Testerson_101426"
+    assert record["check"] is None and record["settled"] == []
     assert record["branch"] == "closet" and record["items"] == []
     assert record["summary"]["file"] == "Testerson_101426_summary.pdf"
     assert record["summary"]["sha256"] == tree(world.ng_jobs)[
@@ -2337,7 +2338,7 @@ def test_scenario_56_a_filed_jobs_notes_carry_its_nests_and_pre_flight(make_worl
     world.run(minutes=16)
 
     record = record_of(world, "Testerson_101426")
-    assert record["schema"] == 3
+    assert record["schema"] == 4
     nest, = record["nests"]
     assert (nest["material"], nest["state"], nest["basis"], nest["programs"]) == (
         CLASSIC_FOLDER, "do_not_cut", "programs", ["TESS01.TAP"])
@@ -3376,7 +3377,7 @@ def test_scenario_70_a_closet_filed_aside_gets_its_takeoff_and_sulaiman_one_head
            " decides)." in told[0].lines
     assert world.outbox(to="barbara") == [] and world.outbox(to="will") == []
     notes = json.loads((aside / f"{GUARD_JOB}_NGRunner.json").read_text(encoding="utf-8"))
-    assert notes["schema"] == 3 and notes["takeoff"]["state"] == "made"
+    assert notes["schema"] == 4 and notes["takeoff"]["state"] == "made"
     assert notes["takeoff"]["summary_sha256"] == notes["summary"]["sha256"]
     row = world.board_row(GUARD_JOB)
     assert row.takeoff.state == "made" and row.takeoff.label == headsup.ESTIMATE
@@ -3692,3 +3693,365 @@ def test_scenario_79_a_close_left_unanswered_checks_nothing_and_is_in_the_digest
     digest, = [m for m in world.outbox(to="jim") if m.ref == "digest:2026-10-28"]
     assert any(f"{GUARD_JOB}: closed" in line and "Sections done?" in line for line in digest.lines)
     assert lint(Message("digest", digest.subject, digest.lines)) == []
+
+
+# ----- P4's lock and fixes, in shadow until P4 goes live
+#
+# A batch, a fix, a lease and a job sheet go only to NG Runner's own copies on this PC (config.shadow_roots):
+# the tracker's ingest and Jim's saves are played here, into those copies. Each scenario checks that the
+# real tracker folder, Mozaik Shared and NG Jobs got nothing of P4's. The clock here is not the files'
+# own, so a scenario ages a folder's files to it (quiet) where the interlock waits for two quiet minutes.
+
+P4_WHITE, P4_TAPE = "Egger Classic White", 'Egger Classic White 1mm — 15/16" / 1"'
+P4_CONVERSION = json.dumps({
+    "schema_version": "2.0",
+    "buckets": [{"material": P4_WHITE, "thk_in": 0.75, "calc_sheets_raw": 1.0, "edgeband_lf": 26.0}],
+    "edgeband": {"rows": [{"material": P4_TAPE, "linear_feet": 26.0}]}})
+
+
+def p4_ready(world: World, monkeypatch: Any, *, build: bool = True, toolkit: bool = True,
+             fault: bool = False) -> Path | None:
+    """Testerson filed, its NG Runner takeoff made, the chat's IC Conversion naming its tracker rows, a
+    toolkit adopted (toolkit), its build closed in Mozaik Shared (build, with a notch on the wrong face when
+    fault), its build's audit run, and a fresh tracker snapshot."""
+    from helpers_checks import adopt, conversion, fake_toolkit, mozaik_job, room
+
+    monkeypatch.setattr("ngrunner.checks.findings.Q1_SETTLED", True)        # so a clean check can pass
+    (world.mozaik / "Jobs").mkdir(exist_ok=True)
+    installed(world, TESTERSON)
+    world.script.add_row("Testerson", "PE")
+    world.run_until(is_filed(world, GUARD_JOB) if world.settings.mode == "live"
+                    else (lambda: (filed_aside(world) / f"{GUARD_JOB}_summary.pdf").exists()),
+                    within=minutes(45))
+    if toolkit:
+        adopt(world.store, world.paths.toolkit, fake_toolkit(world.tmp / "jims", log=world.tmp / "runs.jsonl"),
+              at=world.clock.now())
+    conversion(world.ng_jobs, GUARD_JOB, P4_CONVERSION)
+    job = None
+    if build:
+        job = mozaik_job(world.mozaik, GUARD_JOB, room1=room(fault=fault, grooves=True), closed=True)
+        quiet(world, job)
+    world.run(minutes=4)                 # its takeoff, the guards' listing, and its build's audit
+    tracker_now(world)
+    return job
+
+
+def quiet(world: World, folder: Path, *, minutes_ago: float = 10) -> None:
+    """Nothing in folder has changed for a while, by this world's clock."""
+    stamp = (world.clock.now() - minutes(minutes_ago)).timestamp()
+    for entry in folder.iterdir():
+        os.utime(entry, (stamp, stamp))
+
+
+def tracker_now(world: World, *, after: float = 0, rows: tuple[Any, ...] = ()) -> None:
+    """The tracker's snapshot, taken now (or after minutes on), in the shape guards/tracker.py reads, with
+    Pricing for the job's board and tape; rows: (tab, material, calc) shown for Testerson."""
+    from test_lock_drop import snapshot
+
+    sheets = [(GUARD_JOB, material, calc, "", "40.00") for tab, material, calc in rows if tab == "sheet"]
+    tape = [(GUARD_JOB, material, calc, "", "0.27") for tab, material, calc in rows if tab == "tape"]
+    jobs = [(GUARD_JOB, calc) for tab, _material, calc in rows if tab == "job"]
+    snapshot(world.tracker, taken=world.clock.now() + minutes(after), sheets=sheets, tape=tape, jobs=jobs)
+
+
+def shadow_of(world: World) -> Any:
+    from ngrunner.config import shadow_roots
+
+    return shadow_roots(world.paths)
+
+
+def landed(batch: Any, *, leave_out: str = "") -> tuple[Any, ...]:
+    """What the tracker shows once the ingest applied batch: its own numbers, less one tab's row."""
+    shown = []
+    for row in batch.rows[1:]:
+        if row[0] == "SHEETGOODS" and leave_out != "sheet":
+            shown.append(("sheet", row[3], row[6]))
+        elif row[0] == "EDGEBAND" and leave_out != "tape":
+            shown.append(("tape", row[3], row[4]))
+        elif row[0] == "JOBSUMMARY":
+            shown.append(("job", "", row[3]))
+    return tuple(shown)
+
+
+def ingest(world: World, batch: Any, *, leave_out: str = "") -> None:
+    """The tracker's ingest of NG Runner's test folder, as decision 9's idempotent ingest does it: the
+    batch moves to ingested_<its name>, and the next snapshot shows its rows."""
+    folder = shadow_of(world).tracker
+    target = folder / f"ingested_{batch.file}"
+    os.replace(folder / batch.file, target)
+    stamp = world.clock.now().timestamp()
+    os.utime(target, (stamp, stamp))
+    tracker_now(world, after=1, rows=landed(batch, leave_out=leave_out))
+
+
+def button(row: Any, click: str, material: str | None = None) -> Any:
+    return next(b for b in row.p4.buttons if b.click == click and b.material == material)
+
+
+def batches_of(world: World) -> list[Any]:
+    from ngrunner.store.locks import list_batches
+
+    return list_batches(world.store)
+
+
+def nothing_of_p4_in_the_real_folders(world: World, mozaik_before: dict[str, str]) -> None:
+    """The real tracker folder holds no batch, Mozaik Shared is as the scenario left it, and NG Jobs and the
+    control folder hold no lease and no job sheet: P4's build writes only NG Runner's own copies."""
+    from ngrunner.lock.leases import LEASE_NAME
+
+    assert not [p for p in world.tracker.iterdir() if "tracker_inbox" in p.name]
+    assert tree(world.mozaik) == mozaik_before
+    for real in (world.ng_jobs, world.control):
+        assert not list(real.rglob(LEASE_NAME)) and not list(real.rglob("* CNC Job Sheet.docx"))
+
+
+def test_scenario_80_a_lock_click_with_no_check_is_refused_saying_exactly_what_is_missing(make_world, monkeypatch):
+    from ngrunner.store.locks import list_lock_clicks
+
+    world = make_world(tracker=True)
+    p4_ready(world, monkeypatch, build=False)
+    before = tree(world.mozaik)
+
+    design = button(world.board_row(GUARD_JOB), "lock_design")
+    assert design.state == "waivable"          # only its check is missing: "lock without check" may go ahead
+    assert design.missing == ("No check of this job's design has run, so it can't be locked yet",)
+    assert button(world.board_row(GUARD_JOB), "lock").state == "blocked"    # and no nest: nothing waives that
+    reply = world.actions.lock_click("4242", "lock_design", "", False)
+    world.run(minutes=3)
+
+    assert reply == templates.lock_refused(GUARD_JOB, label="Lock design", missing=design.missing)
+    assert [e.text for e in world.events(kind="lock_refused")] == [reply]
+    assert batches_of(world) == [] and list_lock_clicks(world.store) == []
+    assert list(shadow_of(world).tracker.iterdir()) == []
+    nothing_of_p4_in_the_real_folders(world, before)
+
+
+def test_scenario_81_lock_without_check_drops_into_the_test_folder_and_is_kept_and_logged(make_world, monkeypatch):
+    from ngrunner.store.locks import list_lock_clicks
+
+    world = make_world(tracker=True)
+    p4_ready(world, monkeypatch, toolkit=False)          # no toolkit: the build's check can't run
+    before = tree(world.mozaik)
+    assert button(world.board_row(GUARD_JOB), "lock_design").state == "waivable"
+
+    reply = world.actions.lock_click("4242", "lock_design", "", True)
+    world.run(minutes=2)
+
+    assert reply == templates.lock_asked(GUARD_JOB, label="Lock design", without_check=True)
+    logged, = world.events(kind="lock_without_check")
+    assert logged.text == reply and logged.lane == "ACT"
+    batch, = batches_of(world)
+    click, = list_lock_clicks(world.store)
+    assert click.without_check and click.batch_id == batch.id and batch.kind == "lock_design"
+    assert (shadow_of(world).tracker / batch.file).is_file()
+    told = world.outbox(to="sulaiman", subject=f"SHADOW {GUARD_JOB}: Lock design (lock without check)")
+    assert len(told) == 1 and "not the tracker" in told[0].lines[0]
+    assert world.outbox(to="jim", subject=f"{GUARD_JOB}: Lock design") == []
+    assert not [t for t in world.toasts.shown if "lock" in t.title.casefold()]
+    view, = world.board_row(GUARD_JOB).p4.batches
+    assert (view.state, view.can_resend) == ("dropped", False)
+    nothing_of_p4_in_the_real_folders(world, before)
+
+
+def test_scenario_82_a_batch_in_the_test_folder_is_confirmed_by_two_snapshots_ten_minutes_apart(
+        make_world, monkeypatch):
+    world = make_world(tracker=True)
+    p4_ready(world, monkeypatch)
+    before = tree(world.mozaik)
+    assert check_of(world).state == "passed"
+    assert button(world.board_row(GUARD_JOB), "lock_design").state == "ready"
+
+    world.actions.lock_click("4242", "lock_design", "", False)
+    world.run(minutes=2)
+    batch, = batches_of(world)
+    ingest(world, batch)
+    world.run(minutes=3)
+    assert batches_of(world)[0].state == "first_ok"
+
+    world.run(minutes=10)
+    tracker_now(world, rows=landed(batch))
+    world.run(minutes=2)
+
+    confirmed, = batches_of(world)
+    assert confirmed.state == "confirmed"
+    view, = world.board_row(GUARD_JOB).p4.batches
+    assert view.state == "confirmed" and view.words == "Confirmed by two snapshots 10 minutes apart"
+    told = world.outbox(to="sulaiman", subject=f"SHADOW {GUARD_JOB}: Lock design confirmed")
+    assert len(told) == 1
+    assert [e.kind for e in world.events() if e.kind.startswith("batch_")] == ["batch_confirmed"]
+    nothing_of_p4_in_the_real_folders(world, before)
+
+
+def test_scenario_83_only_the_missing_row_is_re_sent_once_a_snapshot_after_the_click_shows_it_missing(
+        make_world, monkeypatch):
+    world = make_world(tracker=True)
+    p4_ready(world, monkeypatch)
+    before = tree(world.mozaik)
+    world.actions.lock_click("4242", "lock_design", "", False)
+    world.run(minutes=2)
+    batch, = batches_of(world)
+
+    ingest(world, batch, leave_out="tape")          # the tape's row didn't land
+    world.run(minutes=3)
+
+    doubt, = batches_of(world)
+    assert doubt.state == "doubt"
+    view, = world.board_row(GUARD_JOB).p4.batches
+    assert view.state == "doubt" and view.can_resend
+    told, = world.outbox(to="sulaiman", subject=f"SHADOW {GUARD_JOB}: Lock design in doubt")
+    assert told.urgent
+    assert any(f"{GUARD_JOB}: the Lock design batch is in doubt" in item.text for item in world.board().your_list)
+
+    assert world.actions.resend_row(batch.id) == templates.resend_asked(GUARD_JOB)
+    world.run(minutes=3)
+    assert len(batches_of(world)) == 1               # the snapshot it has is older than the click
+    tracker_now(world, rows=landed(batch, leave_out="tape"))
+    world.run(minutes=2)
+
+    first, again = batches_of(world)
+    assert first.state == "resent" and again.resend_of == batch.id and again.kind == "resend"
+    assert again.rows[1:] == [row for row in batch.rows[1:] if row[0] == "EDGEBAND"]
+    assert (shadow_of(world).tracker / again.file).is_file()
+    assert not world.board_row(GUARD_JOB).p4.batches[0].can_resend
+    nothing_of_p4_in_the_real_folders(world, before)
+
+
+def fix_card_of(world: World, monkeypatch: Any) -> tuple[Any, Path]:
+    """Testerson built with a notch on the wrong face, checked from the command box: its fix card."""
+    job = p4_ready(world, monkeypatch, fault=True)
+    assert world.actions.command(f"check {GUARD_JOB}") == templates.check_asked(GUARD_JOB)
+    world.run(minutes=3)
+    card, = world.cards("fix")
+    return card, job
+
+
+def test_scenario_84_a_fix_approved_is_written_into_ng_runners_copy_and_undo_gives_back_its_bytes(
+        make_world, monkeypatch):
+    from helpers_checks import room
+    from ngrunner.store.locks import get_lease, list_fixes
+
+    world = make_world(tracker=True)
+    card, job = fix_card_of(world, monkeypatch)
+    real = (job / "Room1.des").read_bytes()
+    before = tree(world.mozaik)
+    assert card.text.startswith("Room 1: the hang notch is cut from the wrong face on 1 panel (R1C3); the fix"
+                                " makes the notch on the line-bore face the one that is cut.")
+    assert "only NG Runner's own copy of the room is changed" in card.text
+    assert card.choices == templates.FIX_CHOICES
+
+    world.actions.answer(card.id, "Fix it")
+    world.run(minutes=2)
+    copy = shadow_of(world).mozaik_shared / "Jobs" / GUARD_JOB / "Room1.des"
+    assert copy.read_bytes() == real and list_fixes(world.store) == []      # it waits for two quiet polls
+    assert get_lease(world.store, GUARD_JOB).state == "active"
+    world.run(minutes=4)
+
+    fix, = list_fixes(world.store)
+    assert copy.read_bytes() == room(fault=True, grooves=True, fixed=True)
+    assert (job / "Room1.des").read_bytes() == real
+    assert get_lease(world.store, GUARD_JOB).state == "released"
+    view, = world.board_row(GUARD_JOB).p4.fixes
+    assert (view.state, view.can_undo, view.id) == ("applied", True, fix.id)
+    assert len(world.outbox(to="sulaiman", subject=f"SHADOW {GUARD_JOB}: fix written")) == 1
+
+    assert world.actions.undo_fix(str(fix.id)) == templates.undo_asked(GUARD_JOB)
+    quiet(world, copy.parent)                        # nothing has saved the copy since the fix
+    world.run(minutes=5)
+
+    assert copy.read_bytes() == real
+    assert list_fixes(world.store)[0].state == "undone"
+    assert world.board_row(GUARD_JOB).p4.fixes[0].state == "undone"
+    assert len(world.outbox(to="sulaiman", subject=f"SHADOW {GUARD_JOB}: fix undone")) == 1
+    nothing_of_p4_in_the_real_folders(world, before)
+
+
+def test_scenario_85_pause_hands_every_lease_back_and_a_fix_waits_until_resume(make_world, monkeypatch):
+    from ngrunner.lock.leases import LEASE_NAME
+    from ngrunner.store.locks import get_lease, list_fixes
+
+    world = make_world(tracker=True)
+    card, job = fix_card_of(world, monkeypatch)
+    before = tree(world.mozaik)
+    world.actions.answer(card.id, "Fix it")
+    world.run(minutes=2)                             # staged, and the lease taken; it waits for two polls
+    lease = shadow_of(world).ng_jobs / GUARD_JOB / LEASE_NAME
+    assert "State: active" in lease.read_text(encoding="utf-8")
+
+    world.sup.pause()
+
+    assert "State: released" in lease.read_text(encoding="utf-8")
+    assert get_lease(world.store, GUARD_JOB).state == "released"
+    world.run(minutes=10)
+    assert list_fixes(world.store) == [] and get_lease(world.store, GUARD_JOB).state == "released"
+
+    world.sup.resume()
+    world.run(minutes=5)
+    assert len(list_fixes(world.store)) == 1
+    nothing_of_p4_in_the_real_folders(world, before)
+
+
+def test_scenario_86_mozaik_undoing_a_fix_is_urgent_with_one_redo_and_jims_own_change_is_a_log_line(
+        make_world, monkeypatch):
+    from helpers_checks import room
+    from ngrunner.guards.kept import note_mozaik_session
+    from ngrunner.store.locks import list_fixes
+
+    world = make_world(tracker=True)
+    card, job = fix_card_of(world, monkeypatch)
+    world.actions.answer(card.id, "Fix it")
+    world.run(minutes=6)
+    fix, = list_fixes(world.store)
+    copy = shadow_of(world).mozaik_shared / "Jobs" / GUARD_JOB / "Room1.des"
+
+    # Mozaik had the job open across the write, and its save put the old values back.
+    note_mozaik_session(world.store, True, fix.applied_at - minutes(5))
+    note_mozaik_session(world.store, True, fix.applied_at + minutes(1))
+    copy.write_bytes(room(fault=True, grooves=True, note="saved"))
+    world.run(minutes=3)
+
+    judged, = list_fixes(world.store)
+    assert judged.survival == "mozaik_undid"
+    told, = world.outbox(to="sulaiman", subject=f"SHADOW {GUARD_JOB}: after the save")
+    assert told.urgent and "Mozaik undid" in told.lines[0]
+    redo, = world.cards("fix_undone")
+    assert redo.choices == templates.REDO_CHOICES
+    assert world.board_row(GUARD_JOB).p4.fixes[0].state == "mozaik_undid"
+
+
+def test_scenario_87_p4_writes_only_ng_runners_own_copies_whatever_the_settings_name(make_world, monkeypatch):
+    """The tracker folder never goes into the roots before P4's go-live, so the click's batch can only go to
+    NG Runner's test folder: what the real tracker folder holds is its snapshots, and nothing else."""
+    world = make_world(tracker=True)
+    p4_ready(world, monkeypatch, toolkit=False)
+    assert world.sup._ctx.roots.tracker is None
+    world.actions.lock_click("4242", "lock_design", "", True)
+    world.run(minutes=2)
+    assert sorted(p.name for p in world.tracker.iterdir()) == sorted(
+        f"tracker_snapshot_{tab}.csv" for tab in ("SheetGoods", "Edgeband", "JobSummary", "Pricing", "meta"))
+    assert [p.name for p in shadow_of(world).tracker.iterdir()] == [batches_of(world)[0].file]
+
+
+def test_scenario_88_the_notes_carry_the_checks_items_and_what_jim_settled_for_his_chat(make_world):
+    """Notes schema 4: the job's check, item by item with its chat line, and the settled list, so Jim's chat
+    reads what NG Runner found and doesn't raise again what Jim settled for this job."""
+    world = make_world()
+    checks_ready(world)
+    world.actions.check_job("4242")
+    world.run(minutes=2)
+    run = check_of(world).run
+    world.actions.settle_item("4242", str(run.id), "1", "told_chat")
+    world.run(minutes=2)
+
+    notes = record_of(world, GUARD_JOB)
+    assert notes["schema"] == 4
+    check = notes["check"]
+    assert (check["state"], check["kind"], check["counts"], check["trial"]) == ("failed", "check", True, True)
+    item, = [i for i in check["items"] if i["checker"] == "notch_check"]
+    assert item == {"n": 1, "kind": "fix", "checker": "notch_check", "tags": ["R1C3"],
+                    "words": "R1C3: the notch is on the wrong face",
+                    "chat": f"{GUARD_JOB}: put the notch on its line-bore face on R1C3, then run crosscheck",
+                    "settled": True}
+    settled, = notes["settled"]
+    assert (settled["item"], settled["how"], settled["said"]) == (1, "told_chat", templates.SETTLE_LABELS["told_chat"])
+    assert settled["words"] == "R1C3: the notch is on the wrong face" and settled["tags"] == ["R1C3"]
+    assert from_iso(settled["at"]) and from_iso(check["at"])

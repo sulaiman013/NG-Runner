@@ -5,8 +5,8 @@ A job that needs a person's judgment (which job a Fab row is, closet or garage, 
 a changed IC summary governs) waits on a card instead of a guess (design section 4, "How Jim
 answers"). A card's ID is the job's first three letters and a number from the store (TES-2),
 never reused, so "TES-2 3rd" means one thing for ever. The command box is parsed strictly:
-anything that isn't exactly a card answer, pause, resume or add job is refused with an example
-to copy, and the card stays with Jim. A card also keeps which job each of its choices means
+anything that isn't exactly a card answer, pause, resume, add job or check is refused with an example
+to copy, and the card stays with Jim. P3 adds "check <Job>", which asks for Check now on one job. A card also keeps which job each of its choices means
 (choice_ids), since the labels alone can't say: two sales can share a name, and the job list can
 change before Jim answers. Wording lives in messages.templates; this module holds the model and
 the grammar.
@@ -20,9 +20,10 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 
 # The P1a cards (design section 3.4 and the integration spec's filing pipeline), then P1b's: a
-# program past its sheet size, which Jim's answer can clear (P1b build spec 5.6).
+# program past its sheet size, which Jim's answer can clear (P1b build spec 5.6). Then P4's: a fix to
+# approve (decision 7a), and the one redo of a fix Mozaik undid (design 5, "Approvals and survival").
 CARD_KINDS = ("which_job", "closet_or_garage", "fetch_failed", "ic_changed", "row_changed",
-              "remake", "design_mismatch", "sheet_size")
+              "remake", "design_mismatch", "sheet_size", "fix", "fix_undone")
 STATES = ("open", "answered", "withdrawn")
 REMIND_AT_DAYS = (1, 3, 7)         # open cards come back in the digest (design 4, "Timing")
 NO_LETTERS_PREFIX = "ROW"          # for a Fab row typed with no letters at all
@@ -32,6 +33,7 @@ _CARD_ID = re.compile(r"[A-Z]{1,3}-[1-9][0-9]*")
 _TYPED_ID = re.compile(r"\s*(?P<id>[A-Za-z]{1,3}-[1-9][0-9]*)(?![A-Za-z0-9-])")
 _ANSWER = re.compile(r"\s*(?P<id>[A-Za-z]{1,3}-[1-9][0-9]*)\s+(?P<words>\S.*?)\s*", re.DOTALL)
 _ADD_JOB = re.compile(r"\s*add\s+job\s+(?P<target>\S.*?)\s*", re.IGNORECASE | re.DOTALL)
+_CHECK = re.compile(r"\s*check\s+(?P<name>\S.*?)\s*", re.IGNORECASE | re.DOTALL)
 _DIGITS = re.compile(r"[0-9]+")
 _LEADING_NUMBER = re.compile(r"(?P<n>[0-9]+)(?:st|nd|rd|th)?(?![0-9])")
 
@@ -163,9 +165,11 @@ _RECORD_FIELDS = ("id", "kind", "text", "choices", "created_at", "default_choice
 class Command:
     """What Jim typed, understood.
 
-    kind: "answer", "pause", "resume" or "add_job". text: exactly what was typed (kept
+    kind: "answer", "pause", "resume", "add_job" or "check". text: exactly what was typed (kept
     verbatim with the answer). For an answer: card_id, choice (the label as on the card) and
-    words (his words after the card ID, as typed). For add_job: name or studio_id, as typed.
+    words (his words after the card ID, as typed). For add_job: name or studio_id, as typed. For
+    check: name, its runs of spaces made one; which job it names, whole, is the store's to say
+    (checks.jobchecks.job_named), never a guess here.
     """
 
     kind: str
@@ -187,10 +191,10 @@ class Rejection:
 
 
 def parse_command(text: str, open_cards: Sequence[Card]) -> Command | Rejection:
-    """Read the command box strictly: "<card ID> <choice number or label>", "pause", "resume"
-    or "add job <name or Studio project ID>". Case and runs of spaces don't matter; nothing
-    else is guessed. A number that could mean two choices (2 when the choices are 2nd and 3rd)
-    is refused, never picked."""
+    """Read the command box strictly: "<card ID> <choice number or label>", "pause", "resume",
+    "add job <name or Studio project ID>" or "check <job>" (P3's Check now). Case and runs of
+    spaces don't matter; nothing else is guessed. A number that could mean two choices (2 when
+    the choices are 2nd and 3rd) is refused, never picked."""
     cards = [card for card in open_cards if card.state == "open"]
     folded = _folded(text)
     if folded in ("pause", "resume"):
@@ -201,6 +205,9 @@ def parse_command(text: str, open_cards: Sequence[Card]) -> Command | Rejection:
         if _DIGITS.fullmatch(target):
             return Command("add_job", text, studio_id=target)
         return Command("add_job", text, name=target)
+    check = _CHECK.fullmatch(text)
+    if check:
+        return Command("check", text, name=" ".join(check["name"].split()))
     named = _named_card(text, cards)
     answer = _ANSWER.fullmatch(text)
     if named is not None and answer:

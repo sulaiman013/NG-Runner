@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pytest
 
+from helpers_lock import CONVERSION, job_check
 from ngrunner.clock import FakeClock
 from ngrunner.guards.tracker import read_tracker
 from ngrunner.interlock import p4_interlock
@@ -40,13 +41,9 @@ class Nest:
     room_hashes: dict = field(default_factory=lambda: dict(IDENTITY))
 
 
-@dataclass(frozen=True)
-class Check:
-    state: str = "done"
-    code: str | None = "passed"
-    rooms: dict = field(default_factory=lambda: dict(SHA))
-    identities: dict = field(default_factory=lambda: dict(IDENTITY))
-    stale_at: datetime | None = None
+def Check(**kw):
+    """P3's check as job_checks() gives it; by default it passed, on these very rooms."""
+    return job_check(**{"rooms": SHA, "identities": IDENTITY, **kw})
 
 
 def make_env(tmp_path: Path, tracker: Path) -> dict:
@@ -69,7 +66,7 @@ def snap(env, name: str = "s", **kw):
 
 def facts(**kw) -> dict:
     out = dict(nests=(Nest(NEST_WHITE), Nest(NEST_BACKS)), check=Check(), room_sha256=SHA,
-               room_identity=IDENTITY, unsettled=0, without_check=False)
+               room_identity=IDENTITY, conversion_sha256=CONVERSION, without_check=False)
     out.update(kw)
     return out
 

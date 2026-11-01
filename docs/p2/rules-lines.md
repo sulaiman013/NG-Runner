@@ -88,6 +88,38 @@ Your revision discipline asks for this (`INDEX.md:87`): "Bump this index's Rev l
 _Rev <rev> — <date>. A closet's IC Conversion comes from `scripts\ng_convert.py`, never a per-job script (RULES §1, §8). History lives in git and in `RULES_full_20261006.md`._
 ```
 
+## 5. NG Runner's check and what you settled: RULES §1, Safety (P3)
+
+This change is separate from the four above, and goes in after P1a's change 2 (`docs/p1a/rules-lines.md`), which it extends. It comes with NG Runner's checks: when you say a job's sections are done, or click Check now, NG Runner runs your crosscheck on a copy of the job and lists what it found, each item with the line to paste into your chat. You can mark an item "Not a problem for this job" or "I already told chat". Your chat can't see the board, so NG Runner writes both into the job's `<Job>_NGRunner.json` (its schema 4), and your RULES have to tell the chat to read them; otherwise a session raises again what you settled.
+
+**Now**, the last line P1a's change 2 adds after `RULES.md:83`, word for word:
+
+```text
+- Its `takeoff` is NG Runner's own takeoff of the filed summary (an estimate: the nest decides).
+  When its `complete` is false (lines it could not verify, or a job it leaves to chat), the order
+  heads-up Barbara and Will get is your IC Conversion JSON's list, sent whole and marked
+  "From the chat's takeoff". So keep writing that JSON as before.
+```
+
+**New**, that line and two after it:
+
+```text
+- Its `takeoff` is NG Runner's own takeoff of the filed summary (an estimate: the nest decides).
+  When its `complete` is false (lines it could not verify, or a job it leaves to chat), the order
+  heads-up Barbara and Will get is your IC Conversion JSON's list, sent whole and marked
+  "From the chat's takeoff". So keep writing that JSON as before.
+- Its `check` is NG Runner's last check of the job: your crosscheck, run on a copy. Each item says
+  what it found, by part tag (R2C3), with the line to fix it in chat. When its `counts` is false
+  the job changed since, so it is no check of the job as it is: crosscheck it again.
+- Its `settled` lists the items Jim settled for this job, as "not a problem" or "I already told
+  chat". Never raise one of them again for this job. A settle is for this job only, never a rule
+  for another; NG Runner asks again by itself once the job's design changes.
+```
+
+Why: a session can't see NG Runner, so it learns what NG Runner checked, and what you settled, only from this file, as with the rest of it. "I already told chat" means the rule you gave your chat reaches NG Runner later, with your toolkit; until then the settle stands for this job alone, as the design asks ("Settle defaults to this job"). NG Runner keeps a settle only while the job's design and IC Conversion are the ones it was made on, so the chat can trust the list as it reads it.
+
+It goes in with the Rev line of change 4: add "chat reads NG Runner's check and settled list (RULES §1)" to its words. Nothing here touches a script, a checker or a takeoff, so expect `Regression clean`; if anything moves, don't commit, and each moved item comes to you.
+
 ## Not needed yet
 
 - **Garage and mixed jobs.** `ng_convert.py` refuses them until BUILD's garage buckets (`BUILD.md:127-135`) are ported, so they are converted as before. Their RULES line comes with that.

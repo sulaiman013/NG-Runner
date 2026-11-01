@@ -64,7 +64,11 @@ P1A_MODULES: tuple[str, ...] = (
     "ngrunner.guards.tool_checks", "ngrunner.guards.tracker", "ngrunner.guards.watch",
     "ngrunner.toolkit",
     "ngrunner.checks", "ngrunner.checks.crosscheck", "ngrunner.checks.readers", "ngrunner.checks.findings",
-    "ngrunner.checks.jobchecks",
+    "ngrunner.checks.jobchecks", "ngrunner.store.checks",
+    "ngrunner.lock", "ngrunner.lock.leases", "ngrunner.lock.gate", "ngrunner.lock.drop", "ngrunner.lock.totals",
+    "ngrunner.lock.clicks", "ngrunner.lock.job_sheet", "ngrunner.lock.patch", "ngrunner.lock.fixes",
+    "ngrunner.lock.notch", "ngrunner.store.locks", "ngrunner.lock.names", "ngrunner.lock.kept",
+    "ngrunner.lock.work", "ngrunner.lock.view",
     "flask", "waitress", "requests", "pystray", "PIL", "psutil", "win32api", "pywintypes",
     "pythoncom", "win32com", "win32com.shell", "win32com.propsys", "win32cred", "win32timezone",
     "win32job", "runpy", "pkgutil", "windows_toasts",
@@ -413,6 +417,7 @@ def message_samples() -> list[object]:
                           expected="49x97"),
         t.sheet_size_card(job, material="3-4 Classic White", expected="49x97", programs=(
             ("TESS07.TAP", "61x109"), ("TESS08.TAP", "61x109"), ("TESS09.TAP", None))),
+        *_lock_cards(t, job),
     )]
     echoes = [t.echo(parse_command(typed, cards)) for typed in (
         f"{cards[2].id} 2", "pause", "resume", f"add job {job}", "add job 84213")]
@@ -440,6 +445,70 @@ def message_samples() -> list[object]:
         *_nest_samples(t, job),
         *_takeoff_samples(t, job),
         *_check_samples(t, job),
+        *_lock_samples(t, job),
+    ]
+
+
+def _lock_cards(t: Any, job: str) -> list[object]:
+    """P4's cards: a fix to approve, plain and with a re-nest, and the one redo of a fix Mozaik undid, in
+    the words lock/fixes.py and lock/notch.py give them."""
+    plan = ("Room 1: the hang notch is cut from the wrong face on 2 panels (R1C3, R1C7); the fix makes the notch"
+            " on the line-bore face the one that is cut",)
+    renest = (*plan, "Fix and re-nest 3/4 Egger Classic White: the fix changes parts its nest holds, so it reads"
+                     " NOT CHECKED until it is nested again", "R1C7 is flipped by hand in the nest now; after the"
+                                                              " fix, nest it again without that flip")
+    return [t.fix_card(job, words=plan, renest=()),
+            t.fix_card(job, words=renest, renest=("3-4 Egger Classic White",)),
+            t.redo_card(job, words="Mozaik undid the fix on C3: the save put the old values back")]
+
+
+def _lock_samples(t: Any, job: str) -> list[object]:
+    """P4's lock and fixes: the lock clicks' answers and results, the batch after them, a fix written,
+    undone and refused, what the next save showed, the lease and the job sheet on the board."""
+    from ngrunner.messages import Message
+
+    at = datetime(2026, 10, 31, 4, 42, tzinfo=timezone.utc)          # 9:42 PM Pacific
+    later = at + timedelta(hours=2, minutes=30)
+    missing = ("No check of this job's design has run, so it can't be locked yet",
+               "3/4 Egger Classic White: NOT CHECKED, not Nest checked")
+    labels = [t.lock_label(click) for click in t.LOCK_LABELS] + [t.lock_label("finish_lock", "3-4 Egger Classic"
+                                                                                           " White")]
+    return [
+        t.lock_result(job, label="Lock design", ok=True, without_check=False, at=at,
+                      words="Dropped the batch; waiting for the tracker to take it"),
+        t.lock_result(job, label="Lock design", ok=True, without_check=True, at=at,
+                      words="Lock without check: dropped the batch; waiting for the tracker to take it"),
+        t.lock_result(job, label="Lock", ok=False, without_check=False, at=at,
+                      words="The tracker snapshot is over 20 minutes old, so nothing is dropped until a fresh one"
+                            " comes"),
+        t.batch_result(job, label="Lock design", state="confirmed", at=at,
+                       words="Confirmed by two snapshots 10 minutes apart"),
+        t.batch_result(job, label="Lock design", state="doubt", at=at,
+                       words="The tracker doesn't show the batch as written: 1 row missing"),
+        t.fix_result(job, done="written", at=at, words="Room 1: the hang notch is cut from the wrong face on 1"
+                                                        " panel (R1C3); the fix makes the notch on the line-bore"
+                                                        " face the one that is cut"),
+        t.fix_result(job, done="undone", at=at, words="The fix on R1C3 is undone: the room is as it was"),
+        t.fix_result(job, done="refused", at=at, words="Undo is refused: a program of 3/4 Egger Classic White"
+                                                        " was made from the fixed design"),
+        t.survival_message(job, code="mozaik_undid", at=at,
+                           words="Mozaik undid the fix on C3: the save put the old values back"),
+        t.survival_message(job, code="held", at=at, words="The fix on C3 held after the save"),
+        *(Message("lock_line", "NG Runner", (f"1. {line}" if line.startswith(job) else f"1. {job}: {line}",))
+          for line in (
+            t.lock_refused(job, label="Lock", missing=missing), t.lock_asked(job, label="Lock design",
+                                                                            without_check=True),
+            t.lock_asked(job, label="Finish lock 3/4 Egger Classic White", without_check=False),
+            t.batch_waiting(job, label="Lock design", since=at, now=later), t.resend_asked(job),
+            t.survival_line(job, words="You changed it in Mozaik: C3 holds other values now"),
+            t.lease_words("active", at=at, until=later, now=at), t.lease_words("active", at=at, until=at,
+                                                                                 now=later),
+            t.lease_words("released", at=at, until=later, now=later),
+            t.job_sheet_words("matches", written=True), t.job_sheet_words("matches"),
+            t.job_sheet_words("mismatch"), t.job_sheet_words("could_not_verify",
+                                                             why="Jim's job sheet script didn't finish cleanly"),
+            t.undo_asked(job), t.P4_SHADOW_NOTE, t.RESEND, t.LOCK_WITHOUT_CHECK, t.NOT_A_LOCK, t.LOCK_GONE,
+            t.LOCK_BUSY, *labels)),
     ]
 
 

@@ -154,6 +154,23 @@ def test_add_job_takes_a_name_or_a_studio_project_id(typed, name, studio_id):
     assert (command.name, command.studio_id) == (name, studio_id)
 
 
+@pytest.mark.parametrize("typed, name", [
+    ("check Testerson_101426", "Testerson_101426"),
+    ("  CHECK   Van Testa_101426 ", "Van Testa_101426"),     # case and runs of spaces aside
+    ("check Testerson", "Testerson"),                        # which job it names is the store's to say
+])
+def test_check_names_a_job_to_check_now(typed, name):
+    """P3: "check <Job>" in the command box is Check now on that job (design 4, "How Jim answers")."""
+    command = parse_command(typed, open_cards())
+    assert isinstance(command, Command) and command.kind == "check"
+    assert (command.name, command.text) == (name, typed)
+
+
+def test_a_card_answer_still_wins_over_a_job_named_like_a_card():
+    command = parse_command("TES-2 3rd", open_cards())
+    assert command.kind == "answer"
+
+
 @pytest.mark.parametrize("typed, example", [
     ("", "TES-2 2nd"),
     ("yes", "TES-2 2nd"),
@@ -168,8 +185,10 @@ def test_add_job_takes_a_name_or_a_studio_project_id(typed, name, studio_id):
     ("pause now", "TES-2 2nd"),
     ("add job", "TES-2 2nd"),
     ("add job   ", "TES-2 2nd"),
-    ("check Testerson", "TES-2 2nd"),       # a later phase's command
-    ("lock Testerson", "TES-2 2nd"),
+    ("check", "TES-2 2nd"),                 # check names no job
+    ("check   ", "TES-2 2nd"),
+    ("checks Testerson", "TES-2 2nd"),
+    ("lock Testerson", "TES-2 2nd"),        # a later phase's command
 ])
 def test_anything_else_is_refused_with_a_real_open_card_to_copy(typed, example):
     rejection = parse_command(typed, open_cards())
@@ -275,7 +294,7 @@ def test_every_rejection_reads_cleanly_on_the_board():
     from ngrunner.messages.lint import check_line
 
     for cards in (open_cards(), []):
-        for typed in ("", "yes", "TES-2 2", "FAK-1 shed", "check Testerson"):
+        for typed in ("", "yes", "TES-2 2", "FAK-1 shed", "check"):
             assert check_line(parse_command(typed, cards).text) == [], typed
 
 

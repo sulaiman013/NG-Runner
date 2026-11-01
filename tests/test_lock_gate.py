@@ -4,7 +4,9 @@ and 32): a lock click is refused unless the nest guard says Nest checked for its
 check is current for those very rooms, and the refusal says exactly what is missing. Jim's "lock without
 check" waives only the check, and is kept; nothing waives a nest.
 
-The facts are plain values in the shapes the store keeps (store.NestRecord, store.CheckRunRecord). Job
+The facts are plain values in the shapes the store keeps (store.NestRecord), and P3's check as
+job_checks() gives it (a JobCheck over a run in store.CheckRunRecord's shape, tests/helpers_lock.py):
+whether it stands for the rooms now is jobchecks.counts(), and what is still open is its own count. Job
 names and materials are made up.
 """
 from __future__ import annotations
@@ -14,6 +16,7 @@ from datetime import UTC, datetime
 
 import pytest
 
+from helpers_lock import CONVERSION, job_check
 from ngrunner.lock.gate import GateResult, lock_gate
 from ngrunner.messages.lint import check_line
 
@@ -30,21 +33,19 @@ class Nest:
     room_hashes: dict = field(default_factory=lambda: dict(IDENTITY))
 
 
-@dataclass(frozen=True)
-class Check:
-    state: str = "done"
-    code: str | None = "passed"
-    rooms: dict = field(default_factory=lambda: dict(SHA))
-    identities: dict = field(default_factory=lambda: dict(IDENTITY))
-    stale_at: datetime | None = None
-    words: str | None = "Jim's crosscheck passed: every checker it runs read clean."
+def Check(**kw):
+    """P3's check of the job as job_checks() gives it; by default it passed, on these very rooms."""
+    kw.setdefault("rooms", SHA)
+    kw.setdefault("identities", IDENTITY)
+    return job_check(**kw)
 
 
-def gate(click: str = "lock", *, nests=(Nest(WHITE), Nest(ORE)), check=Check(), unsettled: int = 0,
-         material: str | None = None, without_check: bool = False, rooms=SHA,
-         identities=IDENTITY) -> GateResult:
+def gate(click: str = "lock", *, nests=(Nest(WHITE), Nest(ORE)), check="passed",
+         material: str | None = None, without_check: bool = False, rooms=SHA, identities=IDENTITY,
+         conversion: str = CONVERSION) -> GateResult:
+    check = Check() if check == "passed" else check
     return lock_gate(click, nests=nests, check=check, room_sha256=rooms, room_identity=identities,
-                     unsettled=unsettled, material=material, without_check=without_check)
+                     conversion_sha256=conversion, material=material, without_check=without_check)
 
 
 def codes(result: GateResult) -> list[str]:
@@ -101,7 +102,8 @@ def test_a_pass_on_a_design_that_has_changed_since_is_no_pass() -> None:
     (Check(state="running", code=None), "check_not_done"),
     (Check(state="not_run", code=None), "check_not_done"),
     (Check(stale_at=T0), "check_stale"),
-    (Check(code="could_not_verify", words="NG Runner could not verify parm_check."), "check_unsure"),
+    (Check(code="could_not_verify"), "check_unsure"),
+    (Check(state="asked", code=None), "check_not_done"),
 ])
 def test_lock_is_refused_without_a_current_finished_check(check, code: str) -> None:
     result = gate(check=check)
@@ -123,8 +125,34 @@ def test_a_room_added_since_the_check_ran_makes_it_no_check_of_this_design() -> 
 
 
 def test_findings_left_open_refuse_a_lock_and_settled_ones_dont() -> None:
-    assert codes(gate(check=Check(code="failed"), unsettled=2)) == ["items_open"]
-    assert gate(check=Check(code="failed"), unsettled=0).allowed
+    result = gate(check=Check(code="failed", to_fix=2))
+    assert codes(result) == ["items_open"] and "2 things to fix" in result.missing[0].words
+    assert gate(check=Check(code="failed", to_fix=0)).allowed
+
+
+def test_a_failed_check_with_something_it_could_not_verify_is_no_check_even_once_settled() -> None:
+    """One that could not verify is no check, whether or not it also found something (counts by the
+    JobCheck's own open could-not-verify items)."""
+    assert codes(gate(check=Check(code="failed", to_fix=0, unverified=1))) == ["check_unsure"]
+
+
+def test_an_ic_conversion_changed_since_the_check_ran_makes_it_no_check_of_this_job() -> None:
+    """jobchecks.counts() holds the IC Conversion to the run too: crosscheck checked against that one."""
+    result = gate(conversion="e" * 64)
+    assert codes(result) == ["conversion_changed"]
+    assert "IC Conversion" in result.missing[0].words
+
+
+def test_whether_a_check_stands_is_jobchecks_counts_and_nothing_of_the_gates_own(monkeypatch) -> None:
+    from ngrunner.checks import jobchecks
+
+    asked = []
+    monkeypatch.setattr(jobchecks, "counts", lambda run, **kw: asked.append(kw) or False)
+
+    result = gate()
+
+    assert asked == [dict(rooms=SHA, conversion_sha256=CONVERSION)]
+    assert not result.allowed and codes(result) == ["check_stale"]
 
 
 def test_the_check_and_the_nest_pass_must_be_on_the_same_design() -> None:
@@ -157,10 +185,10 @@ def test_a_click_that_isnt_one_of_jims_three_is_refused() -> None:
 
 
 def test_every_refusal_reads_plainly_for_the_board() -> None:
-    results = [gate(check=None), gate(nests=()), gate(check=Check(code="failed"), unsettled=1),
+    results = [gate(check=None), gate(nests=()), gate(check=Check(code="failed", to_fix=1)),
                gate(nests=(Nest(WHITE, state="do_not_cut"),)), gate(check=Check(stale_at=T0)),
-               gate(rooms=dict(SHA, **{"Room1.des": "f" * 64})),
-               gate(check=Check(code="could_not_verify", words="NG Runner could not verify parm_check."))]
+               gate(rooms=dict(SHA, **{"Room1.des": "f" * 64})), gate(conversion="e" * 64),
+               gate(check=Check(code="could_not_verify")), gate(check=Check(state="running", code=None))]
     for result in results:
         for missing in result.missing:
             assert check_line(missing.words) == [], missing.words

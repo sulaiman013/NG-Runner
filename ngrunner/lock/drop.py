@@ -21,7 +21,9 @@ folder the caller's roots name as the tracker's. In P4's build that is a test fo
 refuses the tracker's own folder by name, and the P4 interlock anything below the folder NG Runner is
 configured with, until P4 goes live.
 
-After a drop (after_drop), from the folder and each new snapshot:
+After a drop (after_drop: read_after reads the folder and the snapshot, which may wait on Drive, and
+judge_after keeps what they say in the store, so the running app reads on a worker), from the folder
+and each new snapshot:
 1. Wait for the ingest's archive of this very batch, ingested_<its file name> (decision 9's idempotent
    ingest names it so). A DUPLICATE_ or SKIPPED_ archive, or a batch gone with no archive, is doubt.
 2. Wait for a snapshot taken after the archive. Then every row of the batch must show as written
@@ -45,7 +47,7 @@ from ngrunner.guards.tracker import (
     TrackerSnapshot, TrackerUnreadable, plain_material, read_tracker, split_tape_name,
 )
 from ngrunner.lock import P4_SHADOW
-from ngrunner.lock.totals import four_equalities, read_totals
+from ngrunner.lock.totals import Totals, four_equalities, read_totals
 from ngrunner.store import Store
 from ngrunner.store.locks import (
     BatchRecord, add_batch, get_batch, list_batches, rows_dropped_before, update_batch,
@@ -93,6 +95,19 @@ class AfterDrop:
     missing: tuple[str, ...] = ()
     differs: tuple[str, ...] = ()
     can_resend: bool = False
+
+
+@dataclass(frozen=True)
+class AfterRead:
+    """What after_drop reads of the files for one batch, and nothing else: when the ingest archived it
+    (None while it waits), doubt the folder showed (set aside, or gone with no archive), and the
+    snapshot with its totals, or why it could not be read."""
+
+    archived: datetime | None = None
+    set_aside: AfterDrop | None = None
+    snap: TrackerSnapshot | None = None
+    totals: Totals | None = None
+    unreadable: str | None = None
 
 
 # ----- before a drop
@@ -229,24 +244,44 @@ def after_drop(batch: BatchRecord, *, store: Store, roots: Roots, snapshots: Pat
                now: datetime) -> AfterDrop:
     """Where batch stands, from the drop folder and the snapshot in snapshots, kept in the store.
     A confirmed or resent batch is settled and stays as it is."""
+    return judge_after(batch, read_after(batch, roots=roots, snapshots=snapshots), store=store, now=now)
+
+
+def read_after(batch: BatchRecord, *, roots: Roots, snapshots: Path) -> AfterRead:
+    """The files after_drop judges batch by: the drop folder, then the snapshot once the batch is
+    archived. Reads only, so it may run where a read can wait."""
     if batch.state in ("confirmed", "resent"):
-        return AfterDrop(batch.state, batch.words or "")
+        return AfterRead()
     archived = _archive(batch, roots.tracker)
     if isinstance(archived, AfterDrop):
-        return _keep(store, batch, archived)
+        return AfterRead(set_aside=archived)
+    if archived is None:
+        return AfterRead()
+    try:
+        return AfterRead(archived, snap=read_tracker(snapshots), totals=read_totals(snapshots))
+    except TrackerUnreadable as exc:
+        return AfterRead(archived, unreadable=str(exc))
+
+
+def judge_after(batch: BatchRecord, seen: AfterRead, *, store: Store, now: datetime) -> AfterDrop:
+    """Where batch stands, from what read_after read, kept in the store."""
+    if batch.state in ("confirmed", "resent"):
+        return AfterDrop(batch.state, batch.words or "")
+    if seen.set_aside is not None:
+        return _keep(store, batch, seen.set_aside)
+    archived = seen.archived
     if archived is None:
         return AfterDrop("dropped", "Waiting for the tracker to take the batch")
     if batch.archived_at is None:
         update_batch(store, batch.id, state="archived", archived_at=archived)
         batch = get_batch(store, batch.id) or batch
-    try:
-        snap, totals = read_tracker(snapshots), read_totals(snapshots)
-    except TrackerUnreadable as exc:
-        return AfterDrop(batch.state, f"{exc}, so the batch is not judged yet")
-    if snap.taken <= archived:
+    if seen.snap is None or seen.totals is None:
+        return AfterDrop(batch.state, f"{seen.unreadable or 'The tracker snapshot could not be read'}, so the"
+                                      " batch is not judged yet")
+    if seen.snap.taken <= archived:
         return AfterDrop(batch.state if batch.state != "dropped" else "archived",
                          "Waiting for a tracker snapshot taken after the batch was applied")
-    return _judge(store, batch, snap, four_equalities(totals), now)
+    return _judge(store, batch, seen.snap, four_equalities(seen.totals), now)
 
 
 def _archive(batch: BatchRecord, folder: Path | None) -> datetime | None | AfterDrop:

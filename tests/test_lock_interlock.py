@@ -282,3 +282,22 @@ def test_a_room_whose_backup_may_hold_unsaved_work_is_not_written(setup, same_de
     reason = polled_twice(p4_interlock(ctx, mozaik_running=_Mozaik()), [room_of(folder)], ctx.clock)
 
     assert (reason is not None and "unsaved work" in reason) == blocked, reason
+
+
+# ----- Pause and release-all hand every lease back, through the pause
+
+
+def test_a_lease_is_released_through_a_pause_and_nothing_else_goes_through_that_door(setup) -> None:
+    from ngrunner.lock.leases import LEASE_NAME
+
+    ctx, shadow = setup
+    set_state(ctx.store, PAUSED, "yes")
+    lease = shadow.ng_jobs / JOB / LEASE_NAME
+    folder = job_folder(shadow, clock=ctx.clock)
+    releasing = p4_interlock(ctx, mozaik_running=_Mozaik(), releasing=True)
+
+    assert p4_interlock(ctx, mozaik_running=_Mozaik())([lease]) == PAUSED_REASON
+    assert releasing([lease]) is None
+    assert releasing([room_of(folder)]) is not None                     # never a room
+    assert releasing([shadow.tracker / "tracker_inbox_1.csv"]) is not None
+    assert releasing([ctx.roots.ng_jobs / JOB / LEASE_NAME]) is not None   # nor the real NG Jobs

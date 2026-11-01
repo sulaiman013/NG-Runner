@@ -50,7 +50,7 @@ from ngrunner.board.files import open_inside
 from ngrunner.board.views import BoardActions, BoardView, BoardViews, EventView
 from ngrunner.clock import Clock, SystemClock, fmt_clock, fmt_day, pacific_day
 from ngrunner.config import MODES
-from ngrunner.messages.templates import SETTLE_LABELS
+from ngrunner.messages.templates import LOCK_LABELS, LOCK_WITHOUT_CHECK, NOT_A_LOCK, RESEND, SETTLE_LABELS
 
 COOKIE = "ngrunner_board"
 TOKEN_FIELD = "token"
@@ -225,6 +225,13 @@ def _template_values() -> dict[str, object]:
         "check_style": display.CHECKS.__getitem__,
         "check_item_style": display.check_item_style,
         "settle_labels": SETTLE_LABELS,
+        "lock_button_style": display.LOCK_BUTTONS.__getitem__,
+        "batch_style": display.BATCHES.__getitem__,
+        "fix_style": display.FIXES.__getitem__,
+        "lease_style": display.LEASES.__getitem__,
+        "sheet_style": display.JOB_SHEETS.__getitem__,
+        "lock_without_check": LOCK_WITHOUT_CHECK,
+        "resend_label": RESEND,
         "toasts_style": display.toasts_style,
         "path_style": display.path_style,
         "mode_style": display.mode_style,
@@ -365,6 +372,24 @@ def _actions(app: Flask, actions: BoardActions, roots: tuple[Path, ...],
     def answer_prompt() -> Response:
         return _run(lambda: actions.answer_prompt(request.form.get("prompt_id", ""),
                                                   request.form.get("choice", "")))
+
+    @app.post("/lock/click")
+    def lock_click() -> Response:
+        click = request.form.get("click", "")
+        if click not in LOCK_LABELS:     # a lock is never a guess: only one of Jim's three gets through
+            flash(NOT_A_LOCK, "bad")
+            return _back()
+        return _run(lambda: actions.lock_click(request.form.get("studio_id", ""), click,
+                                               request.form.get("material", ""),
+                                               request.form.get("without_check", "") == "yes"))
+
+    @app.post("/lock/resend")
+    def resend_row() -> Response:
+        return _run(lambda: actions.resend_row(request.form.get("batch", "")))
+
+    @app.post("/lock/undo")
+    def undo_fix() -> Response:
+        return _run(lambda: actions.undo_fix(request.form.get("fix", "")))
 
     @app.post("/open")
     def open_file() -> Response:

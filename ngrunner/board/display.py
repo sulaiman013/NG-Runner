@@ -76,6 +76,41 @@ CHECK_ITEMS = {
 }
 _SETTLED = Style("muted", "check", "Settled")
 
+# P4's lock panel (views.LockPanelView). Never "Locked" for a batch the snapshots haven't confirmed.
+LOCK_BUTTONS = {
+    "ready": Style("ok", "lock", "Ready"),
+    "waivable": Style("warn", "alert", "Needs its check"),
+    "blocked": Style("bad", "x", "Not yet"),
+    "asked": Style("info", "clock", "Asked"),
+}
+BATCHES = {
+    "dropped": Style("info", "clock", "Dropped"),
+    "archived": Style("info", "clock", "Taken by the tracker"),
+    "first_ok": Style("info", "clock", "Landed, confirming"),
+    "confirmed": Style("ok", "check", "Confirmed"),
+    "doubt": Style("bad", "alert", "In doubt"),
+    "resent": Style("muted", "refresh", "Re-sent"),
+}
+FIXES = {
+    "waiting": Style("info", "clock", "Waiting to write"),
+    "applied": Style("ok", "check", "Fix written"),
+    "undone": Style("muted", "minus", "Undone"),
+    "held": Style("ok", "check", "Held after the save"),
+    "mozaik_undid": Style("bad", "x", "Mozaik undid"),
+    "you_changed": Style("muted", "info", "You changed it"),
+    "could_not_verify": Style("warn", "alert", "Could not verify"),
+}
+LEASES = {
+    "active": Style("info", "lock", "Lease held"),
+    "lapsed": Style("muted", "minus", "Lease lapsed"),
+    "released": Style("muted", "minus", "Lease released"),
+}
+JOB_SHEETS = {
+    "matches": Style("ok", "check", "Job sheet matches"),
+    "mismatch": Style("bad", "x", "Job sheet differs"),
+    "could_not_verify": Style("warn", "alert", "Job sheet not verified"),
+}
+
 
 def check_item_style(kind: str, settled: str) -> Style:
     """An item of a check: settled ones are no longer to fix."""

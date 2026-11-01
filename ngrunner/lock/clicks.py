@@ -26,10 +26,11 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
+from ngrunner.checks.jobchecks import JobCheck
 from ngrunner.clock import Clock
 from ngrunner.guards.tracker import TrackerSnapshot, plain_material
 from ngrunner.lock.drop import IN_PROGRESS, LOCKED, DropResult, drop_batch
-from ngrunner.lock.gate import CheckLike, GateResult, NestLike, lock_gate
+from ngrunner.lock.gate import GateResult, NestLike, lock_gate
 from ngrunner.store import Store
 from ngrunner.store.locks import add_lock_click, list_batches
 from ngrunner.tracker_inbox import InboxRefused, TakeoffFacts, TrackerNames, inbox_rows
@@ -50,26 +51,29 @@ class ClickResult:
 
 
 def lock_design(job: str, *, takeoff: TakeoffFacts, names: Names, snap: TrackerSnapshot,
-                nests: Sequence[NestLike], check: CheckLike | None, room_sha256: Mapping[str, str],
-                room_identity: Mapping[str, str], unsettled: int, without_check: bool, store: Store,
-                roots: Roots, interlock: Callable[[list[Path]], str | None], clock: Clock) -> ClickResult:
-    """Add the job's calculated rows, In progress."""
+                nests: Sequence[NestLike], check: JobCheck | None, room_sha256: Mapping[str, str],
+                room_identity: Mapping[str, str], conversion_sha256: str | None, without_check: bool,
+                store: Store, roots: Roots, interlock: Callable[[list[Path]], str | None],
+                clock: Clock) -> ClickResult:
+    """Add the job's calculated rows, In progress. check: the job's check as jobchecks.job_checks()
+    gives it; the rooms' and the IC Conversion's hashes are as they are on disk now."""
     gate = lock_gate("lock_design", nests=nests, check=check, room_sha256=room_sha256,
-                     room_identity=room_identity, unsettled=unsettled, without_check=without_check)
+                     room_identity=room_identity, conversion_sha256=conversion_sha256,
+                     without_check=without_check)
     return _click("lock_design", job, None, gate,
                   lambda: inbox_rows(job, takeoff, verb="append", names=names, status=IN_PROGRESS),
                   "append", snap, store, roots, interlock, clock)
 
 
 def finish_lock(job: str, material: str, *, tracker_name: str, sheets: float, takeoff: TakeoffFacts,
-                names: Names, snap: TrackerSnapshot, nests: Sequence[NestLike], check: CheckLike | None,
-                room_sha256: Mapping[str, str], room_identity: Mapping[str, str], unsettled: int,
-                without_check: bool, store: Store, roots: Roots,
+                names: Names, snap: TrackerSnapshot, nests: Sequence[NestLike], check: JobCheck | None,
+                room_sha256: Mapping[str, str], room_identity: Mapping[str, str],
+                conversion_sha256: str | None, without_check: bool, store: Store, roots: Roots,
                 interlock: Callable[[list[Path]], str | None], clock: Clock) -> ClickResult:
     """Set one material's nest numbers: material is the nest's (its folder's name), tracker_name the
     row's, sheets the nest's sheet count. The last material also locks the job."""
     gate = lock_gate("finish_lock", nests=nests, check=check, room_sha256=room_sha256,
-                     room_identity=room_identity, unsettled=unsettled, material=material,
+                     room_identity=room_identity, conversion_sha256=conversion_sha256, material=material,
                      without_check=without_check)
 
     def rows() -> list[list[str]]:
@@ -92,13 +96,14 @@ def finish_lock(job: str, material: str, *, tracker_name: str, sheets: float, ta
 
 
 def lock(job: str, *, sheets: Mapping[str, float], takeoff: TakeoffFacts, names: Names,
-         snap: TrackerSnapshot, nests: Sequence[NestLike], check: CheckLike | None,
-         room_sha256: Mapping[str, str], room_identity: Mapping[str, str], unsettled: int,
+         snap: TrackerSnapshot, nests: Sequence[NestLike], check: JobCheck | None,
+         room_sha256: Mapping[str, str], room_identity: Mapping[str, str], conversion_sha256: str | None,
          without_check: bool, store: Store, roots: Roots, interlock: Callable[[list[Path]], str | None],
          clock: Clock) -> ClickResult:
     """Lock design and every Finish lock at once: sheets holds each tracker row's nest sheet count."""
     gate = lock_gate("lock", nests=nests, check=check, room_sha256=room_sha256,
-                     room_identity=room_identity, unsettled=unsettled, without_check=without_check)
+                     room_identity=room_identity, conversion_sha256=conversion_sha256,
+                     without_check=without_check)
     has_rows = any(row.job.strip() == job.strip() for row in (*snap.sheets, *snap.tape, *snap.jobs))
     verb = "set" if has_rows else "append"
 

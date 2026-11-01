@@ -447,6 +447,20 @@ Measured on Cases A to J (`tests/test_checks_real.py`): no case passes whole on 
 |---|---|---|
 | The `.bak` reader (`guards/bak.py`) | Findings only: whether a room's `.bak` is newer or larger than its `.des`, and a symmetric diff, part by part. Never a verdict, and nothing gates on it, until Jim answers Q19 | The design's `.bak` rule waits for P3 and Q19. On the real rooms, size and contents are measured, never file times (`docs/p2/build-spec.md`, section 10) |
 
+## P5's reader, and Phases 3 and 4 wired into the app (2026-10-31)
+
+| Question | Ruling | Why |
+|---|---|---|
+| P5's drawing reader | **Claude Opus 5.5, direct.** GPT-6 Luna is rejected and OpenRouter is closed (Sulaiman's call, on these numbers) | On the 121 new walls, read once: Claude accepted 118 with a reading error on 4 walls, all under an inch, none gross. Luna, tuned in six rounds, accepted 57 with a reading error on 21 walls and a gross misplacement on 6. It costs $0.032 a wall against Luna's $0.015, about $2–3 a month |
+| Which walls go through without Jim | None, yet. Every wall is shown to Jim | Every category with 20 or more walls had errors. Most of Claude's silent misses (76 of 84) are Jim's build choices, not reading: where a run starts, the top line, and the gap under stacked uppers. P5 builds those three as code rules first. REA and hutches have no walls in the test yet |
+| The check that keeps client details out of a request | Stays as strict as it is | It blocked 1 wall of 122, on catalogue words. Loosening it waits for P5's build |
+| A shadow batch and the in-flight rule | A shadow batch never blocks another job's drop. It blocks only a second drop for its own job. It closes when the chat's own rows for that job appear in the real tracker's snapshot (read only), as matched or differing, and that comparison is P4's "5 locks match the chat" test. With no chat rows after 7 days it closes as not compared. Built in P4's next round; until then the 30-minute DEV item stands | In shadow nothing ingests NG Runner's test folder, so the first batch would otherwise stay in flight forever and block every later drop on every job |
+| The tracker's names for a batch's rows | `lock/names.py`'s strict stopgap stands for the shadow: names come from the chat's IC Conversion, and anything it can't name exactly refuses the lock, saying why. The lasting source is NG Runner's own Phase 2 workbook, once it names every bucket by RULES' Tafisa names and each name is in the Pricing block | Only 23 of 52 real conversions name their buckets. A name not in the Pricing block costs the job $0 silently (RULES' hard precondition) |
+| A fix's survival in shadow | Proven only in the day simulation until go-live | A shadow fix is written into NG Runner's own copy of the room, which Mozaik never saves |
+| P4's messages | To Sulaiman, marked SHADOW, in live mode too while P4 is in shadow | Nothing of P4's reaches Jim before he approves it |
+| A failed check with open could-not-verify items | The lock gate refuses it | A check that couldn't look at everything hasn't cleared the job |
+| Left for P4's next round | `lock <Job>` in the command box; "fixes not yet verified" in the heartbeat's risks; one settled list for all jobs; a day-simulation scenario running a real `cnc_job_sheet` | Not needed for the shadow trial |
+
 ## Matching (settled)
 
 | Decision | Ruling | Why |

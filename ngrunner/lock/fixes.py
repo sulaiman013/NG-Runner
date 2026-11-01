@@ -262,9 +262,11 @@ def _put_back(fixer: NotchFace, current: bytes, elements: Sequence[Element]) -> 
 
 def survival(record: FixRecord, fixer: NotchFace, snapshot: Snapshot, *, room_bytes: bytes, room_name: str,
              work: Path, sessions: Sequence[tuple[datetime, datetime | None]], store: Store, at: datetime,
-             run: Callable[..., Any] = run_tool, python: Path | None = None) -> Survival:
+             run: Callable[..., Any] = run_tool, python: Path | None = None, keep: bool = True) -> Survival:
     """Whether the fix survived Jim's next save of its room, room_bytes as the room is now. sessions:
-    when Mozaik ran at this PC, as (start, end or None while it runs)."""
+    when Mozaik ran at this PC, as (start, end or None while it runs). keep: record what it found in
+    the store; the running app judges on a worker with keep=False and records it on the scheduler's
+    thread (store.locks.record_survival)."""
     if sha256(room_bytes) == record.result_sha256:
         return Survival("waiting", "The room hasn't been saved since the fix")
     tags = ", ".join(sorted({f"C{e['cab']}" for e in record.elements}, key=lambda t: _cab_order(t[1:])))
@@ -288,7 +290,7 @@ def survival(record: FixRecord, fixer: NotchFace, snapshot: Snapshot, *, room_by
             Survival("you_changed", f"You changed it in Mozaik: {tags} is back as before the fix")
     else:
         found = Survival("you_changed", f"You changed it in Mozaik: {tags} holds other values now")
-    if found.code != "waiting":
+    if keep and found.code != "waiting":
         record_survival(store, record.id, code=found.code, words=found.words, at=at)
     return found
 

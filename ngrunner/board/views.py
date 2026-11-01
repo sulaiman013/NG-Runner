@@ -31,6 +31,11 @@ CHECK_STATES = ("none", "asked", "running", "waiting", "passed", "failed", "coul
                 "not_run")
 CHECK_ITEM_KINDS = ("fix", "mozaik", "could_not_verify", "advisory")
 TAKEOFF_STATES = ("made", "chat", "unverified", "in_chat", "failed")
+LOCK_BUTTON_STATES = ("ready", "waivable", "blocked", "asked")
+BATCH_STATES = ("dropped", "archived", "first_ok", "confirmed", "doubt", "resent")
+FIX_STATES = ("waiting", "applied", "undone", "held", "mozaik_undid", "you_changed", "could_not_verify")
+LEASE_STATES = ("active", "lapsed", "released")
+JOB_SHEET_STATES = ("matches", "mismatch", "could_not_verify")
 
 
 def _one_of(value: object, allowed: Sequence[object], what: str) -> None:
@@ -137,6 +142,84 @@ class CheckView:
 
 
 @dataclass(frozen=True)
+class LockButtonView:
+    """One of Jim's lock buttons (P4): Lock design, Finish lock of one material, or Lock. state: ready,
+    waivable (only the check is missing, so "lock without check" may go ahead), blocked, or asked (a click
+    is being acted on). missing: exactly what stands in its way, in the gate's own words."""
+
+    studio_id: str
+    click: str
+    material: str | None
+    label: str
+    state: str
+    missing: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        _one_of(self.state, LOCK_BUTTON_STATES, "a lock button's state")
+
+
+@dataclass(frozen=True)
+class BatchView:
+    """A tracker batch NG Runner dropped (into its own test folder until P4 goes live), as the after-drop
+    step last judged it. can_resend: [Re-send only the missing row] may be offered."""
+
+    id: str
+    label: str
+    state: str
+    words: str
+    can_resend: bool = False
+
+    def __post_init__(self) -> None:
+        _one_of(self.state, BATCH_STATES, "a batch's state")
+
+
+@dataclass(frozen=True)
+class FixView:
+    """A fix: waiting to be written, written, undone, or what Jim's next save showed. id: the fix's, for
+    Undo; None while it waits."""
+
+    id: int | None
+    state: str
+    words: str
+    can_undo: bool = False
+
+    def __post_init__(self) -> None:
+        _one_of(self.state, FIX_STATES, "a fix's state")
+
+
+@dataclass(frozen=True)
+class LeaseView:
+    state: str
+    words: str
+
+    def __post_init__(self) -> None:
+        _one_of(self.state, LEASE_STATES, "a lease's state")
+
+
+@dataclass(frozen=True)
+class JobSheetView:
+    state: str
+    words: str
+    items: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        _one_of(self.state, JOB_SHEET_STATES, "a job sheet's state")
+
+
+@dataclass(frozen=True)
+class LockPanelView:
+    """A job's P4 panel: its lock buttons, its lease, its batches, its fixes and its job sheet, and the
+    note that P4 writes only NG Runner's own copies until it goes live."""
+
+    buttons: tuple[LockButtonView, ...] = ()
+    lease: LeaseView | None = None
+    batches: tuple[BatchView, ...] = ()
+    fixes: tuple[FixView, ...] = ()
+    sheet: JobSheetView | None = None
+    note: str = ""
+
+
+@dataclass(frozen=True)
 class JobRow:
     """One row per job, and one for a Fab row with no job yet: its studio_id is None and its
     name is the row as Barbara typed it. A folder in NG Jobs with no Fab row gets one too, once the
@@ -144,7 +227,8 @@ class JobRow:
     (the job model's words, such as "could not verify"), or None when the Fab row has no
     install date. materials: the nest guard's lines. notes: anything else a guard can't verify. lock:
     what the pre-flight would have him look at before he locks. takeoff: NG Runner's takeoff of
-    the summary it filed, once it has one. check: its check (P3), for a row with a job."""
+    the summary it filed, once it has one. check: its check (P3), for a row with a job. p4: its lock
+    panel (P4), for a filed job or one with something of P4's."""
 
     studio_id: str | None
     name: str
@@ -157,6 +241,7 @@ class JobRow:
     lock: tuple[str, ...] = ()
     takeoff: TakeoffView | None = None
     check: CheckView | None = None
+    p4: LockPanelView | None = None
 
     def __post_init__(self) -> None:
         if self.overlay is not None:
@@ -341,4 +426,17 @@ class BoardActions(Protocol):
 
     def answer_prompt(self, prompt_id: str, choice: str) -> str:
         """A close prompt's button: choice is its label, exactly as shown."""
+        ...
+
+    def lock_click(self, studio_id: str, click: str, material: str, without_check: bool) -> str:
+        """Lock design, Finish lock (of material) or Lock (P4): refused with what is missing, or asked.
+        without_check: Jim confirmed "lock without check", which waives only the check."""
+        ...
+
+    def resend_row(self, batch_id: str) -> str:
+        """[Re-send only the missing row] of a batch in doubt, when the board offers it."""
+        ...
+
+    def undo_fix(self, fix_id: str) -> str:
+        """Undo a fix NG Runner wrote."""
         ...

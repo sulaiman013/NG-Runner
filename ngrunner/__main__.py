@@ -15,8 +15,8 @@ Commands:
                                        lets the launcher start this version
     run [--attempt ID] [--open-board]  NG Runner itself, the default (the launcher starts it)
     install-shortcut --target EXE      the Start Menu item, carrying NG Runner's AUMID
-    release-all                        hand every job back to Jim's chat (uninstall); P1a has no
-                                       leases, so there is nothing to hand back yet
+    release-all                        hand every job back to Jim's chat (uninstall): every lease
+                                       NG Runner holds is released (lock.leases.release_all)
     canary --folder PATH               prove a drive does what commit_write relies on
     setup                              settings.json, the two keys and Studio's login, asked for
                                        in plain words
@@ -110,9 +110,7 @@ def main(
     if args.command == "keygen":
         return _keygen(say)
     if args.command == "release-all":
-        say("There is nothing to release: P1a puts no leases on any job, so Jim's chat is free to"
-            " work them all.")
-        return 0
+        return _release_all(environ, clock, say)
     if args.command == "install-shortcut":
         return _install_shortcut(Path(args.target), start_menu, say)
     if args.command == "canary":
@@ -250,6 +248,50 @@ def _make_shortcut(path: Path, target: Path, aumid: str) -> None:
                         propsys.PROPVARIANTType(aumid, pythoncom.VT_LPWSTR))
     properties.Commit()
     link.QueryInterface(pythoncom.IID_IPersistFile).Save(str(path), True)
+
+
+def _release_all(environ: Mapping[str, str], clock: Clock, say: _Say) -> int:
+    """Uninstall's hand-back: every lease NG Runner holds, released through lock.leases.release_all. With
+    no data folder, no database or no lease, there is nothing to release, which is no failure."""
+    nothing = ("There is nothing to release: NG Runner holds no lease on any job, so Jim's chat is free to"
+               " work them all.")
+    lapse = "Leases end by themselves within 2 and a half hours; until then, chat leaves those jobs alone."
+    try:
+        paths = app_paths(environ)
+    except SettingsError:
+        say(nothing)
+        return 0
+    if not paths.db.is_file():
+        say(nothing)
+        return 0
+    from ngrunner.config import roots, shadow_roots
+    from ngrunner.lock import leases, work
+    from ngrunner.store import StoreError, open_store
+    from ngrunner.store.locks import list_leases
+
+    try:
+        store = open_store(paths.db)
+        held = list_leases(store, state=leases.ACTIVE)
+    except StoreError:
+        say(f"NG Runner's database could not be read, so no lease was released. {lapse}")
+        return 1
+    if not held:
+        say(nothing)
+        return 0
+    try:
+        settings = load_settings(paths)
+    except SettingsError as exc:
+        say(f"{exc}, so no lease was released. {lapse}")
+        return 1
+    results = leases.release_all(store=store, roots=shadow_roots(paths), clock=clock, holder=work.pc_name(),
+                                 interlock=work.release_interlock(store, roots(settings, paths), clock,
+                                                                  settings.tracker_folder))
+    failed = [result for result in results if not result.ok]
+    done = len(results) - len(failed)
+    say(f"Released {done} job{'' if done == 1 else 's'} to chat.")
+    for result in failed:
+        say(f"{result.folder} was not released: {result.reason} {lapse}")
+    return 1 if failed else 0
 
 
 def _canary(folder: Path, environ: Mapping[str, str], say: _Say) -> int:

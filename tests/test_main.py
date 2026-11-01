@@ -100,13 +100,57 @@ def test_no_data_folder_exits_2() -> None:
 # ----- release-all
 
 
-def test_release_all_exits_0_and_says_there_are_no_leases(paths: AppPaths) -> None:
+def test_release_all_with_no_lease_held_exits_0_and_says_so(paths: AppPaths) -> None:
     code, text = _main(paths, "release-all")
-    assert code == 0 and "no leases" in text
+    assert code == 0 and "holds no lease" in text
 
 
 def test_release_all_works_with_no_data_folder() -> None:
     assert cli.main(["release-all"], out=io.StringIO(), environ={}) == 0
+
+
+def _leased(paths: AppPaths, tmp_path: Path, *folders: str):
+    """Settings, and a lease NG Runner took on each folder, in its own copy of NG Jobs (P4's shadow)."""
+    from datetime import datetime, timezone
+
+    from ngrunner.clock import FakeClock
+    from ngrunner.config import roots, shadow_roots
+    from ngrunner.lock import work
+    from ngrunner.lock.leases import take_lease
+    from ngrunner.store import open_store
+
+    settings = settings_from({"ng_jobs": str(tmp_path / "NG Jobs"), "mozaik_shared": str(tmp_path / "Mozaik Shared"),
+                              "control": str(tmp_path / "control")})
+    save_settings(paths, settings)
+    store = open_store(paths.db)
+    clock = FakeClock(datetime(2026, 10, 31, 13, 0, tzinfo=timezone.utc))
+    real = work._Real(store, roots(settings, paths), clock, None)
+    from ngrunner.interlock import p4_interlock
+
+    for folder in folders:
+        assert take_lease(folder, store=store, roots=shadow_roots(paths), clock=clock, holder="PC",
+                          interlock=p4_interlock(real, mozaik_running=lambda: False)).ok
+    return store
+
+
+def test_release_all_hands_every_lease_back_through_lock_leases_release_all(paths: AppPaths, tmp_path: Path,
+                                                                          monkeypatch) -> None:
+    from ngrunner.config import shadow_roots
+    from ngrunner.lock import leases
+    from ngrunner.lock.leases import LEASE_NAME
+    from ngrunner.store.locks import list_leases
+
+    store = _leased(paths, tmp_path, "Testerson_101426", "Fakeley_101526")
+    called = []
+    real = leases.release_all
+    monkeypatch.setattr(leases, "release_all", lambda **kw: called.append(kw) or real(**kw))
+
+    code, text = _main(paths, "release-all")
+
+    assert code == 0 and called and "Released 2 jobs to chat" in text
+    assert {lease.state for lease in list_leases(store)} == {"released"}
+    lease = shadow_roots(paths).ng_jobs / "Testerson_101426" / LEASE_NAME
+    assert "State: released" in lease.read_text(encoding="utf-8")
 
 
 # ----- install-shortcut

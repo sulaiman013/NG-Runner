@@ -2817,6 +2817,7 @@ def _keep_notes_current(ctx: Ctx) -> None:
     guarded = _guards_said(store)
     filed = all_filed_facts(store)
     blocks = {sid: _takeoff_block(record) for sid, record in job_takeoffs(store, filed).items()}
+    checked = _check_blocks(store, filed, now)
 
     def one(sid: str) -> None:
         facts = filed_facts(store, sid)
@@ -2829,20 +2830,35 @@ def _keep_notes_current(ctx: Ctx) -> None:
         retry_at = facts.get("retry_at")
         said = guarded.get(facts["folder"], {"nests": [], "preflight": None})
         block = blocks.get(sid)
+        check, settled = checked.get(sid, (None, []))
         if ((items == facts.get("items", []) and _says_the_same(facts, said)
-             and block == facts.get("takeoff")) or (retry_at and now < from_iso(retry_at))):
+             and block == facts.get("takeoff") and check == facts.get("check")
+             and settled == facts.get("settled", [])) or (retry_at and now < from_iso(retry_at))):
             return
-        _rewrite_notes(ctx, sid, facts, items, now, new_facts={**said, "takeoff": block})
+        _rewrite_notes(ctx, sid, facts, items, now,
+                       new_facts={**said, "takeoff": block, "check": check, "settled": settled})
 
     with_guards = {sid for sid, facts in filed.items() if facts.get("folder") in guarded}
     with_takeoffs = {sid for sid, facts in filed.items()
                      if blocks.get(sid) != facts.get("takeoff")}
+    with_checks = {sid for sid, facts in filed.items()
+                   if checked.get(sid, (None, [])) != (facts.get("check"), facts.get("settled", []))}
     _each(ctx, "keep_notes_current",
-          sorted(listing | set(by_job) | with_guards | with_takeoffs), one)
+          sorted(listing | set(by_job) | with_guards | with_takeoffs | with_checks), one)
     still = sorted(sid for sid in listing | set(by_job)
                    if ((filed_facts(store, sid) or {}).get("items")))
     if still != sorted(listing):
         set_state(store, _LISTING, json.dumps(still))
+
+
+def _check_blocks(db: Db, filed: dict[str, dict[str, Any]], now: datetime
+                  ) -> dict[str, tuple[dict[str, Any] | None, list[dict[str, Any]]]]:
+    """By Studio ID, each filed job's check and settled list as its notes carry them (schema 4)."""
+    from ngrunner.checks.jobchecks import job_checks, notes_block
+
+    checks = job_checks(db, now)
+    return {sid: notes_block(facts.get("job") or facts["folder"], checks.get(sid)) for sid, facts in filed.items()
+            if sid in checks}
 
 
 def _guards_said(db: Db) -> dict[str, dict[str, Any]]:
@@ -2918,18 +2934,20 @@ def _rewrite_notes(ctx: Ctx, sid: str, facts: dict[str, Any], items: list[dict[s
 
 
 def _notes_bytes(facts: dict[str, Any], items: list[dict[str, str]]) -> bytes:
-    """<folder>_NGRunner.json, schema 3: for machines (Jim's chat). It holds no address. Schema 3
-    adds the takeoff, null until NG Runner has made it (_takeoff_block)."""
+    """<folder>_NGRunner.json, schema 4: for machines (Jim's chat). It holds no address. Schema 3
+    added the takeoff, null until NG Runner has made it (_takeoff_block); schema 4 the job's check,
+    null until one has run, item by item in NG Runner's words with its chat line, and the settled list,
+    what Jim settled for this job (checks.jobchecks.notes_block)."""
     summary = {"file": f"{facts['folder']}_summary.pdf", "sha256": facts["sha256"],
                "layout": facts["layout"], "pages": facts["pages"], "fetched": facts["fetched"]}
     if facts.get("replaced_by_hand"):
         summary["replaced_by_hand"] = True
-    record = {"schema": 3, "job": facts["job"], "branch": facts["branch"], "summary": summary,
+    record = {"schema": 4, "job": facts["job"], "branch": facts["branch"], "summary": summary,
               "designs": facts.get("designs"),
               "designs_checked": bool(facts.get("designs_checked")),
               "filed_at": facts["at"], "items": items, "nests": facts.get("nests", []),
               "preflight": facts.get("preflight"), "takeoff": facts.get("takeoff"),
-              "note": _NOTE}
+              "check": facts.get("check"), "settled": facts.get("settled", []), "note": _NOTE}
     return (json.dumps(record, indent=1, ensure_ascii=False) + "\n").encode("utf-8")
 
 

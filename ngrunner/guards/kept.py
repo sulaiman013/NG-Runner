@@ -19,8 +19,10 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass
-from typing import Any
+from datetime import datetime
+from typing import Any, NamedTuple
 
+from ngrunner.clock import from_iso, to_iso
 from ngrunner.guards.labels import LabelsMatch
 from ngrunner.store import Db, clear_state, get_state, list_nests, set_state, states_under
 
@@ -33,6 +35,8 @@ LOCK_PREFIX = "guards.lock."            # the pre-flight per folder, for the boa
 LABELS_PREFIX = "guards.labels."        # what its labels showed, and which files showed it
 NEST_FILES = "guards.nest_files"        # JSON: per job, what its nests, rooms and locks last showed
 MOZAIK_RUNNING = "guards.mozaik_running"  # JSON: true, false or null, as the observer last found it
+MOZAIK_SESSIONS = "guards.mozaik_sessions"  # JSON: [[start, end or null, last seen running], ...]
+_SESSIONS_KEPT = 200
 
 
 @dataclass(frozen=True)
@@ -170,6 +174,69 @@ def nest_files_said(db: Db) -> dict[str, dict[str, Any]] | None:
     marks all of them as from before install."""
     text = get_state(db, NEST_FILES)
     return None if text is None else json.loads(text)
+
+
+class HeldLock(NamedTuple):
+    """One lock file that says a job is open, as the guards' listing last kept it: the file's name
+    (MozaikJob.LCK or OptimizeJob.LCK), the owner read from it (None when it couldn't be read), and
+    since when, as an ISO time, so its age can be told at any later moment."""
+
+    file: str
+    owner: str | None
+    since: str
+
+    @property
+    def open_in_mozaik(self) -> bool:
+        """MozaikJob.LCK: the job itself is open in Mozaik, not only in its Optimizer."""
+        return self.file == _MOZAIK_LOCK
+
+
+_MOZAIK_LOCK = "MozaikJob.LCK"        # guards.observer.LOCK_FILE; this module imports none of them
+
+
+def held_locks(db: Db) -> dict[str, tuple[HeldLock, ...]]:
+    """By folder, as Mozaik Shared spells it, the lock files that say each job is open, from the
+    guards' last listing (nestfiles._held keeps them under "held"). P3's close prompt reads a job's
+    MozaikJob.LCK going from here, and the board each lock's owner and age. A folder with none is
+    left out, and so is an entry not in the kept shape, which is never guessed at. Empty before the
+    first listing."""
+    found: dict[str, tuple[HeldLock, ...]] = {}
+    for folder, kept in (nest_files_said(db) or {}).items():
+        entries = kept.get("held") if isinstance(kept, dict) else None
+        locks = tuple(HeldLock(entry[0], entry[1], entry[2]) for entry in entries or ()
+                      if isinstance(entry, list) and len(entry) == 3 and isinstance(entry[0], str)
+                      and isinstance(entry[2], str) and (entry[1] is None or isinstance(entry[1], str)))
+        if locks:
+            found[folder] = locks
+    return found
+
+
+def note_mozaik_session(db: Db, running: bool | None, now: datetime) -> None:
+    """What one pass of the observer saw, as Mozaik's sessions at this PC (P4's survival check asks
+    whether one was open across a fix's write). A session runs from the first pass that saw Mozaik
+    running to the last one that did, so a close between two passes is never read as after a write
+    made between them. Can't tell (None) neither opens nor closes one. The newest 200 are kept."""
+    if running is None:
+        return
+    sessions = json.loads(get_state(db, MOZAIK_SESSIONS) or "[]")
+    stamp = to_iso(now)
+    last = sessions[-1] if sessions else None
+    is_open = last is not None and last[1] is None
+    if running and is_open:
+        last[2] = stamp
+    elif running:
+        sessions.append([stamp, None, stamp])
+    elif is_open:
+        last[1] = last[2]
+    else:
+        return
+    set_state(db, MOZAIK_SESSIONS, json.dumps(sessions[-_SESSIONS_KEPT:]))
+
+
+def mozaik_sessions(db: Db) -> list[tuple[datetime, datetime | None]]:
+    """When Mozaik ran at this PC, oldest first, as (start, end or None while it runs)."""
+    return [(from_iso(start), None if end is None else from_iso(end))
+            for start, end, _seen in json.loads(get_state(db, MOZAIK_SESSIONS) or "[]")]
 
 
 def mozaik_said(db: Db) -> tuple[bool, bool | None]:

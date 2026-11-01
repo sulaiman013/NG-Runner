@@ -40,6 +40,8 @@ QUESTIONS = {
     "remake": "Is this a remake?",
     "design_mismatch": "The report and Studio's proposal differ",
     "sheet_size": "A program is past its sheet size",
+    "fix": "A fix is ready: approve it?",
+    "fix_undone": "Mozaik undid a fix: redo it?",
 }
 
 
@@ -136,6 +138,8 @@ _CARD_BACK = {   # an open card, as it comes back in the digest
     "design_mismatch": "the report of {job} and Studio's proposal still list different designs.",
     "sheet_size": "{job} still has a program past its sheet size; did you add that sheet on"
                   " purpose?",
+    "fix": "a fix for {job} waits for your OK.",
+    "fix_undone": "Mozaik undid a fix of {job}; redo it?",
 }
 
 
@@ -1050,6 +1054,137 @@ def _inches(mm: float) -> str:
 
 def _upper_first(text: str) -> str:
     return text[:1].upper() + text[1:]
+
+
+# ----- P4's lock and fixes: the three lock clicks, the batch after it, a fix's card, Undo and survival
+#
+# P4 runs in shadow until it goes live: a batch, a fix, a lease and a job sheet go only to NG Runner's own
+# copies on this PC (config.shadow_roots), so every message about them goes to Sulaiman alone, marked
+# SHADOW, and none is a toast. What is missing for a lock comes from lock/gate.py, the drop's checks and
+# the takeoff's rows, in their own plain words; the words here only frame them.
+
+P4_SHADOW_NOTE = ("P4 runs in shadow: a batch, a fix, a lease and a job sheet go only to NG Runner's own copies"
+                  " on this PC, never to the tracker, Mozaik Shared or NG Jobs")
+LOCK_LABELS = {"lock_design": "Lock design", "finish_lock": "Finish lock", "lock": "Lock"}
+LOCK_WITHOUT_CHECK = "Lock without check"
+FIX_CHOICES = ("Fix it", "Leave it")
+REDO_CHOICES = ("Redo the fix", "Leave it")
+BATCH_LABELS = {"lock_design": "Lock design", "finish_lock": "Finish lock", "lock": "Lock",
+                "resend": "Re-send of the missing rows"}
+RESEND = "Re-send only the missing row"
+NOT_A_LOCK = "That isn't one of the lock buttons, so nothing changed."
+LOCK_GONE = "That is no longer on the board, so nothing changed."
+LOCK_BUSY = "That is already asked for, so it wasn't asked again."
+
+
+def lock_label(click: str, material: str | None = None) -> str:
+    """A lock button's label: Lock design, Finish lock 3/4 Classic White, or Lock."""
+    label = LOCK_LABELS[click]
+    return f"{label} {_material(material)}" if material else label
+
+
+def lock_refused(job: str, *, label: str, missing: Sequence[str]) -> str:
+    """The board's answer to a lock click that its gate refuses: what is missing, each as the gate says."""
+    said = "; ".join(_clause(words) for words in missing) or "it could not be verified"
+    return f"{job}: {label} wasn't done. Missing: {said}."
+
+
+def lock_asked(job: str, *, label: str, without_check: bool) -> str:
+    """The board's answer to a lock click that goes ahead: the batch follows within minutes."""
+    waived = ", without its check, as you chose" if without_check else ""
+    return f"{job}: {label} asked{waived}. The board shows the batch once it is dropped."
+
+
+def lock_result(job: str, *, label: str, ok: bool, words: str, at: datetime, without_check: bool) -> Message:
+    """What a lock click came to, for Sulaiman while P4 is in shadow: dropped into NG Runner's own test
+    folder, or refused with why."""
+    waived = f" ({LOCK_WITHOUT_CHECK.lower()})" if without_check else ""
+    title = f"{job}: {label}{waived} {fmt_clock(at)}"
+    if ok:
+        return Message("lock_result", title, (f"{_sentence(words)} Shadow: into NG Runner's own test folder,"
+                                              " not the tracker.",))
+    return Message("lock_result", title, (f"Not dropped: {_ended(_clause(words))}",))
+
+
+def batch_result(job: str, *, label: str, state: str, words: str, at: datetime) -> Message:
+    """A batch the snapshots confirmed, or left in doubt. Doubt is never re-dropped by itself, and is
+    urgent: the tracker may not hold what the batch said."""
+    title = f"{job}: {label} {'confirmed' if state == 'confirmed' else 'in doubt'} {fmt_clock(at)}"
+    if state == "confirmed":
+        return Message("batch_result", title, (_sentence(words),))
+    return Message("batch_result", title, (f"{_sentence(words)} Nothing is sent again by itself; the board"
+                                           " says what can be.",), urgent=True)
+
+
+def batch_waiting(job: str, *, label: str, since: datetime, now: datetime) -> str:
+    """A batch the tracker hasn't taken within 30 minutes (design 3.4, a lock batch's limit)."""
+    return f"{job}: the {label} batch dropped {_clock_on(since, pacific_day(now))} still waits for the tracker"
+
+
+def resend_asked(job: str) -> str:
+    return (f"{job}: re-sending only the missing rows, once a snapshot taken after now shows them still"
+            " missing.")
+
+
+def fix_card(job: str, *, words: Sequence[str], renest: Sequence[str]) -> CardSpec:
+    """A fix of Jim's fixer, planned on a copy, for him to approve (decision 7a: one click while on
+    trial). Its text is the plan's own words. A fix on parts a nest holds is "Fix and re-nest", as the
+    nest reads NOT CHECKED until it is nested again (decision 7b)."""
+    first = f"Fix and re-nest {_and([_material(m) for m in renest])}" if renest else FIX_CHOICES[0]
+    said = " ".join(_ended(_clause(line)) for line in words)
+    return CardSpec("fix", job=job, row=None, choices=(first, FIX_CHOICES[1]),
+                    text=f"{said} Shadow until P4 goes live: only NG Runner's own copy of the room is changed.")
+
+
+def redo_card(job: str, *, words: str) -> CardSpec:
+    """Mozaik undid a fix: one redo is offered, never more."""
+    return CardSpec("fix_undone", job=job, row=None, choices=REDO_CHOICES,
+                    text=f"{_ended(_clause(words))} One redo is offered; the fix is planned again first.")
+
+
+def fix_result(job: str, *, done: str, words: str, at: datetime) -> Message:
+    """A fix written, undone, or not done, for Sulaiman while P4 is in shadow. done: written, undone or
+    refused."""
+    title = f"{job}: fix {'not done' if done == 'refused' else done} {fmt_clock(at)}"
+    note = "" if done == "refused" else " Shadow: in NG Runner's own copy of the room, not in Mozaik Shared."
+    return Message("fix_result", title, (f"{_sentence(words)}{note}",))
+
+
+def survival_message(job: str, *, code: str, words: str, at: datetime) -> Message:
+    """What the fix's own check said after Jim's next save. "Mozaik undid" is urgent, with one redo."""
+    title = f"{job}: after the save {fmt_clock(at)}"
+    redo = " A redo is offered on the board, once." if code == "mozaik_undid" else ""
+    return Message("survival", title, (f"{_sentence(words)}{redo}",), urgent=code == "mozaik_undid")
+
+
+def survival_line(job: str, *, words: str) -> str:
+    """"You changed it in Mozaik", as a line in the log."""
+    return f"{job}: {_clause(words)}"
+
+
+def lease_words(state: str, *, at: datetime, until: datetime, now: datetime) -> str:
+    """A job's lease on the board: held until when, lapsed, or released."""
+    day = pacific_day(now)
+    if state == "active" and now < until:
+        return f"NG Runner holds this job's lease until {_clock_on(until, day)}, so chat leaves its files alone"
+    if state == "active":
+        return f"NG Runner's lease lapsed {_clock_on(until, day)}, so chat may work the job"
+    return f"Lease released {_clock_on(at, day)}: chat may work the job"
+
+
+def job_sheet_words(code: str, *, written: bool = False, why: str = "") -> str:
+    """The job sheet at lock: Jim's cnc_job_sheet against NG Runner's own reading of the nests."""
+    if code == "matches":
+        return ("The job sheet's counts match the nests" + ("; filed in NG Runner's own copy of the job"
+                                                            " folder" if written else ""))
+    if code == "mismatch":
+        return "The job sheet's counts don't all match the nests, so it isn't filed; the items say which"
+    return f"Could not verify the job sheet: {_clause(why) or 'it could not be made'}"
+
+
+def undo_asked(job: str) -> str:
+    return f"{job}: undoing the fix, once the room is clear to write."
+
 
 
 # ----- Sulaiman's lines: the DEV lane (Jim never sees it) and the daily "ran" line

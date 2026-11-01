@@ -6,8 +6,10 @@ Check-before-lock: whether one of Jim's lock clicks may go ahead, and if not, ex
 Why one pure function: a lock is the last gate before the tracker says a job is done, so what lets it
 through must be one plain list of tests that a reviewer can read, with the facts read elsewhere. It
 reads what the store keeps, by attribute: each nest as guards' verdict (store.NestRecord: material,
-state, room_hashes, the design identities its pass rests on) and the job's last check
-(store.CheckRunRecord: state, code, rooms by sha256, identities, stale_at, words).
+state, room_hashes, the design identities its pass rests on), and the job's check as P3 itself gives it
+(checks.jobchecks.job_checks: a JobCheck, its state, its newest run, and how many of its findings are
+still open). Whether that run stands for the job as it is now is P3's own jobchecks.counts(), on the
+rooms' sha256 and the IC Conversion's read now, so the gate and P3 can never disagree about it.
 
 The three clicks (decision 7c, questionnaire 32):
 - Lock design records the calculated rows as in progress before the nest: it needs a current check.
@@ -15,9 +17,10 @@ The three clicks (decision 7c, questionnaire 32):
 - Lock does both at once: a current check, and every nest of the job Nest checked.
 
 "Current" means for these very rooms: the check finished, nothing made it stale since, it ran on the
-bytes each room holds now, and on the design each holds now, the one every nest pass rests on too.
-A check that failed counts only once every finding of it is settled (P3 says how many aren't); one
-that could not verify is no check. A pass whose rooms' design has changed since is no pass.
+bytes each room holds now and on the IC Conversion there now (counts()), and on the design each room
+holds now, the one every nest pass rests on too. A check that failed counts only once every finding of
+it is settled (P3 says how many aren't); one that could not verify is no check, and neither is one that
+failed and also could not verify something. A pass whose rooms' design has changed since is no pass.
 
 Lock without check (decision 8): Jim may confirm a lock with no current check, which is kept as "lock
 without check". It waives the check side only, and the result still names what it waived. Nothing
@@ -28,9 +31,10 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime
 from typing import Protocol
 
+from ngrunner.checks import jobchecks
+from ngrunner.checks.jobchecks import JobCheck
 from ngrunner.guards.tracker import plain_material
 
 CLICKS = ("lock_design", "finish_lock", "lock")
@@ -49,17 +53,7 @@ class NestLike(Protocol):
     def room_hashes(self) -> Mapping[str, str]: ...
 
 
-class CheckLike(Protocol):
-    @property
-    def state(self) -> str: ...
-    @property
-    def code(self) -> str | None: ...
-    @property
-    def rooms(self) -> Mapping[str, str]: ...
-    @property
-    def identities(self) -> Mapping[str, str]: ...
-    @property
-    def stale_at(self) -> datetime | None: ...
+_NOT_DONE = ("asked", "running", "waiting", "not_run")
 
 
 @dataclass(frozen=True)
@@ -81,16 +75,18 @@ class GateResult:
     without_check: bool = False
 
 
-def lock_gate(click: str, *, nests: Sequence[NestLike], check: CheckLike | None,
-              room_sha256: Mapping[str, str], room_identity: Mapping[str, str], unsettled: int,
-              material: str | None = None, without_check: bool = False) -> GateResult:
-    """Whether click may go ahead. room_sha256 and room_identity are the job's rooms as they are on
-    disk now. unsettled: how many of the check's findings are open. material: Finish lock's one."""
+def lock_gate(click: str, *, nests: Sequence[NestLike], check: JobCheck | None,
+              room_sha256: Mapping[str, str], room_identity: Mapping[str, str],
+              conversion_sha256: str | None, material: str | None = None,
+              without_check: bool = False) -> GateResult:
+    """Whether click may go ahead. check: the job's check as jobchecks.job_checks() gives it, or None.
+    room_sha256 and room_identity are the job's rooms as they are on disk now, and conversion_sha256
+    its IC Conversion's (None when it has none). material: Finish lock's one."""
     if click not in CLICKS:
         raise ValueError(f"a lock click is one of: {', '.join(CLICKS)}")
     if click == "finish_lock" and not material:
         raise ValueError("Finish lock is for one material")
-    missing = [*_check_side(check, room_sha256, room_identity, unsettled)]
+    missing = [*_check_side(check, room_sha256, room_identity, conversion_sha256)]
     if click == "finish_lock":
         missing += _nest_side([n for n in nests if n.material == material], room_identity, material)
     elif click == "lock":
@@ -103,25 +99,30 @@ def lock_gate(click: str, *, nests: Sequence[NestLike], check: CheckLike | None,
 # ----- the check side
 
 
-def _check_side(check: CheckLike | None, sha: Mapping[str, str], identity: Mapping[str, str],
-                unsettled: int) -> list[Missing]:
-    if check is None:
+def _check_side(check: JobCheck | None, sha: Mapping[str, str], identity: Mapping[str, str],
+                conversion: str | None) -> list[Missing]:
+    run = None if check is None else check.run
+    if check is None or run is None or check.state == "none":
         return [_check("no_check", "No check of this job's design has run, so it can't be locked yet")]
-    if check.state != "done":
+    if check.state in _NOT_DONE:
         return [_check("check_not_done", "The job's check hasn't finished")]
-    if check.stale_at is not None:
+    if check.state == "stale":
         return [_check("check_stale", "A room was saved after the job's check ran, so the check is"
                                       " out of date")]
-    changed = _rooms_changed(dict(check.rooms), dict(sha))
-    if changed:
-        return changed
-    if dict(check.identities) != dict(identity):
+    if not jobchecks.counts(run, rooms=dict(sha), conversion_sha256=conversion or ""):
+        changed = _rooms_changed(dict(run.rooms), dict(sha))
+        if conversion != run.conversion_sha256:
+            changed.append(_check("conversion_changed", "The IC Conversion changed since the check ran, and"
+                                                        " the check is of the job against it"))
+        return changed or [_check("check_stale", "The job changed since its check ran, so the check is"
+                                                 " out of date")]
+    if dict(run.identities) != dict(identity):
         return [_check("check_other_design", "The check ran on another version of the design than"
                                              " the rooms hold now")]
-    if check.code == "failed" and unsettled > 0:
-        return [_check("items_open", f"The check found {_count(unsettled, 'thing')} to fix that"
-                                     f" {'is' if unsettled == 1 else 'are'}n't settled")]
-    if check.code not in ("passed", "failed"):
+    if check.state == "failed" and check.to_fix > 0:
+        return [_check("items_open", f"The check found {_count(check.to_fix, 'thing')} to fix that"
+                                     f" {'is' if check.to_fix == 1 else 'are'}n't settled")]
+    if check.state not in ("passed", "failed") or check.unverified > 0:
         return [_check("check_unsure", "The check could not verify everything it runs, so it is no"
                                        " check of the design")]
     return []

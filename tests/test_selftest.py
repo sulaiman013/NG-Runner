@@ -598,3 +598,13 @@ def test_every_check_module_is_in_the_list_a_build_is_checked_against():
     root = Path(selftest.__file__).parent / "checks"
     made = {f"ngrunner.checks.{path.stem}" for path in root.glob("*.py") if path.stem != "__init__"}
     assert made and made | {"ngrunner.checks"} <= set(selftest.P1A_MODULES)
+
+
+def test_every_lock_module_and_the_lock_store_are_in_the_list_a_build_is_checked_against():
+    root = Path(selftest.__file__).parent / "lock"
+    made = {f"ngrunner.lock.{path.stem}" for path in root.glob("*.py") if path.stem != "__init__"}
+    p4 = {"ngrunner.lock.leases", "ngrunner.lock.gate", "ngrunner.lock.drop", "ngrunner.lock.totals",
+          "ngrunner.lock.clicks", "ngrunner.lock.job_sheet", "ngrunner.lock.patch", "ngrunner.lock.fixes",
+          "ngrunner.lock.notch"}
+    assert p4 <= made
+    assert made | {"ngrunner.lock", "ngrunner.store.locks", "ngrunner.store.checks"} <= set(selftest.P1A_MODULES)
