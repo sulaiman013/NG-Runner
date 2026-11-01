@@ -910,6 +910,19 @@ def check_item_words(item: Any) -> str:
     return f"{tags}: {problem}" if tags else _upper_first(problem)
 
 
+def check_noise_words(noise: Any) -> str:
+    """Known noise in a run (findings.Noise), as the board's check shows it: what Jim's own rules say a
+    checker prints that is never a fault. Never an item, never to fix."""
+    if noise.what == "tr_base_4_1":
+        said = (f"{_count(noise.count, 'TR Base')} the IC summary prints at 4.1, which is IC's rounding; Jim's"
+                " rules build every TR Base 4\" (101.6 mm) by 96\" (2438.4 mm)")
+    elif noise.what == "sys_holes_w_4":
+        said = "the job's line bore on the uppers is one hole per shelf, on purpose for Jim's own hardware connection"
+    else:
+        said = f"the {CHECKER_WORDS.get(noise.checker, 'a')} check printed what Jim's rules say is never a fault"
+    return f"Known noise, not to fix: {said}"
+
+
 def check_chat_line(job: str, item: Any) -> str | None:
     """The line Jim pastes into his chat to fix item, naming the job; None when only Mozaik can fix it
     or it is no fault (could not verify, advisory)."""

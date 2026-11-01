@@ -66,7 +66,7 @@ from typing import Any
 
 from ngrunner.checks.crosscheck import TEMPLATE_JOB, run_crosscheck
 from ngrunner.checks.findings import (
-    CNV, FIX, MOZAIK, Findings, Item, findings_of, from_json, to_json,
+    CNV, FIX, MOZAIK, Findings, Item, Noise, findings_of, from_json, to_json,
 )
 from ngrunner.checks import settled as settled_list
 from ngrunner.checks.readers import NO_LIBRARY, NO_REFERENCE, STOPPED
@@ -182,7 +182,8 @@ class JobCheck:
     """A job's check as it stands. run: its newest run. state: asked, running, waiting, passed, failed,
     could_not_verify, stale or not_run. items: the newest run's, settled or not; open: those still to
     act on (none for a stale run). counts: a finished run whose files are those on disk, as far as the
-    last pass saw. prompt: a close prompt pinned to Your list."""
+    last pass saw. prompt: a close prompt pinned to Your list. noise: the run's known noise, shown with
+    it and never acted on (findings.Noise)."""
 
     run: CheckRunRecord | None
     state: str
@@ -196,6 +197,7 @@ class JobCheck:
     prompt: PromptRecord | None = None
     trial: bool = False
     audit: bool = False
+    noise: tuple[Noise, ...] = ()
 
 
 def counts(run: CheckRunRecord, *, rooms: Mapping[str, str], conversion_sha256: str) -> bool:
@@ -241,7 +243,7 @@ def _job_check(run: CheckRunRecord | None, settles: Sequence[SettleRecord], prom
     if run.stale_at is not None:
         return JobCheck(run, "stale", templates.check_state_words(state="stale", at=run.finished_at, now=now,
                                                                   audit=audit),
-                        items=shown, prompt=prompt, trial=run.trial, audit=audit)
+                        items=shown, prompt=prompt, trial=run.trial, audit=audit, noise=found.noise)
     open_ = tuple(s for s in shown if s.settle is None and s.item.kind in (FIX, MOZAIK, CNV))
     to_fix = sum(1 for s in open_ if s.item.kind in (FIX, MOZAIK))
     unverified = sum(1 for s in open_ if s.item.kind == CNV)
@@ -250,7 +252,7 @@ def _job_check(run: CheckRunRecord | None, settles: Sequence[SettleRecord], prom
     line = templates.check_state_words(state=state, at=run.finished_at, now=now, trial=run.trial, audit=audit,
                                        to_fix=to_fix, unverified=unverified, settled=settled)
     return JobCheck(run, state, line, shown, open_, to_fix, unverified, settled, counts=True, prompt=prompt,
-                    trial=run.trial, audit=audit)
+                    trial=run.trial, audit=audit, noise=found.noise)
 
 
 def notes_block(job: str, check: JobCheck | None) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:

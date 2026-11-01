@@ -120,6 +120,9 @@
             {% endfor %}
             </ul>
             {% endif %}
+            {% if c.noise %}
+            <ul class="check-noise">{% for line in c.noise %}<li>{{ line }}</li>{% endfor %}</ul>
+            {% endif %}
           </div>
           {% endif %}
           {% if job.p4 %}{% set p = job.p4 %}

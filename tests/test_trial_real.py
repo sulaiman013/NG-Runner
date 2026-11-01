@@ -135,7 +135,7 @@ def test_with_the_template_job_staged_parm_check_compares_on_every_job(runs) -> 
 
 JIMS_FORMAT = {   # case: (both, NG Runner only, chat only), as measured on 2026-11-01
     "C": ((), (), ()), "F": ((), (), ()), "G": ((), (), ()),
-    "E": ((("parm_check", "parameters", ""),), (), ()),
+    "E": ((), (), ()),          # its SysHolesW of 4 is known noise on both sides (RULES 604-614)
     "D": ((), (("br_cam_check", "doubled_holes", "R1C5"),), (("drill_depth_check", "other", "R1C1"),)),
 }
 
@@ -240,8 +240,6 @@ RULED = {
     ("P30", "chat", "section_span", "span", "R6C4"): ("since", "NG Runner reads every bay filled in the rooms as saved since"),
     ("P33", "ours", "notch_check", "notch_face", "*"): ("later", "RULES 404-409: the notch face rule applies from 2026-09-22, after the chat's check"),
     ("P33", "chat", "notch_check", "wm_banding", "*"): ("since", "the chat had the fix ready; NG Runner reads the WM banding taped and locked, its panels renumbered since"),
-    ("P35", "ours", P, "missing_part", "104.1x2438.4"): ("chat", "RULES 266-268: TR Base is always 4x96, never flag 4.1"),
-    ("P35", "ours", P, "extra_part", "101.6x2438.4"): ("chat", "the same TR Base"),
     ("P35", "chat", P, "missing_part", "607.1x985.5"): ("since", "the sections' depth was fixed since; NG Runner reads the shelves at 606"),
     ("P39", "ours", "br_cam_check", "doubled_holes", "*"): ("later", "RULES 524-541: doubled housings, a check made after the chat's"),
     ("P39", "ours", "parm_check", "parameters", ""): ("later", "RULES 527-535: JointFast2 is 1 since the cams were found doubled, after the chat's check; an existing job keeps its own"),
@@ -281,7 +279,7 @@ def test_the_chats_reports_compared_with_every_disagreement_ruled(runs) -> None:
                          and key[3] in (finding.what, "*") and key[4] in (finding.part, "*")}
 
     assert unruled == [] and set(RULED) - set(JIMS_RULED) == used
-    assert trial.counts(replayed.values()) == {"both": 4, "ours_only": 108, "chat_only": 25, "unverified": 17,
+    assert trial.counts(replayed.values()) == {"both": 4, "ours_only": 106, "chat_only": 25, "unverified": 17,
                                                "outside": 17}
 
 
@@ -302,28 +300,52 @@ def test_the_replay_against_p3s_exit_misses_nothing_and_shows_where_the_noise_is
     # Missed: a finding the chat raised that is real and NG Runner didn't raise. None: each was fixed in the
     # rooms since, superseded by a later rule, or Jim's word on that job.
     assert not [k for k in rulings if k[0] == "chat" and k[1] in ("chat", "ours", "can't tell")]
-    assert rulings == {("ours", "later"): 76, ("ours", "ours"): 5, ("ours", "chat"): 17, ("ours", "can't tell"): 9,
+    assert rulings == {("ours", "later"): 76, ("ours", "ours"): 5, ("ours", "chat"): 15, ("ours", "can't tell"): 9,
                        ("ours", "jim"): 1, ("chat", "since"): 23, ("chat", "later"): 1, ("chat", "jim"): 1}
-    # Noise: NG Runner's findings the chat was right to leave out, by job (design 7: at most 1 a job).
-    assert {tag: n for tag, n in noise.items() if n} == {"P20": 8, "P26": 1, "P28": 4, "P30": 1, "P35": 2, "P39": 1}
+    # Noise: NG Runner's findings the chat was right to leave out, by job (design 7: at most 1 a job). P35's TR
+    # Base pair (2) left with the known noise below.
+    assert {tag: n for tag, n in noise.items() if n} == {"P20": 8, "P26": 1, "P28": 4, "P30": 1, "P39": 1}
+
+
+KNOWN_NOISE = {   # tag: (checker, what, parts or parameters), on every real job, as measured on 2026-11-01
+    "E": [("parm_check", fd.SPARSE_UPPERS, 1)],          # RULES 604-614: Jim's sparse uppers
+    "P35": [(P, fd.TR_BASE_4_1, 4)],                      # RULES 266-268, on an older IC Conversion
+    "X": [(P, fd.TR_BASE_4_1, 1)],                        # the same, on his frozen job's own
+}
+
+
+def test_known_noise_by_jims_rules_is_counted_on_each_job_and_is_never_an_item(runs) -> None:
+    measured = {}
+    for tag, (_, result, rooms) in runs.items():
+        if result is None:
+            continue
+        for kind in ("check", "audit"):
+            found = fd.findings_of(result, kind=kind, room_files=rooms)
+            if found.noise:
+                measured.setdefault(kind, {})[tag] = [(n.checker, n.what, n.count) for n in found.noise]
+
+    assert measured == {"check": KNOWN_NOISE, "audit": KNOWN_NOISE}
+    tr_base = [s for i in checked(runs, "P35").items for s in i.sizes if s[:2] in ((104.1, 2438.4), (101.6, 2438.4))]
+    assert tr_base == [] and not [i for i in checked(runs, "E").items if i.checker == "parm_check" and i.kind == "fix"]
 
 
 # ----- the audit of chat-built jobs: the panel set, the top line, the operations and the parameters
 
 
 AUDITED = {   # job set: (audited, not run for want of an IC Conversion, {(kind, checker, what): (items, parts)})
+    # E's SysHolesW and the TR Base pairs of P35 and X are known noise: E's parameters wait for Q1 as a
+    # matching file's do, and X's panel set, whose one pair it was, passes.
     "A to J": (10, 0, {("fix", P, "missing_part"): (1, 1), ("fix", P, "extra_part"): (2, 2),
-                       ("fix", "parm_check", "parameters"): (6, 6), ("fix", "top_line", "top_line"): (1, 1),
-                       ("could_not_verify", P, "checker"): (3, 3), ("could_not_verify", "parm_check", "q1"): (9, 9),
+                       ("fix", "parm_check", "parameters"): (5, 5), ("fix", "top_line", "top_line"): (1, 1),
+                       ("could_not_verify", P, "checker"): (3, 3), ("could_not_verify", "parm_check", "q1"): (10, 10),
                        ("could_not_verify", "op_schema_check", "op_by_hand"): (2, 2),
                        ("could_not_verify", "room_top", "top_as_built"): (1, 1)}),
-    "P5": (32, 8, {("fix", P, "missing_part"): (9, 42), ("fix", P, "extra_part"): (7, 22),
+    "P5": (32, 8, {("fix", P, "missing_part"): (8, 41), ("fix", P, "extra_part"): (7, 21),
                    ("fix", "parm_check", "parameters"): (32, 32), ("fix", "top_line", "top_line"): (4, 7),
                    ("could_not_verify", P, "checker"): (17, 17), ("could_not_verify", "parm_check", "q1"): (25, 25),
                    ("could_not_verify", "op_schema_check", "op_by_hand"): (7, 7),
                    ("could_not_verify", "room_top", "top_as_built"): (3, 3)}),
-    "frozen": (3, 0, {("fix", P, "missing_part"): (1, 1), ("fix", P, "extra_part"): (1, 1),
-                      ("fix", "parm_check", "parameters"): (3, 3), ("could_not_verify", P, "checker"): (1, 1),
+    "frozen": (3, 0, {("fix", "parm_check", "parameters"): (3, 3), ("could_not_verify", P, "checker"): (1, 1),
                       ("could_not_verify", "parm_check", "q1"): (3, 3),
                       ("could_not_verify", "op_schema_check", "op_by_hand"): (1, 1),
                       ("could_not_verify", "room_top", "top_as_built"): (1, 1)}),
@@ -369,7 +391,7 @@ def test_every_audit_item_reads_in_jims_format_with_a_chat_line_and_names_no_cli
 def test_the_parameters_that_differ_from_the_template_are_jointfast2_on_all_but_one_job(runs) -> None:
     # RULES 527-535: JointFast2 = 1 (None) in the template since the cams were found doubled, and "an
     # existing job keeps its own copy". The one other job carries SysHolesW 4, Jim's sparse uppers (RULES
-    # 604-611), which the design names known noise. BTop, WTop and BotNail wait for Q1.
+    # 604-614), which NG Runner reads as known noise (test_known_noise_...). BTop, WTop and BotNail wait for Q1.
     drifted: dict[str, set[str]] = {}
     for tag, (_, result, _) in runs.items():
         verdict = None if result is None else next(v for v in result.verdicts if v.checker == "parm_check")

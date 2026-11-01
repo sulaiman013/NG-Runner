@@ -637,22 +637,23 @@ What P3 could do without Jim: replay NG Runner's check against what Jim's chat r
 | The rooms | The fixtures hold each job as Jim last saved it, days or weeks after most reports. A chat finding NG Runner doesn't raise on rooms saved since, where NG Runner reads them fixed, is "since", never a miss | 23 of the 25 chat-only findings are so, each with its evidence in the test |
 | Who is right | A person's reading of Jim's docs, line cited, or "can't tell"; the test fails on any disagreement without one | Code compares; it never decides who is right |
 | How many of the 15 it stands for | **4** (Cases C, E, F, G): their crosscheck files print what NG Runner's run prints on 13 of 14 checkers (`tests/test_checks_real.py`), so the rooms are the same, every checker is compared, and the two agree on every finding. The other 21 replays compare one or a few checkers on rooms saved since, and stand for none | Design 7's exit is "15 checks compared with chat"; only a same-rooms, all-checker comparison is one |
+| Known noise from Jim's RULES (2026-11-01) | Two findings his checkers print are, by his own written rules, never faults, so they are known noise (`findings.Noise`): counted and kept with the run, shown under the board's check, never an item and never why a check fails. (1) `panel_xcheck`'s MISSING TR Base at 4.1 in (104.1 mm) with an EXTRA at 4 in (101.6 mm), both 96 in long and as many, in the TR/FF family. (2) `parm_check`'s `SysHolesW` at 4 in the job's `NG Closets-JobParms.dat`. Only those exact shapes: a TR Base of another length, count or width, or alone, and any other `SysHolesW` value or file, stay items. A checker left with no fault is read again as a clean run is, so noise beside a line not known is could not verify. Rail covers and the Hang Rail are not in it (Jim's question 39). An item that held a noise line has a new fingerprint, so a settle made on it before asks once more | RULES 266-268 ("never flag the 4.1 vs 4.0 difference ... not as a panel-check mismatch"); RULES 604-614 (Jim, 2026-10-21: SysHolesW 4, "1 Hole per shelf", his own hardware connection on the uppers) and 573-576 (the job's parameters are its `NG Closets-JobParms.dat`, the file whose lines `parm_check` names); RULES 245-247 against 662-665 for the rails. NG Runner follows his rules here, it doesn't decide (rule 4) |
 
-**Measured.** 25 jobs replayed: the 5 crosscheck files and 20 of the chat's own reports (P34's has no IC Conversion to check against; Case I has no report).
+**Measured.** 25 jobs replayed: the 5 crosscheck files and 20 of the chat's own reports (P34's has no IC Conversion to check against; Case I has no report). With known noise (above), 2026-11-01; before it, the crosscheck files' Both was 1 and the reports' NG Runner only 108.
 
 | | Both | NG Runner only | Chat only | Unverified | Outside |
 |---|---|---|---|---|---|
-| Crosscheck files, C to G | 1 | 1 | 1 | 0 | 0 |
-| The chat's own reports | 4 | 108 | 25 | 17 | 17 |
+| Crosscheck files, C to G | 0 | 1 | 1 | 0 | 0 |
+| The chat's own reports | 4 | 106 | 25 | 17 | 17 |
 
-- **Crosscheck files.** C, F and G agree, clean. E: both raise `parm_check`, its `SysHolesW` of 4, which RULES 604-611 makes Jim's own setting for sparse uppers and the design names known noise; the chat's delivery left it out, NG Runner shows it as an item to fix. D (its rooms changed after the chat's run): NG Runner alone raises a doubled housing on R1C5, right by RULES 536-539, whose line 538 names this very job; the chat's crosscheck alone flagged a bore depth on R1C1, which its own delivery logged as no defect.
-- **NG Runner only, 108.** 76 real by a rule made after the chat's check: 69 doubled housings on three jobs (RULES 524-541), 5 notch faces (RULES 404-409, from 2026-09-22), 1 WM banding (BUILD 516, from 2026-09-21) and 1 `JointFast2` (RULES 527-535). 5 real by rules in force (two stale bore rows, BUILD 416-422; a worksurface 2.7 mm off, RULES 666; a vertical at the wrong depth). 1 Jim's word on that job (an extra toe kick he said is fine). 9 can't tell. **17 noise, on 6 jobs:** P20 8 (two bridges not named BR, so Jim's checkers can't see them, BUILD 8b, 4 bore depths and 2 panel lines; a hamper front built as a door, 2, RULES 659-661), P28 4 (a cleat counted under another family and a hook board built up a size, RULES 258-264 and 659-661, BUILD 373-374), P35 2 (TR Base 4.1, RULES 266-268, on an older IC Conversion that `panel_xcheck`'s 4x96 rule can't read), P26 1 (LED strips, RULES 103 and 667), P30 and P39 1 each (Hang Rail, RULES 245-247). Every one is printed by Jim's `panel_xcheck` or `drill_depth_check` as they are, and NG Runner reads them as printed.
+- **Crosscheck files.** C, E, F and G agree, clean. E's `parm_check` differs only on its `SysHolesW` of 4, Jim's own setting for sparse uppers (RULES 604-614): known noise on both sides, where it was an item to fix on both before. D (its rooms changed after the chat's run): NG Runner alone raises a doubled housing on R1C5, right by RULES 536-539, whose line 538 names this very job; the chat's crosscheck alone flagged a bore depth on R1C1, which its own delivery logged as no defect.
+- **NG Runner only, 106.** 76 real by a rule made after the chat's check: 69 doubled housings on three jobs (RULES 524-541), 5 notch faces (RULES 404-409, from 2026-09-22), 1 WM banding (BUILD 516, from 2026-09-21) and 1 `JointFast2` (RULES 527-535). 5 real by rules in force (two stale bore rows, BUILD 416-422; a worksurface 2.7 mm off, RULES 666; a vertical at the wrong depth). 1 Jim's word on that job (an extra toe kick he said is fine). 9 can't tell. **15 noise, on 5 jobs:** P20 8 (two bridges not named BR, so Jim's checkers can't see them, BUILD 8b, 4 bore depths and 2 panel lines; a hamper front built as a door, 2, RULES 659-661), P28 4 (a cleat counted under another family and a hook board built up a size, RULES 258-264 and 659-661, BUILD 373-374), P26 1 (LED strips, RULES 103 and 667), P30 and P39 1 each (Hang Rail, RULES 245-247). Every one is printed by Jim's `panel_xcheck` or `drill_depth_check` as they are, and NG Runner reads them as printed. P35's 2 (a TR Base IC prints 4.1, on an older IC Conversion that `panel_xcheck`'s 4x96 rule can't read) are known noise now: no item, and P35's run counts 4 TR Bases of it.
 - **Chat only, 25.** 23 fixed in the rooms since, 1 superseded (a rail cover, RULES 245-247, Jim 2026-10-19), 1 Jim's word on that job (a section he set aside for the count).
 - **Unverified, 17.** All on the panel set, where Jim's `panel_xcheck` stops on an older IC Conversion (`KeyError`): it does on 17 of the 32 audited P5 jobs, Cases A, H and J, and one frozen job. 16 are Case J's, a closet and garage job, which stays in chat (R4).
 
-**Against design 7's exit:** 0 missed act items; 0 false cleans (NG Runner passed no job the chat found a fault on); noise at most 1 a job fails on P20 (8), P28 (4) and P35 (2), plus E's `SysHolesW` on both sides. The live trial on Jim's PC still makes the 15.
+**Against design 7's exit:** 0 missed act items; 0 false cleans (NG Runner passed no job the chat found a fault on); noise at most 1 a job fails on P20 (8) and P28 (4). Known noise (E's `SysHolesW`, P35's TR Base) is no longer an item. The live trial on Jim's PC still makes the 15.
 
-**Not built, for a ruling (rule 4: his rules come from his toolkit).** The design's known-noise list (rail covers, TR Base 4x96, `SysHolesW`) is not in NG Runner's readers, so those reach Jim as items, which he settles once per job or for all jobs. RULES disagrees with itself on the Hang Rail: lines 245-247 "never ... in a panel check", lines 662-665 "the COUNT is checked", and his `panel_xcheck` prints Mozaik's Hang Rails as extra parts. Bridges not named BR are invisible to every checker of his. Each is a question for Jim, or a reader change for Sulaiman.
+**Not built, for a ruling (rule 4: his rules come from his toolkit).** Of the design's known-noise list, TR Base 4x96 and `SysHolesW` are built (above); rail covers are not, so they reach Jim as items, which he settles once per job or for all jobs. RULES disagrees with itself on the Hang Rail: lines 245-247 "never ... in a panel check", lines 662-665 "the COUNT is checked", and his `panel_xcheck` prints Mozaik's Hang Rails as extra parts (question 39). Bridges not named BR are invisible to every checker of his. Each is a question for Jim, or a reader change for Sulaiman.
 
 ### The audit of chat-built jobs (`findings.AUDIT_CHECKERS`, `checks/topline.py`)
 
@@ -663,20 +664,23 @@ What P3 could do without Jim: replay NG Runner's check against what Jim's chat r
 | NG Runner's own top line | One T per room by P5's rule, read as it is (`placement.top_line`, RULES 333-339); every WM panel on it (RULES 330-331, and no FM panel beside a run with two tops is the defect); gate 5's Elev on 32k (RULES 319). A top as built off the height grid is could not verify, as P5a placement left it for Jim. Which products are panels is his `top_line.py`'s, tied by `ast`. Where his `top_line` item names a room, NG Runner's own "off the top line" item for it is left out: one item per fault | His check picks the commonest top where no FM panel sets it, and never reads the Elev grid |
 | A job with no IC Conversion | Not audited: crosscheck refuses to run, as before | A chat-built job always has one (RULES 1) |
 
-**Measured** (items, and in brackets the parts or rooms they name):
+**Measured** (items, and in brackets the parts or rooms they name; with known noise, 2026-11-01):
 
 | | A to J | P5 | Frozen |
 |---|---|---|---|
 | Audited / no IC Conversion | 10 / 0 | 32 / 8 | 3 / 0 |
-| Panel set: missing, extra | 1 (1), 2 (2) | 9 (42), 7 (22) | 1 (1), 1 (1) |
+| Panel set: missing, extra | 1 (1), 2 (2) | 8 (41), 7 (21) | 0, 0 |
 | Panel set could not verify (`panel_xcheck` stopped) | 3 | 17 | 1 |
 | Top line to fix (his `top_line`) | 1 (1 room) | 4 (7 rooms) | 0 |
 | Top as built off the grid, could not verify (NG Runner's) | 1 | 3 | 1 |
 | Operations to fix (`op_schema_check`) | 0 | 0 | 0 |
 | Operations by hand, could not verify | 2 | 7 | 1 |
-| Parameters to fix | 6 | 32 | 3 |
-| Parameters for Q1, could not verify | 9 | 25 | 3 |
+| Parameters to fix | 5 | 32 | 3 |
+| Parameters for Q1, could not verify | 10 | 25 | 3 |
+| Known noise (no item) | E: `SysHolesW` 4 | P35: 4 TR Bases at 4.1 | X: 1 TR Base at 4.1 |
 | Room files | all pass | all pass | all pass |
+
+Before known noise: P5's panel set was 9 (42) missing and 7 (22) extra, with P35's TR Base pair; the frozen jobs' 1 (1) and 1 (1), X's TR Base pair, its only panel-set finding; and A to J's parameters 6 to fix and 9 for Q1, with E's `SysHolesW`. X's IC Conversion is of the older kind too, so it is the ruled case exactly, on a job Jim froze as right.
 
 No audit passes whole while Q1 is open. On the 99 product rooms of the 45 audited jobs, NG Runner's own top line and Jim's `top_line` agree on every one: 8 off the top line on both, 47 on it, 39 with nothing hung, and 5 whose top as built is off the grid, which his passes and NG Runner leaves to Jim. On all 112 product rooms, none hangs on two tops or has its Elev off the grid.
 

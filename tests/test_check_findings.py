@@ -234,7 +234,7 @@ def test_until_q1_is_settled_the_parameters_never_pass() -> None:
 def test_a_parameter_that_differs_on_the_top_is_could_not_verify_and_another_is_to_fix() -> None:
     drift = ("  !! NG Closets-JobParms.dat                     2 parameter(s) differ\n"
              "        BTop            Top                 this job = 4 reference = 1 (want 1)\n"
-             "        SysHolesW       Holes               this job = 4 reference = 1 (want 1)\n\n"
+             "        JointFast2      Fasteners           this job = 14 reference = 1 (want 1)\n\n"
              "RESULT: 1 parameter file(s) drifted - fix before building")
     result = found({**CLEAN, "parm_check": drift}, flagged=("parm_check",), q1_settled=False)
 
@@ -242,6 +242,172 @@ def test_a_parameter_that_differs_on_the_top_is_could_not_verify_and_another_is_
     other, = [i for i in items(result, "fix") if i.checker == "parm_check"]
     assert not top.settles and other.settles and result.code == FAILED
     assert templates.check_item_words(other) == "1 parameter differs from the template job's"
+
+
+# ----- known noise: what Jim's own RULES say a checker prints that is never a fault
+#
+# RULES 266-268: a TR Base is always 4x96 (101.6 x 2438.4); IC prints it 4.1, "never flag the 4.1 vs 4.0
+# difference". RULES 604-614: the job's SysHolesW is 4, one hole per shelf, on purpose (Jim, 2026-10-21).
+# Each is counted with the run and shown on the board, never an item and never why a check fails. Anything
+# that differs from those exact cases in any way is still an item.
+
+
+def xcheck(*family: str, head: str = "TR/FF: IC 5  Mozaik 5") -> str:
+    """panel_xcheck's output, as it prints it, with these lines in the family head names."""
+    return "\n".join(("IC board parts 30   Mozaik cutlist 30", "", "-- CK: IC 3  Mozaik 3",
+                      "     (63.5, 985.5) x3 <- (63.5, 984.2)  (max 1.30mm)  CK Toe 2.5x38.8x3/4 WH",
+                      f"-- {head}", "     (76.2, 2420.6) x1 <- (76.2, 2420.0)  (max 0.60mm)  FF Cleat 3x95.3x3/4 WH",
+                      *family, "-- VT: IC 4  Mozaik 4"))
+
+
+TR_IC = "   MISSING (104.1, 2438.4) x4   Base 4.1x96x3/4 Testerson WH"
+TR_BUILT = "   EXTRA   (101.6, 2438.4) x4"
+
+
+def parms(*lines: str, file: str = "NG Closets-JobParms.dat", ok: str = "Lux Garages-JobParms.dat",
+          drifted: int = 1) -> str:
+    """parm_check's output, as it prints it, with these differing lines in file and ok identical."""
+    return "\n".join((f"  OK {ok:<44} identical", f"  !! {file:<44} {len(lines)} parameter(s) differ", *lines, "",
+                      f"RESULT: {drifted} parameter file(s) drifted - fix before building"))
+
+
+def parm(code: str, job: str, reference: str = "1") -> str:
+    name = {"SysHolesW": "Linebore Holes for 32mm system (Wall)", "JointFast2": "CNC Joint Fasteners #2",
+            "BTop": "Base Cab Top"}[code]
+    return f"        {code:<9} {name:<20} this job = {job:<6} reference = {reference:<6}  (want 1)"
+
+
+def noise(result: f.Findings) -> list[tuple[str, str, int]]:
+    return [(n.checker, n.what, n.count) for n in result.noise]
+
+
+def test_a_tr_base_ic_prints_at_4_1_and_mozaik_builds_at_4_is_known_noise_and_the_panel_set_passes() -> None:
+    result = found({**CLEAN, "panel_xcheck": xcheck(TR_IC, TR_BUILT)}, flagged=("panel_xcheck",))
+
+    assert result.items == () and result.code == PASSED
+    assert noise(result) == [("panel_xcheck", f.TR_BASE_4_1, 4)]
+    assert {v.checker: v.code for v in result.verdicts}["panel_xcheck"] == PASSED
+
+
+def test_a_tr_base_pair_beside_a_real_fault_is_left_out_of_the_item_and_the_fault_stands() -> None:
+    rollouts = ("-- ??Rollout Shelf: IC 0  Mozaik 3", "   EXTRA   (536.2, 906.4) x3")
+    text = xcheck(TR_IC, TR_BUILT).replace("-- CK:", "\n".join(rollouts) + "\n-- CK:")
+    result = found({**CLEAN, "panel_xcheck": text}, flagged=("panel_xcheck",))
+
+    extra, = items(result)
+    assert (extra.kind, extra.what, extra.sizes) == ("fix", "extra_part", ((536.2, 906.4, 3),))
+    assert noise(result) == [("panel_xcheck", f.TR_BASE_4_1, 4)] and result.code == FAILED
+    alone = found({**CLEAN, "panel_xcheck": text.replace(TR_IC + "\n" + TR_BUILT + "\n", "")},
+                  flagged=("panel_xcheck",))
+    assert items(alone) == [extra] and alone.noise == ()        # the same item, and the same fingerprint
+
+
+@pytest.mark.parametrize("lines", [
+    ("   MISSING (104.1, 2133.6) x4   Base 4.1x84x3/4 WH", "   EXTRA   (101.6, 2133.6) x4"),
+    ("   MISSING (104.1, 2438.4) x4   Base 4.1x96x3/4 WH", "   EXTRA   (101.6, 2133.6) x4"),
+    ("   MISSING (104.1, 2438.4) x4   Base 4.1x96x3/4 WH", "   EXTRA   (101.6, 2438.4) x3"),
+    ("   MISSING (104.8, 2438.4) x4   Base 4.1x96x3/4 WH", "   EXTRA   (101.6, 2438.4) x4"),
+    ("   MISSING (104.1, 2438.4) x4   Base 4.1x96x3/4 WH", "   EXTRA   (98.4, 2438.4) x4"),
+    ("   MISSING (104.1, 2438.4) x4   Base 4.1x96x3/4 WH",),
+    ("   EXTRA   (101.6, 2438.4) x4",),
+], ids=["another length", "lengths differ", "counts differ", "IC at another width", "built at another width",
+        "not built", "built and not on the IC summary"])
+def test_a_tr_base_that_differs_in_any_other_way_is_still_a_fault(lines) -> None:
+    result = found({**CLEAN, "panel_xcheck": xcheck(*lines)}, flagged=("panel_xcheck",))
+
+    assert result.noise == () and result.code == FAILED
+    assert sum(len(i.sizes) for i in items(result, "fix")) == len(lines)
+
+
+def test_the_same_pair_in_another_family_is_no_tr_base_and_stays_a_fault() -> None:
+    text = xcheck(TR_IC, TR_BUILT, head="SH: IC 5  Mozaik 5")
+    result = found({**CLEAN, "panel_xcheck": text}, flagged=("panel_xcheck",))
+
+    assert result.noise == () and {i.what for i in items(result, "fix")} == {"missing_part", "extra_part"}
+
+
+def test_a_panel_set_with_only_noise_and_a_line_not_known_could_not_verify_never_passes() -> None:
+    crashed = xcheck(TR_IC, TR_BUILT) + "\nTraceback (most recent call last):\nKeyError: 'build_mm'"
+    result = found({**CLEAN, "panel_xcheck": crashed}, flagged=("panel_xcheck",))
+
+    item, = items(result)
+    assert (item.kind, item.checker) == ("could_not_verify", "panel_xcheck") and result.code == COULD_NOT_VERIFY
+    assert noise(result) == [("panel_xcheck", f.TR_BASE_4_1, 4)]
+
+
+def test_the_jobs_sys_holes_w_of_4_is_known_noise_and_the_parameters_pass() -> None:
+    result = found({**CLEAN, "parm_check": parms(parm("SysHolesW", "4"))}, flagged=("parm_check",))
+
+    assert result.items == () and result.code == PASSED
+    assert noise(result) == [("parm_check", f.SPARSE_UPPERS, 1)]
+
+
+def test_until_q1_is_settled_a_sys_holes_w_of_4_alone_reads_as_a_matching_file_does() -> None:
+    result = found({**CLEAN, "parm_check": parms(parm("SysHolesW", "4"))}, flagged=("parm_check",),
+                   q1_settled=False)
+
+    item, = items(result)
+    assert (item.kind, item.what) == ("could_not_verify", "q1") and result.code == COULD_NOT_VERIFY
+    assert noise(result) == [("parm_check", f.SPARSE_UPPERS, 1)]
+
+
+@pytest.mark.parametrize("q1_settled", [True, False])
+def test_a_sys_holes_w_of_4_beside_another_difference_leaves_only_that_one_to_fix(q1_settled) -> None:
+    text = parms(parm("SysHolesW", "4"), parm("JointFast2", "14"))
+    result = found({**CLEAN, "parm_check": text}, flagged=("parm_check",), q1_settled=q1_settled)
+
+    fix, = items(result, "fix")
+    assert (fix.checker, fix.what, fix.count) == ("parm_check", "parameters", 1) and result.code == FAILED
+    assert noise(result) == [("parm_check", f.SPARSE_UPPERS, 1)]
+
+
+def test_a_sys_holes_w_of_4_beside_a_top_that_waits_for_q1_is_could_not_verify_with_nothing_to_fix() -> None:
+    text = parms(parm("SysHolesW", "4"), parm("BTop", "4"))
+    result = found({**CLEAN, "parm_check": text}, flagged=("parm_check",), q1_settled=False)
+
+    item, = items(result)
+    assert (item.kind, item.what, item.count) == ("could_not_verify", "q1", 1) and result.code == COULD_NOT_VERIFY
+    assert noise(result) == [("parm_check", f.SPARSE_UPPERS, 1)]
+
+
+@pytest.mark.parametrize("text", [
+    parms(parm("SysHolesW", "3")),
+    parms(parm("SysHolesW", "8")),
+    parms(parm("SysHolesW", "4"), file="Lux Garages-JobParms.dat", ok="NG Closets-JobParms.dat"),
+    parms(parm("SysHolesW", "4"), file="1 PAC Closet Library V2-JobParms.dat"),
+    parms(parm("SysHolesW", "4"), drifted=2),
+], ids=["3", "8 (none)", "the garage library's file", "the closet library's file", "a count that doesn't add up"])
+def test_any_other_sys_holes_w_is_still_to_fix(text) -> None:
+    result = found({**CLEAN, "parm_check": text}, flagged=("parm_check",))
+
+    fix, = items(result, "fix")
+    assert (fix.checker, fix.what, fix.count) == ("parm_check", "parameters", 1)
+    assert result.noise == () and result.code == FAILED
+
+
+def test_known_noise_is_kept_with_the_run_and_a_run_stored_before_it_reads_as_none() -> None:
+    sections = {**CLEAN, "panel_xcheck": xcheck(TR_IC, TR_BUILT), "parm_check": parms(parm("SysHolesW", "4"))}
+    result = found(sections, flagged=("panel_xcheck", "parm_check"))
+    stored = f.to_json(result)
+
+    assert stored["noise"] == [{"checker": "parm_check", "what": f.SPARSE_UPPERS, "count": 1},     # crosscheck's order
+                               {"checker": "panel_xcheck", "what": f.TR_BASE_4_1, "count": 4}]
+    assert f.from_json(stored) == result
+    assert f.from_json({k: v for k, v in stored.items() if k != "noise"}).noise == ()
+    assert CLIENT not in json.dumps(stored)
+
+
+def test_known_noise_on_the_board_names_what_and_why_in_jims_format() -> None:
+    sections = {**CLEAN, "panel_xcheck": xcheck(TR_IC, TR_BUILT), "parm_check": parms(parm("SysHolesW", "4"))}
+    said = [templates.check_noise_words(n) for n in found(sections, flagged=("panel_xcheck", "parm_check")).noise]
+
+    assert said == [
+        "Known noise, not to fix: the job's line bore on the uppers is one hole per shelf, on purpose for Jim's"
+        " own hardware connection",
+        "Known noise, not to fix: 4 TR Bases the IC summary prints at 4.1, which is IC's rounding; Jim's rules"
+        " build every TR Base 4\" (101.6 mm) by 96\" (2438.4 mm)"]
+    assert lint(Message("check_lines", f"{JOB} checked 9:42 PM", tuple(f"{n}. {s}" for n, s in
+                                                                      enumerate(said, start=1)))) == []
 
 
 # ----- the audit of a chat-built job: the panel set, the top line, the operations, the parameters

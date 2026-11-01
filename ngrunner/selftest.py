@@ -621,7 +621,7 @@ def _takeoff_samples(t: Any, job: str) -> list[object]:
 def _check_samples(t: Any, job: str) -> list[object]:
     """P3's checks: what a check found, item by item in every kind there is, the check's message, its
     lines on the board, Your list and in the digest, the close prompt and every echo."""
-    from ngrunner.checks.findings import Item
+    from ngrunner.checks.findings import SPARSE_UPPERS, TR_BASE_4_1, Item, Noise
     from ngrunner.messages import Message
 
     at = datetime(2026, 10, 31, 4, 42, tzinfo=timezone.utc)          # 9:42 PM Pacific
@@ -647,6 +647,9 @@ def _check_samples(t: Any, job: str) -> list[object]:
                t.check_state_words(state="stale", at=at, now=at, audit=True)]
     lines = [t.check_item_words(item) for item in items] + [line for line in (
         t.check_chat_line(job, item) for item in items) if line]
+    lines += [t.check_noise_words(Noise(checker, what, count)) for checker, what, count in (
+        ("panel_xcheck", TR_BASE_4_1, 1), ("panel_xcheck", TR_BASE_4_1, 4), ("parm_check", SPARSE_UPPERS, 1),
+        ("panel_xcheck", "other", 1))]
     return [
         t.check_result(job, at=at, trial=True, audit=False, items=items, passed=False),
         t.check_result(job, at=at, trial=False, audit=True, items=(), passed=True),

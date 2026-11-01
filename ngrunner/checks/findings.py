@@ -24,7 +24,24 @@ What an item is:
 
 Failing closed: a fault line no table here names is still an item ("found something to fix"), with the
 tags it holds, and a checker whose output couldn't be read is one could-not-verify item. Nothing a
-checker said is dropped on the way to Jim.
+checker said is dropped on the way to Jim, but known noise.
+
+Known noise (design 4, "Noise"): what a checker prints that Jim's own RULES say is never a fault. It is
+counted and kept with the run (Findings.noise, shown in the board's check), never an item, never why a
+check fails. Two kinds, each only in its exact shape; a line that differs in any way is still an item:
+    tr_base_4_1    panel_xcheck's MISSING TR Base at 4.1 in (104.1 mm) and EXTRA at 4 in (101.6 mm), both
+                   96 in long and as many, in the TR/FF family. RULES 266-268: "TR Base is ALWAYS 4x96 -
+                   101.6 x 2438.4 ... IC prints it 4.1 ... never flag the 4.1 vs 4.0 difference - not as an
+                   open question, not as a panel-check mismatch". His panel_xcheck matches it on 101.6
+                   itself when the IC Conversion's line says TR Base; an older Conversion's doesn't.
+    sys_holes_w_4  parm_check's SysHolesW at 4 ("1 Hole per shelf") in the job's NG Closets-JobParms.dat
+                   (RULES 573-576 name that file). RULES 604-614 (Jim, 2026-10-21): his own hardware
+                   connection on the upper sections, set on purpose. parm_check names a line by its place
+                   in that file (its KNOWN), so the same line of another file is no SysHolesW for sure.
+A failed checker is read again without its noise, as it would have printed it then: still failed on what
+is left, or judged as a clean run is (readers.py), so noise beside a line not known is could not verify.
+Rail covers and the Hang Rail are not known noise: RULES says both that they never appear in a panel
+check (245-247) and that their count is checked (662-665), which is Jim's question 39.
 
 The audit of a chat-built job, before its sections go in (design 7, P3): the panel set, the top line,
 the operations and the parameters, which crosscheck already runs. Its other checkers are about sections
@@ -58,13 +75,13 @@ from __future__ import annotations
 
 import hashlib
 import re
-from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass, field
+from collections.abc import Callable, Iterable, Mapping, Sequence
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from ngrunner.checks.crosscheck import LEFT_OUT, Crosscheck
 from ngrunner.checks import topline
-from ngrunner.checks.readers import BY_HAND, NG_RUNNER_FLAGS, SPECS
+from ngrunner.checks.readers import BY_HAND, NG_RUNNER_FLAGS, SPECS, read_checker
 from ngrunner.guards.bak import DesignUnreadable, parse_room
 from ngrunner.guards.facts import COULD_NOT_VERIFY, FAILED, PASSED
 
@@ -77,6 +94,7 @@ HINGE = "hinge_check"
 Q1_SETTLED = False                        # docs/decisions.md, P3: Q1 is tested live in Mozaik first
 TOP_PARAMETERS = frozenset({"BTop", "WTop", "BotNail"})     # RULES 637-640, Q1
 NEVER_SETTLED = frozenset({"bore_off_panel"})                # design 4, Noise: never silenceable
+TR_BASE_4_1, SPARSE_UPPERS = "tr_base_4_1", "sys_holes_w_4"  # known noise, by Jim's RULES (above)
 
 _ROOM = re.compile(r"Room(\d+)\.des", re.IGNORECASE)
 _C = r"C(?P<c>\d+)"
@@ -172,14 +190,25 @@ class Verdict:
 
 
 @dataclass(frozen=True)
+class Noise:
+    """Known noise in a run: what a checker printed that Jim's RULES say is never a fault. what: which
+    (TR_BASE_4_1, SPARSE_UPPERS). count: how many parts or parameters it stands for."""
+
+    checker: str
+    what: str
+    count: int
+
+
+@dataclass(frozen=True)
 class Findings:
     """A run's code (passed only when every deciding check passed), its items in the order Jim reads
-    them, its verdicts, and what crosscheck leaves out."""
+    them, its verdicts, what crosscheck leaves out, and its known noise, which is never an item."""
 
     code: str
     items: tuple[Item, ...] = ()
     verdicts: tuple[Verdict, ...] = ()
     left_out: tuple[str, ...] = LEFT_OUT
+    noise: tuple[Noise, ...] = ()
     words: str = field(default="", compare=False)
 
 
@@ -196,6 +225,7 @@ def findings_of(result: Crosscheck, *, kind: str = "check", room_files: Mapping[
     q1_settled = Q1_SETTLED if q1_settled is None else q1_settled
     found: list[Item] = []
     verdicts: list[Verdict] = []
+    noise: list[Noise] = []
     if _whole_run_failed(result):
         found.append(_item(CNV, "", "not_read", why=result.words))
         verdicts += [Verdict(v.checker, COULD_NOT_VERIFY, v.advisory, result.words) for v in result.verdicts
@@ -204,6 +234,8 @@ def findings_of(result: Crosscheck, *, kind: str = "check", room_files: Mapping[
         for verdict in result.verdicts:
             if kind == "audit" and verdict.checker not in AUDIT_CHECKERS:
                 continue
+            verdict, quiet = _quieted(verdict)
+            noise += quiet
             code, items = _read_verdict(verdict, q1_settled)
             verdicts.append(Verdict(verdict.checker, code, verdict.advisory, verdict.why))
             found += items
@@ -219,7 +251,8 @@ def findings_of(result: Crosscheck, *, kind: str = "check", room_files: Mapping[
         found.append(_item(CNV, HINGE, "not_run"))
     ordered = sorted(found, key=lambda item: ITEM_KINDS.index(item.kind) if item.kind != MOZAIK else 0)
     numbered = tuple(_numbered(item, n) for n, item in enumerate(ordered, start=1))
-    return Findings(_overall(verdicts), numbered, tuple(verdicts), tuple(result.left_out), result.words)
+    return Findings(_overall(verdicts), numbered, tuple(verdicts), tuple(result.left_out), tuple(noise),
+                    words=result.words)
 
 
 def _whole_run_failed(result: Crosscheck) -> bool:
@@ -374,6 +407,98 @@ def _overall(verdicts: Sequence[Verdict]) -> str:
     return PASSED if deciding and set(deciding) == {PASSED} else COULD_NOT_VERIFY
 
 
+# ----- known noise: what Jim's RULES say a checker prints that is never a fault (the docstring's table)
+
+
+_FAMILY = re.compile(r"-- (?P<f>\S.*): IC \d+  Mozaik \d+")
+_TR_IC = re.compile(r"   MISSING \(104\.1, 2438\.4\) x(?P<q>\d+)(?:   .*)?")     # IC's 4.1 x 96 (RULES 262, 266)
+_TR_BUILT = re.compile(r"   EXTRA   \(101\.6, 2438\.4\) x(?P<q>\d+)")           # the Lux 4in Base, 4 x 96
+_PARM_FILE = re.compile(r"  !! (?P<f>\S.*?) +(?P<n>\d+) parameter\(s\) differ")
+_PARAMETER = re.compile(_FAULTS["parm_check"][0][0])
+_SPARSE = re.compile(r"        SysHolesW +.+ this job = 4 +reference = .*\(want .*\)")    # RULES 610
+_DRIFTED = re.compile(r"RESULT: (?P<k>\d+) parameter file\(s\) drifted - fix before building")
+_JOB_PARAMETERS = "NG Closets-JobParms.dat"                                         # RULES 573-576
+
+
+def _quieted(verdict: Any) -> tuple[Any, list[Noise]]:
+    """A failed checker's verdict without its known noise, and the noise. What is left is read as the
+    checker would have printed it without the noise: still failed on a fault left, or else judged as a
+    run crosscheck didn't flag (readers.read_checker), so noise beside a line not known can't pass. Only
+    a failed verdict is read so: one that could not verify stays so, noise or not."""
+    rule = _NOISE.get(verdict.checker)
+    if rule is None or verdict.code != FAILED or verdict.advisory:
+        return verdict, []
+    text, noise = rule(verdict.text)
+    if not noise:
+        return verdict, []
+    spec = SPECS[verdict.checker]
+    if any(_is_fault(spec, line) for line in text.splitlines()):
+        return replace(verdict, text=text), noise
+    # Both checkers name no room (rooms "none"), so the rooms they were given don't enter their verdict.
+    return read_checker(verdict.checker, text, flagged=False, product_rooms=0, all_rooms=0,
+                        library_found=True), noise
+
+
+def _tr_base_noise(text: str) -> tuple[str, list[Noise]]:
+    """panel_xcheck: in the TR/FF family, one MISSING TR Base at 4.1 x 96 and one EXTRA at 4 x 96, as
+    many: dropped, as his panel_xcheck prints it when the IC line says TR Base. A TR Base alone, of
+    another length or count, or at another width is a fault (RULES 240-242: missing is missing)."""
+    lines = text.splitlines()
+    sides: dict[int, dict[str, list[tuple[int, int]]]] = {}       # TR/FF block: ic, built: (line, count)
+    block: int | None = None
+    for n, line in enumerate(lines):
+        if head := _FAMILY.fullmatch(line):
+            block = n if head["f"] == "TR/FF" else None
+            continue
+        for side, pattern in (("ic", _TR_IC), ("built", _TR_BUILT)):
+            if block is not None and (found := pattern.fullmatch(line)):
+                sides.setdefault(block, {}).setdefault(side, []).append((n, int(found["q"])))
+    drop: set[int] = set()
+    noise = []
+    for pair in sides.values():
+        ic, built = pair.get("ic", []), pair.get("built", [])
+        if len(ic) == len(built) == 1 and ic[0][1] == built[0][1]:
+            drop |= {ic[0][0], built[0][0]}
+            noise.append(Noise("panel_xcheck", TR_BASE_4_1, ic[0][1]))
+    return "\n".join(line for n, line in enumerate(lines) if n not in drop), noise
+
+
+def _sparse_uppers_noise(text: str) -> tuple[str, list[Noise]]:
+    """parm_check: SysHolesW at 4 in the job's NG Closets-JobParms.dat, dropped, and the rest as
+    parm_check prints it had the job carried the template's value: a file left with no difference
+    identical, and RESULT counting the files still drifted. Output whose counts don't add up is left
+    as it is."""
+    lines, out = text.splitlines(), []
+    heads: dict[int, tuple[str, int]] = {}            # out's line: (file, how many it says differ)
+    quiet: dict[int, int] = {}
+    block: int | None = None
+    for line in lines:
+        if head := _PARM_FILE.fullmatch(line):
+            block = len(out)
+            heads[block] = (head["f"], int(head["n"]))
+        elif not _PARAMETER.fullmatch(line):
+            block = None
+        elif block is not None and heads[block][0] == _JOB_PARAMETERS and _SPARSE.fullmatch(line):
+            quiet[block] = quiet.get(block, 0) + 1
+            continue
+        out.append(line)
+    drifted = [at for at, line in enumerate(out) if _DRIFTED.fullmatch(line)]
+    if (not quiet or any(n > heads[at][1] for at, n in quiet.items()) or len(drifted) != 1
+            or int(_DRIFTED.fullmatch(out[drifted[0]])["k"]) != len(heads)):    # each !! file is one drifted
+        return text, []
+    for at, n in quiet.items():
+        name, said = heads[at]
+        out[at] = f"  OK {name:<44} identical" if n == said else f"  !! {name:<44} {said - n} parameter(s) differ"
+    left = len(heads) - sum(n == heads[at][1] for at, n in quiet.items())
+    out[drifted[0]] = (f"RESULT: {left} parameter file(s) drifted - fix before building" if left
+                       else "RESULT: CLEAN - parameters match the reference job")
+    return "\n".join(out), [Noise("parm_check", SPARSE_UPPERS, sum(quiet.values()))]
+
+
+_NOISE: Mapping[str, Callable[[str], tuple[str, list[Noise]]]] = {
+    "panel_xcheck": _tr_base_noise, "parm_check": _sparse_uppers_noise}
+
+
 # ----- small pieces
 
 
@@ -452,10 +577,12 @@ def to_json(found: Findings) -> dict[str, Any]:
         "verdicts": [{"checker": v.checker, "code": v.code, "advisory": v.advisory, "why": v.why}
                      for v in found.verdicts],
         "left_out": list(found.left_out),
+        "noise": [{"checker": n.checker, "what": n.what, "count": n.count} for n in found.noise],
     }
 
 
 def from_json(data: Mapping[str, Any]) -> Findings:
+    """A stored result; one stored before known noise was kept has none."""
     return Findings(
         code=data["code"],
         items=tuple(Item(i["n"], i["kind"], i["checker"], i["what"], tuple(i["tags"]),
@@ -463,4 +590,5 @@ def from_json(data: Mapping[str, Any]) -> Findings:
                          i["count"], i["why"], i["fingerprint"], i["settles"]) for i in data["items"]),
         verdicts=tuple(Verdict(v["checker"], v["code"], v["advisory"], v["why"]) for v in data["verdicts"]),
         left_out=tuple(data["left_out"]),
+        noise=tuple(Noise(n["checker"], n["what"], int(n["count"])) for n in data.get("noise", ())),
     )

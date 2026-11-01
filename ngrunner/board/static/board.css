@@ -224,6 +224,7 @@ code, .mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
 .check-text { overflow-wrap: anywhere; }
 .check-chat, .check-settled { flex-basis: 100%; color: var(--ink-2); overflow-wrap: anywhere; }
 .check-chat { font-family: ui-monospace, Consolas, monospace; user-select: all; }
+.check-noise { margin: 8px 0 0; padding-left: 18px; color: var(--ink-2); overflow-wrap: anywhere; }
 /* a job's P4 panel: its lock buttons with what each misses, its lease, batches, fixes and job sheet */
 .lock-panel { display: grid; gap: 6px; margin-top: 10px; font-size: 13px; }
 .lock-note { display: flex; align-items: flex-start; gap: 5px; margin: 0; color: var(--ink-2); }

@@ -129,7 +129,8 @@ class PromptView:
 @dataclass(frozen=True)
 class CheckView:
     """A job's check (P3), with Check now always beside it. state: one of CHECK_STATES. line: its one
-    line. run_id: the run its items are of. prompt: a close prompt waiting on Jim."""
+    line. run_id: the run its items are of. prompt: a close prompt waiting on Jim. noise: one line per
+    known noise in the run, what Jim's rules say is never a fault: shown, never an item."""
 
     studio_id: str
     state: str
@@ -137,6 +138,7 @@ class CheckView:
     run_id: int | None = None
     items: tuple[CheckItemView, ...] = ()
     prompt: PromptView | None = None
+    noise: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         _one_of(self.state, CHECK_STATES, "a check's state")

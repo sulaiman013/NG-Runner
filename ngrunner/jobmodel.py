@@ -497,7 +497,7 @@ def _check_view(j: _JobFacts, now: datetime) -> CheckView:
                                                                          words=shown.settle.words, now=now),
         can_settle=check.counts and shown.item.settles and shown.settle is None) for shown in check.items)
     return CheckView(j.job.studio_id, check.state, check.line, check.run.id if check.run else None, items,
-                     prompt)
+                     prompt, tuple(templates.check_noise_words(noise) for noise in check.noise))
 
 
 def _takeoff_view(j: _JobFacts) -> TakeoffView | None:

@@ -55,9 +55,11 @@ def settings(tmp_path: Path) -> Settings:
                     control=tmp_path / "control")
 
 
-def run(store, *, fault: bool = True, at: datetime = NOW, kind: str = "check", trial: bool = True):
-    sections = {**CLEAN, "notch_check": NOTCH} if fault else CLEAN
-    found = f.findings_of(read(sections, flagged=("notch_check",) if fault else ()), kind=kind)
+def run(store, *, fault: bool = True, at: datetime = NOW, kind: str = "check", trial: bool = True,
+        sections: dict[str, str] | None = None, flagged: tuple[str, ...] = ()):
+    if sections is None:
+        sections, flagged = ({**CLEAN, "notch_check": NOTCH}, ("notch_check",)) if fault else (CLEAN, ())
+    found = f.findings_of(read(sections, flagged=flagged), kind=kind)
     asked = ask_check(store, studio_id=SID, folder=JOB, kind=kind, trigger="check_now" if kind == "check" else "audit",
                       at=at - timedelta(minutes=1))
     start_check(store, asked.id, at=at - timedelta(minutes=1))
@@ -92,6 +94,26 @@ def test_a_failed_check_shows_on_its_row_with_each_item_its_chat_line_and_a_sett
     assert fix.text == "R1C3: the notch is on the wrong face"
     assert fix.chat == f"{JOB}: put the notch on its line-bore face on R1C3, then run crosscheck"
     assert (cnv.kind, cnv.can_settle, cnv.chat) == ("could_not_verify", False, None)
+
+
+TR_BASE = ("IC board parts 30   Mozaik cutlist 30\n\n-- TR/FF: IC 4  Mozaik 4\n"
+           "   MISSING (104.1, 2438.4) x4   Base 4.1x96x3/4 Testerson Special\n   EXTRA   (101.6, 2438.4) x4")
+
+
+def test_known_noise_is_in_the_checks_detail_and_never_an_item_on_the_row_or_your_list(store, settings, actions) -> None:
+    """RULES 266-268: a TR Base IC prints at 4.1 is never flagged. Q1 is open, so the run could not verify."""
+    run(store, sections={**CLEAN, "panel_xcheck": TR_BASE}, flagged=("panel_xcheck",))
+
+    view = board(store, settings)
+    check = row_of(view).check
+    said = ("Known noise, not to fix: 4 TR Bases the IC summary prints at 4.1, which is IC's rounding; Jim's rules"
+            " build every TR Base 4\" (101.6 mm) by 96\" (2438.4 mm)")
+
+    assert check.noise == (said,) and [i.kind for i in check.items] == ["could_not_verify"]
+    assert check.line == "Checked 9:42 PM (trial): 1 could not verify" and view.your_list == ()
+    assert check_line(said) == []
+    page = html.unescape(browser_for(view, actions).get("/", base_url=BASE).get_data(as_text=True))
+    assert said in page and "Testerson Special" not in page          # what a checker printed never shows
 
 
 def test_every_job_has_check_now_and_one_never_checked_says_so(store, settings) -> None:
