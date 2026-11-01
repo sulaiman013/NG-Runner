@@ -368,13 +368,19 @@ def _stops_growing(path: Path) -> bool:
 def _said_before_the_kill(snapshot: Snapshot, args: list[str], *, within_s: float) -> Any:
     """A run that timed out, retried while nothing was said yet: a Python start now and then takes
     longer than the timeout on a busy PC (measured 2026-10-31 with three builds running), and then a
-    kill comes before the script's first line. Every run must still time out within its time."""
+    kill comes before the script's first line. Every run must still time out within its time, and that
+    time doesn't count what starting a process costs right then: a run of a script that ends at once,
+    timed just before (measured 2026-11-01: 23 s against 18 with three full suites on this PC, and a
+    pass when it was quiet)."""
     for _ in range(3):
+        began = monotonic()
+        assert run_tool(snapshot, "scripts/say.py", []).exit_code == 0
+        starting = monotonic() - began
         began = monotonic()
         run = run_tool(snapshot, "scripts/hang.py", args, timeout_s=8)
         assert run.timed_out is True
         assert run.exit_code is None            # never to be read as a clean exit
-        assert monotonic() - began < within_s
+        assert monotonic() - began < within_s + starting
         if run.stdout.strip():
             break
     return run
