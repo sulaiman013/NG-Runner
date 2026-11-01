@@ -6,7 +6,7 @@ That is Phase 1a, the first step of a staircase. Later phases add read-only guar
 
 Built and supported by Sulaiman Ahmed, for Jim Delany, owner of Inspired Closets LA.
 
-> **Status, 2026-10-31, 6:00 PM Pacific.** About 82% of the committed work (P0 to P3) is built, and 59% of all phases. **Phase 1a and Phase 1b are built and proven on real data on Sulaiman's PC. Phases 2 to 4 are well along and now wired into the app:** the shared converter and its workbook equal Jim's chat on his recent jobs and are packaged for his toolkit; Jim's crosscheck runs on "sections done" with ready chat lines; and the lock, tracker drops and fixes have a panel on the board for every filed job, in shadow, writing nothing real. **Phase 5's drawing reader is Claude**, chosen over GPT-6 Luna on 121 new real walls. **Nothing is installed on Jim's PC.**
+> **Status, 2026-10-31, 7:45 PM Pacific.** About 82% of the committed work (P0 to P3) is built, and 59% of all phases. **Phase 1a and Phase 1b are built and proven on real data on Sulaiman's PC. Phases 2 to 4 are well along and now wired into the app:** the shared converter and its workbook equal Jim's chat on his recent jobs and are packaged for his toolkit; Jim's crosscheck runs on "sections done" with ready chat lines; and the lock, tracker drops and fixes have a panel on the board for every filed job, in shadow, writing nothing real. **Phase 5's drawing reader is Claude**, chosen over GPT-6 Luna on 121 new real walls. **Nothing is installed on Jim's PC.**
 
 ## Contents
 
@@ -351,7 +351,9 @@ Kickoff call with Jim, Mary, Nicole and Sulaiman. Jim hands over his IC-to-Mozai
 | 4:00 PM | **Jim's 30 questions checked against his own files,** with his PC's Claude re-checking them | 13 settled from his rules and nests, 3 need a yes or no, 14 are still his. The file on Drive lists each with its source |
 | 4:20 PM | **The drawing reader decided: Claude** | Tuned Luna made five times as many walls with reading errors and six gross misplacements. OpenRouter is closed at $3.63 |
 | 5:50 PM | Pushed: [`100d978`](https://github.com/sulaiman013/NG-Runner/commit/100d978) and [`004d58e`](https://github.com/sulaiman013/NG-Runner/commit/004d58e) | The reader evaluation, and Phases 3 and 4 wired into the board in shadow. **7,606 tests pass** |
-| 6:00 PM | **Now:** Jim's settled answers built into the converter and checks | Running |
+| 7:40 PM | Pushed: [`4d8421c`](https://github.com/sulaiman013/NG-Runner/commit/4d8421c) | **What Jim's own files answered, built in:** worksurfaces in their own printed colour, glass shelves bought in, white 1-1/8in shelves at 1in with the whole job's white AMWH, Navy named and never swapped, the findings his crosscheck never flags now raised, and only real flip sheets on the job sheet. On the 52 real pairs, 36 takeoffs are now complete, up from 34; the 14 recent jobs still equal the chat's cell for cell. **7,655 tests pass** |
+| 7:45 PM | **The converter package on Drive replaced** with this build | Jim's regression is clean on it; the earlier one is set aside |
+| 7:45 PM | **Now:** Phase 4's next round (shadow drops closed against the chat's own tracker rows, tracker names from NG Runner's workbook), and Phase 5's groundwork (Jim's build choices as code rules, scored on the 147 test walls) | Running |
 
 ## Measured so far
 
