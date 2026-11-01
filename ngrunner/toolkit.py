@@ -233,7 +233,8 @@ def run_tool(snapshot: Snapshot, script: str, args: Sequence[str], *, timeout_s:
     for a program it starts by name (elev_panels.py's pdftoppm). Raises ToolkitError when it can't be
     started in its job at all, or the copy changed while it ran: either way, no result."""
     path = _script_in(snapshot, script)
-    return _run(snapshot, lambda py: tool_command(str(path), _expanded(args), python=py), timeout_s, python)
+    return _run(snapshot, lambda py: tool_command(str(path), _expanded(args), python=py), timeout_s, python,
+                on_path=on_path)
 
 
 def run_room_call(snapshot: Snapshot, script: str, function: str, room: Path, out: Path, *,
@@ -251,7 +252,7 @@ def run_room_call(snapshot: Snapshot, script: str, function: str, room: Path, ou
 
 
 def _run(snapshot: Snapshot, command_for: Callable[[Path | None], list[str]], timeout_s: int,
-         python: Path | None) -> ToolRun:
+         python: Path | None, *, on_path: Sequence[Path] = ()) -> ToolRun:
     refuse_unless_local(snapshot.path, "The toolkit copy")
     if hash_of_tree(snapshot.path) != snapshot.sha256:
         raise ToolkitError("The toolkit copy has changed since it was taken, so nothing was run.")

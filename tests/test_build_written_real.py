@@ -262,6 +262,16 @@ def test_jims_own_checkers_find_nothing_to_change_in_the_written_rooms(adopted, 
 
 @pytest.fixture(scope="module")
 def dev_rooms(world: run.World) -> list[built.RoomResult]:
+    return _dev(world, read_plans=False)
+
+
+@pytest.fixture(scope="module")
+def dev_rooms_planned(world: run.World) -> list[built.RoomResult]:
+    """The same rooms with their plans as ngrunner/build/plan.py reads them: the writer's whole path."""
+    return _dev(world, read_plans=True)
+
+
+def _dev(world: run.World, *, read_plans: bool) -> list[built.RoomResult]:
     provider = providers.PROVIDERS["anthropic"](effort="high")
     result = run.read_walls(world, run.test_walls(world), run.worked_walls(world), provider, None,
                             budget.CostGuard(budget.DEFAULT_CAP_USD), answers=cases.reader_dir() / "answers",
@@ -270,10 +280,11 @@ def dev_rooms(world: run.World) -> list[built.RoomResult]:
     if len(readings) < 26:
         pytest.skip("Claude's cached answers to the first 26 walls are not all here")
     crops = {c: p.crops for c, p in world.preps.items()}
-    return built.build_read(readings, crops, {c: cases.summary(c) for c in world.preps}, built.load_rooms(world.preps))
+    return built.build_read(readings, crops, {c: cases.summary(c) for c in world.preps}, built.load_rooms(world.preps),
+                            read_plans=read_plans)
 
 
-CHAIN = {"position", "angle", "pos_mm", "joints"}
+CHAIN = {"position", "angle", "pos_mm", "joints", "chain"}
 COLOUR = {"materials", "drawer front"}
 
 
@@ -311,6 +322,43 @@ def colour_reason(why: str) -> str:
         if why.startswith("no known-good job") and word in why:
             return f"no known-good job in {word}"
     return "three colours" if "print 3 colours" in why else "a garage room" if "garage" in why else why
+
+
+def test_with_plans_as_read_and_their_colour_3_dev_rooms_are_written_and_reach_the_copy_only_past_gate_6(
+        dev_rooms_planned, world, adopted, template, library, tmp_path: Path) -> None:
+    """The writer's whole path on the first 26 walls: Claude's cached readings, the plan as read, the colour from
+    the new code. Measured 2026-11-01: Jobs C (its second room), D and G are written and pass 20 of 21 gates; the
+    other 15 rooms are blocked, each by what is counted below; and gate 6 decides the shadow copy."""
+    colours = [hc.colour_of(r.case, key_of(world, r.case, r.design), hc.sources(hc.own_job(r.case)))
+               for r in dev_rooms_planned]
+    rooms = [wr.write_room(r.model, 1, template, library, s) for r, s in zip(dev_rooms_planned, colours)]
+    written = {(r.case, r.design + 1): room for r, room in zip(dev_rooms_planned, rooms)
+               if isinstance(room, wr.WrittenRoom)}
+    assert sorted(written) == [("C", 2), ("D", 1), ("G", 1)]
+    blocked = [Counter(kind(what, why) for _, what, why in room.blocked_by) for room in rooms
+               if isinstance(room, wr.BlockedRoom)]
+    assert Counter(name for k in blocked for name in k) == Counter({
+        "the colour": 9, "run start": 8, "FM 84 or FM 90": 5, "the plan": 4, "a wall not read": 3,
+        "the reading's own doubt": 3, "top line": 1})
+    pdftoppm, python = renderer(), tools_python()
+    shadow = cm.p5_shadow_roots(tmp_path / "data")
+    for r in dev_rooms_planned:
+        room = written.get((r.case, r.design + 1))
+        if room is None:
+            continue
+        crops = [c for c in world.preps[r.case].crops if c.design == r.design]
+        measured = {c.wall: gt.measure_wall(adopted, cases.reader_dir() / "cases" / f"{r.case}.pdf", c.page,
+                                            c.width_in, c.height_in, pdftoppm=pdftoppm, python=python)
+                    for c in crops if any(s.wall == c.wall and s.panels for s in r.model.schedules)}
+        gates = gt.gate_room(room, r.model, [built.read_wall(c, None) for c in crops], template, library, measured)
+        result = cm.commit_rooms(r.case, [cm.Gated(room, gates)], roots=shadow, interlock=lambda paths: None)
+        if isinstance(pdftoppm, str):
+            assert {g.name: g.status for g in gates.not_passed()} == {"gate 6": "could not verify"}, gt.report(gates)
+            assert not result.ok and "gate 6 could not verify" in result.reason
+        else:
+            assert result.ok == gates.passed, result.reason
+    if isinstance(pdftoppm, str):
+        assert not list(shadow.mozaik_shared.rglob("*"))
 
 
 # ----- the ties to Jim's files
